@@ -10,6 +10,8 @@ from __future__ import print_function
 import os
 import pickle
 import numpy as np
+import matplotlib
+matplotlib.use('qt5agg')
 import matplotlib.pyplot as plt
 from collections import OrderedDict
 from sklearn.manifold import TSNE
@@ -18,7 +20,7 @@ __author__ = "Harry He"
 
 class W2vUtil(object):
 
-    def __init__(self,dir="tmp"):
+    def __init__(self,dir="data"):
         self._dir = dir
 
         self.last_w2vtab = None
@@ -31,7 +33,7 @@ class W2vUtil(object):
         :param ofile: data file
         :return: null
         """
-        assert type(w2vtab) == OrderedDict
+        assert type(w2vtab) == OrderedDict or type(w2vtab) == dict
         if not os.path.exists(self._dir):
             os.mkdir(self._dir)
         pickle.dump(w2vtab, open(os.path.join(self._dir, ofile), "wb"))

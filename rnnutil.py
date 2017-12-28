@@ -8,6 +8,8 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+import matplotlib
+matplotlib.use('qt5agg')
 import matplotlib.pyplot as plt
 
 __author__ = "Harry He"
