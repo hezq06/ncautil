@@ -54,6 +54,31 @@ def pca_approx(data,D,dataT=None):
         res = (V[0:D, :].T).dot((V[0:D, :])).dot(dataT)
     return res
 
+def pca_proj(data,D,dataT=None):
+    """
+    Project data with leading D eigen_vector
+    :param data: input textmat
+    :param D: rank
+    :param dataT: Using eigenvalue of data to project dataT
+    :return: data_app
+    """
+    data = np.array(data)
+    assert len(data.shape) == 2
+    assert data.shape[1] >= data.shape[0]
+    assert data.shape[0] >= D
+
+    # PCA
+    N = data.shape[1]
+    U, S, V = np.linalg.svd(data.dot(data.T) / N)# eigenvalue decomposition of the covariance matrix
+    pM=np.diag(1/np.sqrt(S[0:D])).dot((V[0:D,:]))
+    if type(dataT)==type(None):
+        print("Project original data")
+        res = pM.dot(data)  # Project the input pattern to leading PC directions
+    else:
+        print("Project test data")
+        res = pM.dot(dataT)
+    return res,pM
+
 def ppca_approx(data,D,dataT=None):
     """
     Try to rank decrease using ppca projection of data
@@ -148,7 +173,7 @@ def ica(data,LR=1e-2,step=1e4,show_step=1e2):
     Xh = W.dot(data)
     plt.plot(ltab)
     plt.show()
-    return Xh
+    return Xh,W
 
 def pl_eig_pca(data):
     """
@@ -166,7 +191,7 @@ def pl_eig_pca(data):
     plt.show()
     return S
 
-def pl_eig_ppca(data):
+def pl_eig_ppca(data,history=1):
     """
     Plot the eigenvalue of ppca
     :param data: data matrix
@@ -178,6 +203,10 @@ def pl_eig_ppca(data):
 
     N = data.shape[1]
     data1 = np.roll(data, 1, axis=1)
+    if history>1:
+        for ii in range(history-1):
+            data_shf = np.roll(data, ii+2, axis=1)
+            data1=np.concatenate((data1,data_shf))
     C0 = data1.dot(data1.T) / N
     C1 = data.dot(data1.T) / N
     pCov=C1.dot(np.linalg.pinv(C0)).dot(C1.T)

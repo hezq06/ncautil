@@ -121,14 +121,15 @@ class NLPutil(object):
         assert len(data.shape) == 2
         fig,ax=plt.subplots()
         img=data[:,start:start+length]
-        fig=ax.imshow(img, cmap='seismic',clim=(-15,15))
-        st,end=ax.get_xlim()
-        ax.xaxis.set_ticks(np.arange(st+0.5,end+0.5,1))
-        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
-        labels=[item.get_text() for item in ax.get_xticklabels()]
-        for ii in range(len(labels)):
-            labels[ii]=str(text[ii+int(start)])
-        ax.set_xticklabels(labels,rotation=70)
+        fig=ax.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)),np.amax(np.abs(data))))
+        if text!=None:
+            st,end=ax.get_xlim()
+            ax.xaxis.set_ticks(np.arange(st+0.5,end+0.5,1))
+            ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+            labels=[item.get_text() for item in ax.get_xticklabels()]
+            for ii in range(len(labels)):
+                labels[ii]=str(text[ii+int(start)])
+            ax.set_xticklabels(labels,rotation=70)
         plt.colorbar(fig)
         plt.show()
 
@@ -162,4 +163,77 @@ class NLPutil(object):
             for item in self.corpus:
                 fp.write(str(item))
                 fp.write(" ")
+
+
+
+class NLPdatap(object):
+    """
+    Advanced NLP data processing object
+    """
+    def __init__(self,NLPutilC):
+        """
+        A NLP Data processing class should link to a NLPutil object when initialization
+        :param NLPutilC:
+        """
+        self.NLPutilC=NLPutilC
+
+    def pl_conceptmap(self,nx,ny,Nwords,pM=None,mode="default"):
+        """
+        Plot a 2D concept map with word vectors
+        :param nx: concept No. for axis x
+        :param ny: concept No. for axis y
+        :param Nwords: number of words shown
+        :param pM: projection matrix
+        :param word sampling mode: mode: default/...
+        :return: null
+        """
+        vocabmat = []  # size (Nwords,dim)
+        labels = [] # size (Nwords)
+        if mode == "default":
+            for ii in range(Nwords):
+                wrd=self.NLPutilC.id_to_word[ii]
+                vec=self.NLPutilC.w2v_dict[wrd]
+                vocabmat.append(vec)
+                labels.append(wrd)
+        else:
+            raise Exception("Other mode not yet supported")
+
+        vocabmat=np.array(vocabmat)
+        if type(pM) != type(None): # Projection matrix existing
+            vocabmat=pM.dot(vocabmat.T).T
+
+        D2mat=vocabmat[:,[nx,ny]]
+        self.plot_with_labels(labels,D2mat,"Concept Dimension No. "+str(nx+1), "Concept Dimension No. "+str(ny+1))
+
+
+    def plot_with_labels(self, labels, points,strx,stry):
+        plt.figure(figsize=(18, 18))  # in inches
+        for i, label in enumerate(labels):
+            x, y = points[i]
+            plt.scatter(x, y)
+            plt.annotate(label, xy=(x, y), xytext=(5, 2), textcoords='offset points', ha='right', va='bottom')
+        plt.xlabel(strx)
+        plt.ylabel(stry)
+        plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
