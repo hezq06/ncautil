@@ -44,6 +44,7 @@ class WindAppNet(object):
         self.log_dir=opt.get("log_dir","log")
         self.max_steps=opt.get("max_steps",100000)
         self.batch_size = opt.get("batch_size", 10)
+        self.goal_precision=opt.get("goal_precision",0.9)
         if tf.gfile.Exists(self.log_dir):
             tf.gfile.DeleteRecursively(self.log_dir)
         tf.gfile.MakeDirs(self.log_dir)
@@ -108,6 +109,7 @@ class WindAppNet(object):
         precision = float(true_count) / wrd_count
         print('Num examples: %d  Num correct: %d  Precision @ 1: %0.04f' %
               (wrd_count, true_count, precision))
+        return precision
 
     def fill_feed_dict(self,wrd_in,labels,ii_sents=None,ii_wrd=None):
         if type(self.nlputil.w2v_dict) == type(None):
@@ -198,15 +200,18 @@ class WindAppNet(object):
                     summary_writer.add_summary(summary_str, ii)
                     summary_writer.flush()
 
-                if ii % 2000 == 1:
+                if ii % 5000 == 1:
                     checkpoint_file = os.path.join(self.log_dir, 'model.ckpt')
                     saver.save(sess, checkpoint_file, global_step=ii)
                     # Evaluate against the training set.
                     print('Training Data Eval:')
-                    self.do_eval(sess,
-                            eval_correct,
-                            wrd_in,
-                            labels)
+                    precision=self.do_eval(sess,
+                                eval_correct,
+                                wrd_in,
+                                labels)
+                    if precision>self.goal_precision:
+                        print("Goal precision achieved, training stopped")
+                        break
 
             plt.plot(loss_tab)
             plt.show()
