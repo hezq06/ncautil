@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use('qt5agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from nltk.corpus import brown
+from nltk.corpus import brown,treebank
 from nltk.tokenize import word_tokenize
 from ncautil.w2vutil import W2vUtil
 
@@ -25,17 +25,19 @@ class NLPutil(object):
         print("Initializing NLPUtil")
         self.dir="tmp/"
         self.corpus=None
+        self.tagged_sents = None
         self.sub_size = 100000
         self.sub_corpus = None
         self.word_to_id=None
         self.id_to_word=None
         self.w2v_dict=None
         self.test_text=None
+        self.labels=None
 
     def get_data(self,corpus,type=0):
         """
         Get corpus data
-        :param corpus: "brown"
+        :param corpus: "brown","ptb"
         :param type: 0
         :return:
         """
@@ -46,6 +48,19 @@ class NLPutil(object):
             for item in tmpcorp:
                 self.corpus.append(item.lower())
                 self.sub_corpus = self.corpus[:self.sub_size]
+        elif corpus=="ptb":
+            tmpcorp=treebank.words()
+            self.corpus = []
+            for item in tmpcorp:
+                self.corpus.append(item.lower())
+                self.sub_corpus = self.corpus[:self.sub_size]
+            _,lablist=zip(*treebank.tagged_words())
+            self.labels = set(lablist)
+            counter = collections.Counter(lablist)
+            count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
+            self.labels, _ = list(zip(*count_pairs))
+
+            self.tagged_sents = treebank.tagged_sents()
         else:
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/'+str(corpus))
             f = open(file)
