@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use('qt5agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+from collections import OrderedDict
 from nltk.corpus import brown,treebank
 from nltk.tokenize import word_tokenize
 from ncautil.w2vutil import W2vUtil
@@ -102,7 +103,7 @@ class NLPutil(object):
         self.id_to_word = {v: k for k, v in self.word_to_id.items()}
         return self.word_to_id, self.id_to_word
 
-    def build_w2v(self,mode="pickle",args=dict([])):
+    def build_w2v(self,mode="pickle",switch=''):
         """
         Build word to vector lookup table
         :param mode: "pickle"
@@ -110,11 +111,28 @@ class NLPutil(object):
         """
         print("Building word to vector lookup table...")
         if mode=="pickle":
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/w2vtab_opt_'+switch+'.pickle')
             w2vu = W2vUtil()
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/w2vtab_opt.pickle')
             w2vtemp = w2vu.flloadw2v(ofile=file)
-            self.w2v_dict = dict((key.decode("utf-8"), val.astype(float)) for (key, val) in w2vtemp.items())
+            try:
+                self.w2v_dict = dict((key.decode("utf-8"), val.astype(float)) for (key, val) in w2vtemp.items())
+            except AttributeError:
+                self.w2v_dict = dict((key, val.astype(float)) for (key, val) in w2vtemp.items())
         return self.w2v_dict
+
+    def proj_w2v(self,w2v_dict,pM):
+        """
+        Project w2v dict using pM
+        :param w2v_dict: dictionary of w2v
+        :param pM: projection matrix
+        :return: w2v_proj: dictionary of projected w2v
+        """
+        w2v_proj=dict([])
+        assert type(w2v_dict) == OrderedDict or type(w2v_dict) == dict
+        for k,v in w2v_dict.items():
+            vecp=pM.dot(np.array(v))
+            w2v_proj[k]=vecp
+        return w2v_proj
 
     def build_textmat(self,text):
         """

@@ -45,6 +45,9 @@ class WindAppNet(object):
         self.max_steps=opt.get("max_steps",100000)
         self.batch_size = opt.get("batch_size", 10)
         self.goal_precision=opt.get("goal_precision",0.9)
+        self.training_set=opt.get("training_set",0.6)
+        self.valid_set = opt.get("valid_set", 0.2)
+        self.test_set = opt.get("training_set", 0.2)
         if tf.gfile.Exists(self.log_dir):
             tf.gfile.DeleteRecursively(self.log_dir)
         tf.gfile.MakeDirs(self.log_dir)
@@ -96,22 +99,60 @@ class WindAppNet(object):
                 wrd_in,
                 labels):
         # And run one epoch of eval.
+        assert self.training_set+self.valid_set+self.test_set==1.0
+        Nsents = len(self.nlputil.tagged_sents)
+
         true_count = 0  # Counts the number of correct predictions.
         wrd_count = 0
-        Nsents = len(self.nlputil.tagged_sents)
-        for ii_sents in range(Nsents):
-            for ii_wrd in range(len(self.nlputil.tagged_sents[ii_sents])):
+        trainNsents=int(self.training_set*Nsents)
+        source_sents=self.nlputil.tagged_sents[:trainNsents]
+        for ii_sents in range(trainNsents):
+            for ii_wrd in range(len(source_sents[ii_sents])):
                 feed_dict = self.fill_feed_dict(wrd_in,
                                            labels,
+                                           source_sents,
                                            ii_sents=ii_sents,ii_wrd=ii_wrd)
                 true_count += sess.run(eval_correct, feed_dict=feed_dict)
                 wrd_count += 1
-        precision = float(true_count) / wrd_count
-        print('Num examples: %d  Num correct: %d  Precision @ 1: %0.04f' %
-              (wrd_count, true_count, precision))
-        return precision
+        precision1 = float(true_count) / wrd_count
+        print('Training Set: Num examples: %d  Num correct: %d  Precision @ 1: %0.04f' %
+              (wrd_count, true_count, precision1))
 
-    def fill_feed_dict(self,wrd_in,labels,ii_sents=None,ii_wrd=None):
+        true_count = 0  # Counts the number of correct predictions.
+        wrd_count = 0
+        validNsents = int(self.valid_set * Nsents)
+        source_sents = self.nlputil.tagged_sents[trainNsents:trainNsents+validNsents]
+        for ii_sents in range(validNsents):
+            for ii_wrd in range(len(source_sents[ii_sents])):
+                feed_dict = self.fill_feed_dict(wrd_in,
+                                           labels,
+                                           source_sents,
+                                           ii_sents=ii_sents,ii_wrd=ii_wrd)
+                true_count += sess.run(eval_correct, feed_dict=feed_dict)
+                wrd_count += 1
+        precision2 = float(true_count) / wrd_count
+        print('Validation Set: Num examples: %d  Num correct: %d  Precision @ 1: %0.04f' %
+              (wrd_count, true_count, precision2))
+
+        true_count = 0  # Counts the number of correct predictions.
+        wrd_count = 0
+        testNsents = int(self.test_set * Nsents)
+        source_sents = self.nlputil.tagged_sents[trainNsents+validNsents:trainNsents+validNsents+testNsents]
+        for ii_sents in range(testNsents):
+            for ii_wrd in range(len(source_sents[ii_sents])):
+                feed_dict = self.fill_feed_dict(wrd_in,
+                                           labels,
+                                           source_sents,
+                                           ii_sents=ii_sents,ii_wrd=ii_wrd)
+                true_count += sess.run(eval_correct, feed_dict=feed_dict)
+                wrd_count += 1
+        precision3 = float(true_count) / wrd_count
+        print('Test Set: Num examples: %d  Num correct: %d  Precision @ 1: %0.04f' %
+              (wrd_count, true_count, precision3))
+
+        return precision1,precision2,precision3
+
+    def fill_feed_dict(self,wrd_in,labels,source_sents,ii_sents=None,ii_wrd=None):
         if type(self.nlputil.w2v_dict) == type(None):
             self.nlputil.build_w2v()
         vecwrd_in = np.array([])
@@ -122,11 +163,11 @@ class WindAppNet(object):
         else:
             batch_size = self.batch_size
         for ii_batch in range(batch_size):
-            Nsents=len(self.nlputil.tagged_sents)
+            Nsents=len(source_sents)
             rndsent=int(np.random.rand()*Nsents)
             if ii_sents != None:
                 rndsent=ii_sents
-            Nwrds=len(self.nlputil.tagged_sents[rndsent])
+            Nwrds=len(source_sents[rndsent])
             rndwrd=np.floor(np.random.rand()*Nwrds)
             if ii_wrd != None:
                 rndwrd=ii_wrd
@@ -143,7 +184,7 @@ class WindAppNet(object):
                     tmp=np.concatenate((w2v,ExtV))
                     vecwrd_in=np.concatenate((vecwrd_in,tmp))
                 else:
-                    trg_word=self.nlputil.tagged_sents[rndsent][int(trg)][0]
+                    trg_word=source_sents[rndsent][int(trg)][0]
                     if trg_word in self.featurelist:
                         # Then we skip w2v and use the external feature
                         ExtV[self.featurelist.index(trg_word)] = 1.0
@@ -156,7 +197,7 @@ class WindAppNet(object):
                         vecwrd_in = np.concatenate((vecwrd_in, tmp))
 
             # Creating veclabels
-            trg_type = self.nlputil.tagged_sents[int(rndsent)][int(rndwrd)][1]
+            trg_type = source_sents[int(rndsent)][int(rndwrd)][1]
             ind=self.nlputil.labels.index(trg_type)
             veclabels.append(ind)
 
@@ -181,6 +222,54 @@ class WindAppNet(object):
             sess = tf.InteractiveSession()
             summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
             sess.run(init)
+
+            for ii in range(self.max_steps):
+                start_time = time.time()
+                feed_dict = self.fill_feed_dict(wrd_in,labels)
+                _, loss_value = sess.run([train_op, loss],
+                                         feed_dict=feed_dict)
+
+                duration = time.time() - start_time
+
+                loss_tab.append(loss_value)
+
+                if ii % 1000 == 0:
+                    # Print status to stdout.
+                    print('Step %d: loss = %.2f (%.3f sec)' % (ii, loss_value, duration))
+                    # Update the events file.
+                    summary_str = sess.run(summary, feed_dict=feed_dict)
+                    summary_writer.add_summary(summary_str, ii)
+                    summary_writer.flush()
+
+                if ii % 5000 == 1:
+                    checkpoint_file = os.path.join(self.log_dir, 'model.ckpt')
+                    saver.save(sess, checkpoint_file, global_step=ii)
+                    # Evaluate against the training set.
+                    print('Training Data Eval:')
+                    precision=self.do_eval(sess,
+                                eval_correct,
+                                wrd_in,
+                                labels)
+                    if precision>self.goal_precision:
+                        print("Goal precision achieved, training stopped")
+                        break
+
+            plt.plot(loss_tab)
+            plt.show()
+
+    def resume_training(self,save_dir):
+        with tf.Graph().as_default(),tf.Session() as sess:
+            loss_tab = []
+            wrd_in = tf.placeholder(dtype=tf.float32, shape=(None, self.win_size * (self.emb_dim + self.feature_dim)))
+            labels = tf.placeholder(dtype=tf.int32, shape=(None))
+            nhu2 = self.inference(wrd_in)
+            loss = self.loss(nhu2, labels)
+            train_op = self.training(loss, self.lrate)
+            eval_correct = self.evaluation(nhu2, labels)
+            summary = tf.summary.merge_all()
+            saver = tf.train.Saver()
+            summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
+            saver.restore(sess=sess,save_path=tf.train.latest_checkpoint(save_dir))
 
             for ii in range(self.max_steps):
                 start_time = time.time()
