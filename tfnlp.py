@@ -300,11 +300,11 @@ class WindAppNet(object):
                     saver.save(sess, checkpoint_file, global_step=ii)
                     # Evaluate against the training set.
                     print('Training Data Eval:')
-                    precision=self.do_eval(sess,
+                    precision1, precision2, precision3=self.do_eval(sess,
                                 eval_correct,
                                 wrd_in,
                                 labels)
-                    if precision>self.goal_precision:
+                    if precision3>self.goal_precision:
                         print("Goal precision achieved, training stopped")
                         break
 
