@@ -225,7 +225,10 @@ class WindAppNet(object):
 
             for ii in range(self.max_steps):
                 start_time = time.time()
-                feed_dict = self.fill_feed_dict(wrd_in,labels)
+                Nsents = len(self.nlputil.tagged_sents)
+                trainNsents = int(self.training_set * Nsents)
+                source_sents = self.nlputil.tagged_sents[:trainNsents]
+                feed_dict = self.fill_feed_dict(wrd_in,labels,source_sents)
                 _, loss_value = sess.run([train_op, loss],
                                          feed_dict=feed_dict)
 
@@ -273,7 +276,10 @@ class WindAppNet(object):
 
             for ii in range(self.max_steps):
                 start_time = time.time()
-                feed_dict = self.fill_feed_dict(wrd_in,labels)
+                Nsents = len(self.nlputil.tagged_sents)
+                trainNsents = int(self.training_set * Nsents)
+                source_sents = self.nlputil.tagged_sents[:trainNsents]
+                feed_dict = self.fill_feed_dict(wrd_in,labels,source_sents)
                 _, loss_value = sess.run([train_op, loss],
                                          feed_dict=feed_dict)
 
