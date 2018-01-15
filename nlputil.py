@@ -249,11 +249,66 @@ class NLPdatap(object):
         plt.ylabel(stry)
         plt.show()
 
-
-
-
-
-
+class SyntaxMat(object):
+    """
+    A class encoding PTB POS to COMPACT POS
+    """
+    def __init__(self):
+        """
+        PTB POS Tags
+        https://www.ling.upenn.edu/courses/Fall_2003/ling001/penn_treebank_pos.html
+        """
+        self.PTBPOS=['CC','CD','DT','EX','FW','IN','JJ','JJR','JJS','LS','MD','NN','NNP','NNPS','NNS',
+                     'PDT','POS','PRP','PRP$','RB','RBR','RBS','RP','SYM','TO','UH','VB','VBD','VBG',
+                     'VBN','VBP','VBZ','WDT','WP','WP$','WRB','-NONE-']
+        self.CMPPOS_base=['NN','VB','MD','JJ','RB','PRP','IN','DT','PDT','CC','CD','UH','RP','-NONE-']
+        #'plural','proper','possessive','past','present','participle','non-3rd person singular present',
+        # '3rd person singular present','comparative','superlative','wh'
+        self.CMPPOS_atri=['SS','PRO','POS','PST','PTP','V12','V3','ER','EST','WH']
+        self.PTBCMP_dict=dict([])
+        
+    def initdic(self):
+        """
+        Initialization of transfer dict
+        :return: dict
+        """
+        self.PTBCMP_dict['CC']=['CC']
+        self.PTBCMP_dict['CD'] = ['CD']
+        self.PTBCMP_dict['DT'] = ['DT']
+        self.PTBCMP_dict['EX'] = ['PRP']
+        self.PTBCMP_dict['FW'] = ['-NONE-']
+        self.PTBCMP_dict['IN'] = ['IN']
+        self.PTBCMP_dict['JJ'] = ['JJ']
+        self.PTBCMP_dict['JJR'] = ['JJ','ER']
+        self.PTBCMP_dict['JJS'] = ['JJ', 'EST']
+        self.PTBCMP_dict['LS'] = ['CD']
+        self.PTBCMP_dict['MD'] = ['MD']
+        self.PTBCMP_dict['NN'] = ['NN']
+        self.PTBCMP_dict['NNP'] = ['NN','PRO']
+        self.PTBCMP_dict['NNPS'] = ['NN', 'PRO','SS']
+        self.PTBCMP_dict['NNS'] = ['NN', 'SS']
+        self.PTBCMP_dict['PDT'] = ['PDT']
+        self.PTBCMP_dict['POS'] = ['POS']
+        self.PTBCMP_dict['PRP'] = ['PRP']
+        self.PTBCMP_dict['PRP$'] = ['PRP','POS']
+        self.PTBCMP_dict['RB'] = ['RB']
+        self.PTBCMP_dict['RBR'] = ['RB','ER']
+        self.PTBCMP_dict['RBS'] = ['RB', 'EST']
+        self.PTBCMP_dict['RP'] = ['RP']
+        self.PTBCMP_dict['SYM'] = ['-NONE-']
+        self.PTBCMP_dict['TO'] = ['PRP']
+        self.PTBCMP_dict['UH'] = ['UH']
+        self.PTBCMP_dict['VB'] = ['VB']
+        self.PTBCMP_dict['VBD'] = ['VB','PST']
+        self.PTBCMP_dict['VBG'] = ['VB', 'PTP']
+        self.PTBCMP_dict['VBN'] = ['VB', 'PST','PTP']
+        self.PTBCMP_dict['VBP'] = ['VB', 'V12']
+        self.PTBCMP_dict['VBZ'] = ['VB', 'V3']
+        self.PTBCMP_dict['WDT'] = ['DT', 'WH']
+        self.PTBCMP_dict['WP'] = ['PRP', 'WH']
+        self.PTBCMP_dict['WP$'] = ['PRP', 'WH','POS']
+        self.PTBCMP_dict['WRB'] = ['RB', 'WH']
+        self.PTBCMP_dict['-NONE-'] = ['-NONE-']
 
 
 

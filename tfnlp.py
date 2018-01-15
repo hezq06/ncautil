@@ -260,6 +260,48 @@ class WindAppNet(object):
             plt.plot(loss_tab)
             plt.show()
 
+    def print_test(self,save_dir):
+        with tf.Graph().as_default(),tf.Session() as sess:
+            loss_tab = []
+            wrd_in = tf.placeholder(dtype=tf.float32, shape=(None, self.win_size * (self.emb_dim + self.feature_dim)))
+            labels = tf.placeholder(dtype=tf.int32, shape=(None))
+            nhu2 = self.inference(wrd_in)
+            loss = self.loss(nhu2, labels)
+            train_op = self.training(loss, self.lrate)
+            eval_correct = self.evaluation(nhu2, labels)
+            saver = tf.train.Saver()
+            saver.restore(sess=sess,save_path=tf.train.latest_checkpoint(save_dir))
+
+            Nsents = len(self.nlputil.tagged_sents)
+            trainNsents = int(self.training_set * Nsents)
+            validNsents = int(self.valid_set * Nsents)
+            testNsents = int(self.test_set * Nsents)
+            source_sents = self.nlputil.tagged_sents[trainNsents+validNsents:trainNsents+validNsents+testNsents]
+
+            ii_sents = int(np.random.rand() * testNsents)
+            wrds=[]
+            labs_right=[]
+            labs_inf=[]
+            unk_list=[]
+            for ii_wrd in range(len(source_sents[ii_sents])):
+                feed_dict = self.fill_feed_dict(wrd_in,
+                                                labels,
+                                                source_sents,
+                                                ii_sents=ii_sents, ii_wrd=ii_wrd)
+                nhu2_inf = sess.run(nhu2, feed_dict=feed_dict)
+                wrd=source_sents[int(ii_sents)][int(ii_wrd)][0]
+                wrds.append(wrd)
+                labs_right.append(source_sents[int(ii_sents)][int(ii_wrd)][1])
+                labs_inf.append(self.nlputil.labels[np.argmax(nhu2_inf)])
+                unk = "UNK"
+                if wrd.lower() in self.nlputil.w2v_dict.keys():
+                    unk = "IN"
+                unk_list.append(unk)
+
+        res=zip(wrds,labs_right,labs_inf,unk_list)
+        print("Result print from setence "+str(ii_sents)+" of test dataset: (word/label right/label inf/Known)/n")
+        print(list(res))
+
     def resume_training(self,save_dir):
         with tf.Graph().as_default(),tf.Session() as sess:
             loss_tab = []
