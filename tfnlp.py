@@ -29,28 +29,152 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
-class WindAppNet(object):
+class TFNet(object):
+    """
+    Parent class for all TF Net object for nlp tasks
+    """
+    def __init__(self,option=None):
+        self.lrate = option.get("lrate", 0.01)
+        self.log_dir = option.get("log_dir", "log")
+        self.max_steps = option.get("max_steps", 100000)
+        self.batch_size = option.get("batch_size", 10)
+        self.training_set = option.get("training_set", 0.6)
+        self.valid_set = option.get("valid_set", 0.2)
+        self.test_set = option.get("training_set", 0.2)
+        if tf.gfile.Exists(self.log_dir):
+            tf.gfile.DeleteRecursively(self.log_dir)
+        tf.gfile.MakeDirs(self.log_dir)
+
+    def inference(self,invec):
+        raise NotImplementedError
+
+    def loss(self,outinf,outvec):
+        raise NotImplementedError
+
+    def evaluation(self,outinf, outvec):
+        raise NotImplementedError
+
+    def do_eval(self,sess,eval_correct,outinf,outvec):
+        raise NotImplementedError
+
+    def fill_feed_dict(self,invec,outvec,dataset,**kwargs):
+        raise NotImplementedError
+
+    def get_trainingDataSet(self,**kwargs):
+        raise NotImplementedError
+
+    def training(self, loss, learning_rate):
+        # Add a scalar summary for the snapshot loss.
+        tf.summary.scalar('loss', loss)
+        # Create the gradient descent optimizer with the given learning rate.
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+        # Create a variable to track the global step.
+        global_step = tf.Variable(0, name='global_step', trainable=False)
+        # Use the optimizer to apply the gradients that minimize the loss
+        # (and also increment the global step counter) as a single training step.
+        train_op = optimizer.minimize(loss, global_step=global_step)
+        return train_op
+
+    def run_training(self,sess,invec,outvec):
+        loss_tab=[]
+        outinf=self.inference(invec)
+        loss=self.loss(outinf,outvec)
+        train_op = self.training(loss, self.lrate)
+        eval_correct = self.evaluation(outinf, outvec)
+        summary = tf.summary.merge_all()
+        init = tf.global_variables_initializer()
+        saver = tf.train.Saver()
+        summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
+        sess.run(init)
+
+        for ii in range(self.max_steps):
+            start_time = time.time()
+            dataset=self.get_trainingDataSet()
+            feed_dict = self.fill_feed_dict(invec,outvec,dataset)
+            _, loss_value = sess.run([train_op, loss],
+                                     feed_dict=feed_dict)
+
+            duration = time.time() - start_time
+
+            loss_tab.append(loss_value)
+
+            if ii % 1000 == 0:
+                # Print status to stdout.
+                print('Step %d: loss = %.2f (%.3f sec)' % (ii, loss_value, duration))
+                # Update the events file.
+                summary_str = sess.run(summary, feed_dict=feed_dict)
+                summary_writer.add_summary(summary_str, ii)
+                summary_writer.flush()
+
+            if ii % 5000 == 1:
+                checkpoint_file = os.path.join(self.log_dir, 'model.ckpt')
+                saver.save(sess, checkpoint_file, global_step=ii)
+                # Evaluate against the training set.
+                print('Training Data Eval:')
+                self.do_eval(sess,eval_correct,invec,outvec)
+
+        plt.plot(loss_tab)
+        plt.show()
+
+    def resume_training(self,sess,save_dir,invec,outvec):
+        loss_tab = []
+        outinf = self.inference(invec)
+        loss = self.loss(outinf, outvec)
+        train_op = self.training(loss, self.lrate)
+        eval_correct = self.evaluation(outinf, outvec)
+        summary = tf.summary.merge_all()
+        saver = tf.train.Saver()
+        summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
+        saver.restore(sess=sess,save_path=tf.train.latest_checkpoint(save_dir))
+
+        for ii in range(self.max_steps):
+            start_time = time.time()
+            dataset = self.get_trainingDataSet()
+            feed_dict = self.fill_feed_dict(invec, outvec,dataset)
+            _, loss_value = sess.run([train_op, loss],
+                                     feed_dict=feed_dict)
+
+            duration = time.time() - start_time
+
+            loss_tab.append(loss_value)
+
+            if ii % 1000 == 0:
+                # Print status to stdout.
+                print('Step %d: loss = %.2f (%.3f sec)' % (ii, loss_value, duration))
+                # Update the events file.
+                summary_str = sess.run(summary, feed_dict=feed_dict)
+                summary_writer.add_summary(summary_str, ii)
+                summary_writer.flush()
+
+            if ii % 5000 == 1:
+                checkpoint_file = os.path.join(self.log_dir, 'model.ckpt')
+                saver.save(sess, checkpoint_file, global_step=ii)
+                # Evaluate against the training set.
+                print('Training Data Eval:')
+                self.do_eval(sess,eval_correct,invec,outvec)
+
+        plt.plot(loss_tab)
+        plt.show()
+
+    def run(self):
+        raise NotImplementedError
+
+
+
+
+class WindAppNet(TFNet):
     """
     TF network based upon window approach
     Trying to reproduce result "Natural Language Processing (Almost) from Scratch", by Ronan Collobert
     """
-    def __init__(self,nlputil,opt=dict([])):
+    def __init__(self,nlputil,option=None):
+        super(WindAppNet, self).__init__(option=option)
         self.nlputil = nlputil
-        self.win_size = opt.get("win_size",5)
-        self.hu1_size = opt.get("hu1_size",100)
-        self.Ntags = opt.get("Ntags",46)
-        self.emb_dim = opt.get("emb_dim",200)
-        self.lrate=opt.get("lrate",0.01)
-        self.log_dir=opt.get("log_dir","log")
-        self.max_steps=opt.get("max_steps",100000)
-        self.batch_size = opt.get("batch_size", 10)
-        self.goal_precision=opt.get("goal_precision",0.9)
-        self.training_set=opt.get("training_set",0.6)
-        self.valid_set = opt.get("valid_set", 0.2)
-        self.test_set = opt.get("training_set", 0.2)
-        if tf.gfile.Exists(self.log_dir):
-            tf.gfile.DeleteRecursively(self.log_dir)
-        tf.gfile.MakeDirs(self.log_dir)
+        self.win_size = option.get("win_size",5)
+        self.hu1_size = option.get("hu1_size",100)
+        self.Ntags = option.get("Ntags",46)
+        self.emb_dim = option.get("emb_dim",200)
+        self.goal_precision=option.get("goal_precision",0.9)
 
         self.featurelist=[',','.','$','``',"''",':','#','^PADDING']
         self.feature_dim = len(self.featurelist)
@@ -72,18 +196,6 @@ class WindAppNet(object):
             labels=labels, logits=nhu2, name='xentropy')
         return tf.reduce_mean(cross_entropy, name='xentropy_mean')
 
-    def training(self, loss, learning_rate):
-        # Add a scalar summary for the snapshot loss.
-        tf.summary.scalar('loss', loss)
-        # Create the gradient descent optimizer with the given learning rate.
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate)
-        # Create a variable to track the global step.
-        global_step = tf.Variable(0, name='global_step', trainable=False)
-        # Use the optimizer to apply the gradients that minimize the loss
-        # (and also increment the global step counter) as a single training step.
-        train_op = optimizer.minimize(loss, global_step=global_step)
-        return train_op
-
     def evaluation(self,logits, labels):
         # For a classifier model, we can use the in_top_k Op.
         # It returns a bool tensor with shape [batch_size] that is true for
@@ -92,6 +204,12 @@ class WindAppNet(object):
         correct = tf.nn.in_top_k(logits, labels, 1)
         # Return the number of true entries.
         return tf.reduce_sum(tf.cast(correct, tf.int32))
+
+    def get_trainingDataSet(self):
+        Nsents = len(self.nlputil.tagged_sents)
+        trainNsents = int(self.training_set * Nsents)
+        source_sents = self.nlputil.tagged_sents[:trainNsents]
+        return source_sents
 
     def do_eval(self,
                 sess,
@@ -207,58 +325,6 @@ class WindAppNet(object):
         }
         return feed_dict
 
-    def run_training(self):
-        with tf.Graph().as_default():
-            loss_tab=[]
-            wrd_in = tf.placeholder(dtype=tf.float32, shape=(None,self.win_size * (self.emb_dim+self.feature_dim)))
-            labels = tf.placeholder(dtype=tf.int32, shape=(None))
-            nhu2=self.inference(wrd_in)
-            loss=self.loss(nhu2,labels)
-            train_op = self.training(loss, self.lrate)
-            eval_correct = self.evaluation(nhu2, labels)
-            summary = tf.summary.merge_all()
-            init = tf.global_variables_initializer()
-            saver = tf.train.Saver()
-            sess = tf.InteractiveSession()
-            summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
-            sess.run(init)
-
-            for ii in range(self.max_steps):
-                start_time = time.time()
-                Nsents = len(self.nlputil.tagged_sents)
-                trainNsents = int(self.training_set * Nsents)
-                source_sents = self.nlputil.tagged_sents[:trainNsents]
-                feed_dict = self.fill_feed_dict(wrd_in,labels,source_sents)
-                _, loss_value = sess.run([train_op, loss],
-                                         feed_dict=feed_dict)
-
-                duration = time.time() - start_time
-
-                loss_tab.append(loss_value)
-
-                if ii % 1000 == 0:
-                    # Print status to stdout.
-                    print('Step %d: loss = %.2f (%.3f sec)' % (ii, loss_value, duration))
-                    # Update the events file.
-                    summary_str = sess.run(summary, feed_dict=feed_dict)
-                    summary_writer.add_summary(summary_str, ii)
-                    summary_writer.flush()
-
-                if ii % 5000 == 1:
-                    checkpoint_file = os.path.join(self.log_dir, 'model.ckpt')
-                    saver.save(sess, checkpoint_file, global_step=ii)
-                    # Evaluate against the training set.
-                    print('Training Data Eval:')
-                    precision=self.do_eval(sess,
-                                eval_correct,
-                                wrd_in,
-                                labels)
-                    if precision>self.goal_precision:
-                        print("Goal precision achieved, training stopped")
-                        break
-
-            plt.plot(loss_tab)
-            plt.show()
 
     def print_test(self,save_dir):
         with tf.Graph().as_default(),tf.Session() as sess:
@@ -302,56 +368,14 @@ class WindAppNet(object):
         print("Result print from setence "+str(ii_sents)+" of test dataset: (word/label right/label inf/Known)/n")
         print(list(res))
 
-    def resume_training(self,save_dir):
-        with tf.Graph().as_default(),tf.Session() as sess:
-            loss_tab = []
+    def run(self,save_dir=None):
+        with tf.Graph().as_default(), tf.Session() as sess:
             wrd_in = tf.placeholder(dtype=tf.float32, shape=(None, self.win_size * (self.emb_dim + self.feature_dim)))
             labels = tf.placeholder(dtype=tf.int32, shape=(None))
-            nhu2 = self.inference(wrd_in)
-            loss = self.loss(nhu2, labels)
-            train_op = self.training(loss, self.lrate)
-            eval_correct = self.evaluation(nhu2, labels)
-            summary = tf.summary.merge_all()
-            saver = tf.train.Saver()
-            summary_writer = tf.summary.FileWriter(self.log_dir, sess.graph)
-            saver.restore(sess=sess,save_path=tf.train.latest_checkpoint(save_dir))
-
-            for ii in range(self.max_steps):
-                start_time = time.time()
-                Nsents = len(self.nlputil.tagged_sents)
-                trainNsents = int(self.training_set * Nsents)
-                source_sents = self.nlputil.tagged_sents[:trainNsents]
-                feed_dict = self.fill_feed_dict(wrd_in,labels,source_sents)
-                _, loss_value = sess.run([train_op, loss],
-                                         feed_dict=feed_dict)
-
-                duration = time.time() - start_time
-
-                loss_tab.append(loss_value)
-
-                if ii % 1000 == 0:
-                    # Print status to stdout.
-                    print('Step %d: loss = %.2f (%.3f sec)' % (ii, loss_value, duration))
-                    # Update the events file.
-                    summary_str = sess.run(summary, feed_dict=feed_dict)
-                    summary_writer.add_summary(summary_str, ii)
-                    summary_writer.flush()
-
-                if ii % 5000 == 1:
-                    checkpoint_file = os.path.join(self.log_dir, 'model.ckpt')
-                    saver.save(sess, checkpoint_file, global_step=ii)
-                    # Evaluate against the training set.
-                    print('Training Data Eval:')
-                    precision1, precision2, precision3=self.do_eval(sess,
-                                eval_correct,
-                                wrd_in,
-                                labels)
-                    if precision3>self.goal_precision:
-                        print("Goal precision achieved, training stopped")
-                        break
-
-            plt.plot(loss_tab)
-            plt.show()
+            if type(save_dir)!=type(None):
+                self.resume_training(sess,save_dir,wrd_in,labels)
+            else:
+                self.run_training(sess,wrd_in,labels)
 
 
 
