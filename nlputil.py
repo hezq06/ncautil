@@ -34,6 +34,7 @@ class NLPutil(object):
         self.w2v_dict=None
         self.test_text=None
         self.labels=None
+        self.synmat=SyntaxMat()
 
     def get_data(self,corpus,type=0):
         """
@@ -149,7 +150,7 @@ class NLPutil(object):
         self.plot_txtmat(txtmat)
         return txtmat
 
-    def plot_txtmat(self,data,start=0,length=1000,text=None):
+    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None):
         data=np.array(data)
         assert len(data.shape) == 2
         fig,ax=plt.subplots()
@@ -163,6 +164,17 @@ class NLPutil(object):
             for ii in range(len(labels)):
                 labels[ii]=str(text[ii+int(start)])
             ax.set_xticklabels(labels,rotation=70)
+        if texty!=None:
+            st, end = ax.get_ylim()
+            if st<end:
+                ax.yaxis.set_ticks(np.arange(st + 0.5, end + 0.5, 1))
+            else:
+                ax.yaxis.set_ticks(np.arange(end + 0.5, st + 0.5, 1))
+            ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+            labels = [item.get_text() for item in ax.get_yticklabels()]
+            for ii in range(len(labels)):
+                labels[ii] = str(texty[ii + int(start)])
+            ax.set_yticklabels(labels, rotation=0)
         plt.colorbar(fig)
         plt.show()
 
@@ -261,11 +273,29 @@ class SyntaxMat(object):
         self.PTBPOS=['CC','CD','DT','EX','FW','IN','JJ','JJR','JJS','LS','MD','NN','NNP','NNPS','NNS',
                      'PDT','POS','PRP','PRP$','RB','RBR','RBS','RP','SYM','TO','UH','VB','VBD','VBG',
                      'VBN','VBP','VBZ','WDT','WP','WP$','WRB','-NONE-']
-        self.CMPPOS_base=['NN','VB','MD','JJ','RB','PRP','IN','DT','PDT','CC','CD','UH','RP','-NONE-']
+        self.CMPPOS_base=['NN','VB','MD','JJ','RB','PRP','IN','DT','PDT','CC','CD','UH','RP','-NONE-']#14
         #'plural','proper','possessive','past','present','participle','non-3rd person singular present',
         # '3rd person singular present','comparative','superlative','wh'
-        self.CMPPOS_atri=['SS','PRO','POS','PST','PTP','V12','V3','ER','EST','WH']
+        self.CMPPOS_atri=['SS','PRO','POS','PST','PTP','V12','V3','ER','EST','WH']#10
         self.PTBCMP_dict=dict([])
+        self.initdic()
+
+    def get_labvec(self,label):
+        vecout=np.zeros(len(self.CMPPOS_base)+len(self.CMPPOS_atri))
+        atrlst=self.PTBCMP_dict.get(label,None)
+        if type(atrlst)==type(None):
+            Warning("Label not found, return '-NONE-' instead")
+            vecout[self.CMPPOS_base.index('-NONE-')]=1
+        else:
+            for item in atrlst:
+                try:
+                    nn=self.CMPPOS_base.index(item)
+                    vecout[nn]=1
+                except ValueError:
+                    nn = self.CMPPOS_atri.index(item)
+                    vecout[nn+len(self.CMPPOS_base)] = 1
+        return vecout
+
         
     def initdic(self):
         """

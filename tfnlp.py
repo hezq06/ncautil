@@ -25,6 +25,7 @@ from __future__ import print_function
 
 import time
 import os
+import math
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -63,22 +64,30 @@ class TFNet(object):
     def get_trainingDataSet(self,**kwargs):
         raise NotImplementedError
 
+    def run(self):
+        raise NotImplementedError
+
+    def debug(self,sess,lsdebug,feed_dict):
+        pass
+
     def training(self, loss, learning_rate):
         # Add a scalar summary for the snapshot loss.
         tf.summary.scalar('loss', loss)
         # Create the gradient descent optimizer with the given learning rate.
-        optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+        # optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+        optimizer = tf.train.AdamOptimizer(learning_rate)
         # Create a variable to track the global step.
         global_step = tf.Variable(0, name='global_step', trainable=False)
         # Use the optimizer to apply the gradients that minimize the loss
         # (and also increment the global step counter) as a single training step.
-        train_op = optimizer.minimize(loss, global_step=global_step)
+        # train_op = optimizer.minimize(loss, global_step=global_step)
+        train_op = optimizer.minimize(loss)
         return train_op
 
-    def run_training(self,sess,invec,outvec):
+    def run_training(self,sess,invec,outvec,mode=None):
         loss_tab=[]
-        outinf=self.inference(invec)
-        loss=self.loss(outinf,outvec)
+        outinf,debug_inf=self.inference(invec)
+        loss,debug_loss=self.loss(outinf,outvec)
         train_op = self.training(loss, self.lrate)
         eval_correct = self.evaluation(outinf, outvec)
         summary = tf.summary.merge_all()
@@ -98,6 +107,9 @@ class TFNet(object):
 
             loss_tab.append(loss_value)
 
+            if mode == "debug":
+                self.debug(sess, debug_inf+debug_loss,feed_dict)
+
             if ii % 1000 == 0:
                 # Print status to stdout.
                 print('Step %d: loss = %.2f (%.3f sec)' % (ii, loss_value, duration))
@@ -116,10 +128,12 @@ class TFNet(object):
         plt.plot(loss_tab)
         plt.show()
 
-    def resume_training(self,sess,save_dir,invec,outvec):
+        return True
+
+    def resume_training(self,sess,save_dir,invec,outvec,mode=None):
         loss_tab = []
-        outinf = self.inference(invec)
-        loss = self.loss(outinf, outvec)
+        outinf, debug_inf = self.inference(invec)
+        loss, debug_loss = self.loss(outinf, outvec)
         train_op = self.training(loss, self.lrate)
         eval_correct = self.evaluation(outinf, outvec)
         summary = tf.summary.merge_all()
@@ -131,6 +145,12 @@ class TFNet(object):
             start_time = time.time()
             dataset = self.get_trainingDataSet()
             feed_dict = self.fill_feed_dict(invec, outvec,dataset)
+
+            if mode == "get_value":
+                lsdebug = [debug_inf, debug_loss]
+                debugres = sess.run(lsdebug, feed_dict=feed_dict)
+                return debugres
+
             _, loss_value = sess.run([train_op, loss],
                                      feed_dict=feed_dict)
 
@@ -156,8 +176,7 @@ class TFNet(object):
         plt.plot(loss_tab)
         plt.show()
 
-    def run(self):
-        raise NotImplementedError
+        return True
 
 
 
@@ -368,18 +387,118 @@ class WindAppNet(TFNet):
         print("Result print from setence "+str(ii_sents)+" of test dataset: (word/label right/label inf/Known)/n")
         print(list(res))
 
-    def run(self,save_dir=None):
+    def run(self,save_dir=None,mode=None):
         with tf.Graph().as_default(), tf.Session() as sess:
             wrd_in = tf.placeholder(dtype=tf.float32, shape=(None, self.win_size * (self.emb_dim + self.feature_dim)))
             labels = tf.placeholder(dtype=tf.int32, shape=(None))
             if type(save_dir)!=type(None):
                 self.resume_training(sess,save_dir,wrd_in,labels)
             else:
-                self.run_training(sess,wrd_in,labels)
+                self.run_training(sess,wrd_in,labels,mode=None)
 
 
 
+class WorMat_Syn2Gram(TFNet):
+    """
+    Training wordmat to learn syntax 2 gram model
+    """
+    def __init__(self,nlputil,option=None):
+        super(WorMat_Syn2Gram, self).__init__(option=option)
+        self.nlputil = nlputil
+        self.in_size = option.get("in_size",48)
+        self.out_size = option.get("out_size", 24)
 
+    def inference(self,invec):
+        with tf.name_scope("mat"):
+            Mat = tf.Variable(tf.random_uniform([self.in_size,self.out_size],-1.0,1.0,name="Mat"))
+            # out=tf.nn.tanh(tf.matmul(invec,Mat)+1.0)/2.0\
+            # out=tf.matmul(invec,Mat)
+            # Mb = tf.Variable(tf.zeros([1, self.out_size], name="Mb"))
+            out = tf.nn.sigmoid(tf.matmul(invec,Mat))
+            debug_list = [Mat]
+        return out,debug_list
+
+    def loss(self,outinf,outvec):
+        EPS=1e-10
+        vecdot=tf.diag_part(tf.tensordot(outinf, outvec,[1,1]))
+        loutinf=tf.diag_part(tf.sqrt(tf.tensordot(outinf,outinf,[1,1])))
+        loutvec=tf.diag_part(tf.sqrt(tf.tensordot(outvec,outvec,[1,1])))
+        lprod=tf.multiply(loutinf,loutvec)
+        zeroadj=tf.cast(tf.equal(lprod,0),tf.float32)*EPS
+        loss=tf.div(vecdot,lprod+zeroadj)
+        debug_list=[-tf.reduce_mean(loss),outinf,lprod,zeroadj]
+        return -tf.reduce_mean(loss),[-tf.reduce_mean(loss)]
+
+    def evaluation(self,outinf, outvec):
+        return self.loss(outinf, outvec)
+
+    def do_eval(self,sess,eval_correct,outinf,outvec):
+        pass
+
+    def fill_feed_dict(self,invec,outvec,source_sents,ii_sents=None,ii_wrd=None):
+        vec_in = np.array([])
+        vec_out = np.array([])
+        if ii_sents!=None and ii_wrd!=None:
+            # Given word training
+            batch_size=1
+        else:
+            batch_size = self.batch_size
+        for ii_batch in range(batch_size):
+            Nsents=len(source_sents)
+            while True:
+                rndsent=int(np.random.rand()*Nsents)
+                if ii_sents != None:
+                    rndsent=ii_sents
+                Nwrds=len(source_sents[rndsent])-2
+                if Nwrds>0:
+                    break
+            rndwrd=np.floor(np.random.rand()*Nwrds)
+            if ii_wrd != None:
+                rndwrd=ii_wrd
+
+            label1=source_sents[int(rndsent)][int(rndwrd)][1]
+            label2 = source_sents[int(rndsent)][int(rndwrd)+1][1]
+            label_pre = source_sents[int(rndsent)][int(rndwrd) + 2][1]
+            vl1=self.nlputil.synmat.get_labvec(label1)
+            vl2 = self.nlputil.synmat.get_labvec(label2)
+            vlin=np.concatenate((vl1,vl2))
+            vec_in = np.concatenate((vec_in, vlin))
+
+            vl_pre = self.nlputil.synmat.get_labvec(label_pre)
+            vec_out= np.concatenate((vec_out, vl_pre))
+
+        feed_dict = {
+            invec: vec_in.reshape((batch_size,-1)),
+            outvec: vec_out.reshape((batch_size,-1))
+        }
+        return feed_dict
+
+    def get_trainingDataSet(self):
+        Nsents = len(self.nlputil.tagged_sents)
+        trainNsents = int(self.training_set * Nsents)
+        source_sents = self.nlputil.tagged_sents[:trainNsents]
+        return source_sents
+
+    def run(self,save_dir=None,mode=None):
+        with tf.Graph().as_default(), tf.Session() as sess:
+            invec = tf.placeholder(dtype=tf.float32, shape=(None, self.in_size))
+            outvec = tf.placeholder(dtype=tf.float32, shape=(None, self.out_size))
+            if type(save_dir)!=type(None):
+                res=self.resume_training(sess,save_dir,invec,outvec,mode=mode)
+            else:
+                res =self.run_training(sess,invec,outvec,mode=mode)
+        return res
+
+
+    def debug(self,sess,lsdebug,feed_dict):
+        debugres = sess.run(lsdebug, feed_dict=feed_dict)
+        print("\n\n One debug print. \n\n")
+        # print(debugres)
+        #debugres[debug_inf+debug_loss]
+        loss=debugres[-1]
+        if math.isnan(loss):
+            print(debugres)
+            input("Input anything to continue...")
 
 
 
