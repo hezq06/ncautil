@@ -8,10 +8,12 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import json
 import collections
 import numpy as np
 import matplotlib
 matplotlib.use('qt5agg')
+
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from collections import OrderedDict
@@ -339,6 +341,77 @@ class SyntaxMat(object):
         self.PTBCMP_dict['WP$'] = ['PRP', 'WH','POS']
         self.PTBCMP_dict['WRB'] = ['RB', 'WH']
         self.PTBCMP_dict['-NONE-'] = ['-NONE-']
+
+class SQuADutil(object):
+    """
+    A class assisting SQuAD task handling
+    Data structure
+    "version" 1.1
+    "data" [list]
+        "title" str
+        "paragraphs" [list]
+            "context" str
+            "qas"  [list]
+                'answers' [list]
+                    'answer_start' int
+                    'text' str
+                'id' str
+                'question' str
+    """
+    def __init__(self):
+        self.data_train=None
+        self.data_dev = None
+        self.get_data()
+
+    def get_data(self):
+        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.json')
+        json_data = open(file).read()
+        self.data_train = json.loads(json_data)
+        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.json.json')
+        json_data2 = open(file).read()
+        self.data_dev = json.loads(json_data2)
+        self.ndoc_t=len(self.data_train["data"])
+
+    def get_rnd(self,set="train"):
+        """
+        Get a random example
+        :return: dict["title":str,"context":str,'question':str,'answers':[str]]
+        """
+        res=dict([])
+
+        if set=="dev":
+            data=self.data_dev["data"]
+        else:
+            data=self.data_train["data"]
+
+        # Get random example from train
+        rd=np.random.random()
+        ndocs=len(data)
+        pdoc=int(np.floor(rd*ndocs))
+        doc=self.data_train["data"][pdoc]
+        res["title"]=doc["title"]
+
+        rd2 = np.random.random()
+        nparas=len(doc["paragraphs"])
+        ppara=int(np.floor(rd2*nparas))
+        para=doc["paragraphs"][ppara]
+        res["context"] = para["context"]
+
+        rd3 = np.random.random()
+        nqas=len(para["qas"])
+        pqas = int(np.floor(rd3 * nqas))
+        qas=para["qas"][pqas]
+        res["question"] = qas["question"]
+        anslist=[]
+        for item in qas['answers']:
+            anslist.append(item['text'])
+        res["answers"] = anslist
+
+
+
+
+
+
 
 
 
