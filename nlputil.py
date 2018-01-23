@@ -11,14 +11,13 @@ import os
 import json
 import collections
 import numpy as np
-import matplotlib
-matplotlib.use('qt5agg')
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from collections import OrderedDict
 from nltk.corpus import brown,treebank
 from nltk.tokenize import word_tokenize
+import gensim
 from ncautil.w2vutil import W2vUtil
 
 __author__ = "Harry He"
@@ -51,13 +50,13 @@ class NLPutil(object):
             self.corpus = []
             for item in tmpcorp:
                 self.corpus.append(item.lower())
-                self.sub_corpus = self.corpus[:self.sub_size]
+            self.sub_corpus = self.corpus[:self.sub_size]
         elif corpus=="ptb":
             tmpcorp=treebank.words()
             self.corpus = []
             for item in tmpcorp:
                 self.corpus.append(item.lower())
-                self.sub_corpus = self.corpus[:self.sub_size]
+            self.sub_corpus = self.corpus[:self.sub_size]
             _,lablist=zip(*treebank.tagged_words())
             self.labels = set(lablist)
             counter = collections.Counter(lablist)
@@ -106,7 +105,7 @@ class NLPutil(object):
         self.id_to_word = {v: k for k, v in self.word_to_id.items()}
         return self.word_to_id, self.id_to_word
 
-    def build_w2v(self,mode="pickle",switch=''):
+    def build_w2v(self,mode="gensim",Nvac=49800):
         """
         Build word to vector lookup table
         :param mode: "pickle"
@@ -114,14 +113,29 @@ class NLPutil(object):
         """
         print("Building word to vector lookup table...")
         if mode=="pickle":
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/w2vtab_opt_'+switch+'.pickle')
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/w2vtab_opt.pickle')
             w2vu = W2vUtil()
             w2vtemp = w2vu.flloadw2v(ofile=file)
             try:
                 self.w2v_dict = dict((key.decode("utf-8"), val.astype(float)) for (key, val) in w2vtemp.items())
             except AttributeError:
                 self.w2v_dict = dict((key, val.astype(float)) for (key, val) in w2vtemp.items())
-        return self.w2v_dict
+        elif mode=="gensim":
+            assert type(self.id_to_word)!=type(None)
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/GoogleNews-vectors-negative300.bin')
+            model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
+            self.w2v_dict = dict([])
+            skip=[]
+            for ii in range(Nvac):
+                try:
+                    word=self.id_to_word[ii]
+                    vec=model[word]
+                    self.w2v_dict[word]=vec
+                except:
+                    skip.append(word)
+            print("Except list: length "+str(len(skip)))
+            print(skip)
+            return self.w2v_dict
 
     def proj_w2v(self,w2v_dict,pM):
         """
@@ -180,7 +194,10 @@ class NLPutil(object):
         plt.colorbar(fig)
         plt.show()
 
-    def cal_v2w(self,vec,numW,dist="cos"):
+    def cal_cosdist(self,v1,v2):
+        return np.dot(v1,v2)/np.linalg.norm(v1)/np.linalg.norm(v2)
+
+    def cal_v2w(self,vec,numW=10,dist="cos"):
         """
         Calculate leading numW nearest using cosine distance definition
         :param vec: input vector
@@ -197,7 +214,8 @@ class NLPutil(object):
         for ii in range(numW):
             res.append(("NULL",-1e10))
         for (k,v) in self.w2v_dict.items():
-            dist=np.dot(v,vec)/np.linalg.norm(v)/np.linalg.norm(vec)
+            dist=self.cal_cosdist(v,vec)
+            # np.dot(v,vec)/np.linalg.norm(v)/np.linalg.norm(vec)
             #dist=-np.linalg.norm(v-vec)
             if dist>=res[numW-1][1]:
                 res[numW-1]=(k,dist)
@@ -210,6 +228,10 @@ class NLPutil(object):
             for item in self.corpus:
                 fp.write(str(item))
                 fp.write(" ")
+
+    def pltsne(self,numpt=500,start=0):
+        w2vu = W2vUtil()
+        w2vu.pltsne(self.w2v_dict,numpt=numpt,start=start)
 
 
 
@@ -367,7 +389,7 @@ class SQuADutil(object):
         file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.json')
         json_data = open(file).read()
         self.data_train = json.loads(json_data)
-        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.json.json')
+        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.json')
         json_data2 = open(file).read()
         self.data_dev = json.loads(json_data2)
         self.ndoc_t=len(self.data_train["data"])
@@ -406,6 +428,8 @@ class SQuADutil(object):
         for item in qas['answers']:
             anslist.append(item['text'])
         res["answers"] = anslist
+
+        return res
 
 
 

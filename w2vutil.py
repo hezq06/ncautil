@@ -10,8 +10,6 @@ from __future__ import print_function
 import os
 import pickle
 import numpy as np
-import matplotlib
-matplotlib.use('qt5agg')
 import matplotlib.pyplot as plt
 from collections import OrderedDict
 from sklearn.manifold import TSNE
@@ -56,7 +54,7 @@ class W2vUtil(object):
         :param numpt: number of points
         :return: null
         """
-        tsnetrainer = TSNE(perplexity=30, n_components=2, init='pca', n_iter=5000, method='exact')
+        tsnetrainer = TSNE(perplexity=20, n_components=2, init='pca', n_iter=5000, method='exact')
         ebmpick=np.array(list(w2vtab.values()))[start : start+numpt,:]
         print(ebmpick.shape)
         last_tsne = tsnetrainer.fit_transform(ebmpick)
@@ -71,6 +69,8 @@ class W2vUtil(object):
             plt.scatter(x, y)
             plt.annotate(label,xy=(x, y),xytext=(5, 2),textcoords='offset points',ha='right',va='bottom')
         plt.show()
+
+# class TFW2v
 
 
 
