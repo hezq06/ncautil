@@ -15,9 +15,223 @@ import matplotlib.pyplot as plt
 
 from nltk.corpus import wordnet as wn
 from nltk.parse import stanford
+import nltk
 from ncautil.nlputil import SQuADutil
+from nltk.tokenize import word_tokenize
 
 __author__ = "Harry He"
+
+class BaseBOCQA(object):
+    """
+    A baseline for bag of concept QA system
+    """
+    def __init__(self):
+        self.parser = stanford.StanfordParser()
+        self.qa=None
+        self.sep=["IN","TO",',']
+        self.NN = ["NN", "NNS", "NNP", "NNPS"]
+        self.V = ["VB", "VBD", "VBP", "VBZ"]
+        self.WH1=["who","when","why","where","how","how much","how many","how long"]
+        self.WH2=["what","which"]
+
+    def run(self,qa,wfdict):
+        """
+        Main entrance point for base BOC QA system.
+        :param qa: SquadQAutil
+        :return:
+        """
+        qcons=self.boc_seg(qa["question"])
+        cntxsents=self.sent_seg(qa["context"])
+        ccons=[]
+        for sent in cntxsents:
+            ccon=self.boc_seg(sent)
+            ccons.append(ccon)
+        nn=self.cal_sentatt(qcons,ccons,wfdict)
+        print("Answer sentence is:")
+        print(cntxsents[nn])
+        f1, p, r = self.cal_scaledf1(qa['answers'][0], cntxsents[nn], wfdict)
+        print(f1, p, r)
+
+    def cal_sentatt(self,qcons,ccons,wfdict):
+        """
+        Calculate the attention for each sentence and return the most relevant one
+        :param qcons:
+        :param ccons:
+        :param wfdict:
+        :return:
+        """
+        pts=np.zeros(len(ccons))
+        for qcon in qcons:
+            for ii in range(len(ccons)):
+                pt=0
+                for testcon in ccons[ii]:
+                    cpt,p,r=self.cal_scaledf1(qcon,testcon,wfdict)
+                    if cpt>pt:
+                        pt=cpt
+                pts[ii]=pts[ii]+pt
+        print(pts)
+        return np.argmax(pts)
+
+    def sent_seg(self,sent):
+        sents = nltk.sent_tokenize(sent)
+        return sents
+
+    def qwh_kw(self,sent):
+        """
+        WH key wording of question
+        :param sent:
+        :return:
+        """
+        res=None
+        type=None
+        print(sent)
+        sent = sent.lower()
+        pos=self.pos_tagger(sent)
+        for ii,item in enumerate(pos):
+            if item[0] in self.WH1:
+                res=item[0]
+                if ii+1<len(pos):
+                    test=pos[ii][0]+" "+pos[ii+1][0]
+                    if test in self.WH1:
+                        res=test
+                break
+            elif item[0] in self.WH2:
+                res = item[0]
+                while ii+1<len(pos):
+                    ii=ii+1
+                    if pos[ii][1] in self.NN:
+                        type=pos[ii][0]
+                        break
+                break
+        return res,type
+
+    def pos_tagger(self,sent):
+        """
+        Calculate the part of speech tag
+        :return: [(word,NN),...]
+        """
+
+        psents = self.parser.raw_parse_sents([sent])
+        a = []
+        # GUI
+        for line in psents:
+            for sentence in line:
+                a.append(sentence)
+
+        ptree = a[0]
+        pos = ptree.pos()
+        return pos
+
+    def boc_seg(self,sent):
+        """
+        Seperate bag of concepts
+        :return:
+        """
+        pos = self.pos_tagger(sent)
+        res=[]
+        bag=[]
+        for item in pos:
+            if item[1] in self.sep or item[1] in self.V:
+                if len(bag)>0:
+                    res.append(bag)
+                    bag = []
+                bag.append(item)
+            else:
+                bag.append(item)
+        if len(bag)>0:
+            res.append(bag)
+        return res
+
+    def cal_f1(self,base,comp):
+        """
+        Calculate the F1 score of two list of tokens
+        F1= 2 * (precision * recall) / (precision + recall)
+        :param base: ["base",...]
+        :param comp: ["comp",...]
+        :return: F1
+        """
+        if type(base)==type("string"):
+            base=word_tokenize(base)
+            base = [w.lower() for w in base]
+        if type(comp)==type("string"):
+            comp=word_tokenize(comp)
+            comp = [w.lower() for w in comp]
+        precision=0
+        for item in comp:
+            if item in base:
+                precision=precision+1
+        precision=precision/len(comp)
+
+        recall=0
+        for item in base:
+            if item in comp:
+                recall=recall+1
+        recall=recall/len(base)
+
+        F1=2 * (precision * recall) / (precision + recall)
+
+        return F1,precision,recall
+
+    def cal_scaledf1(self,base,comp,wfdict):
+        """
+        Calculate the word frequency scaled F1 score of two list of tokens
+        F1= 2 * (precision * recall) / (precision + recall)
+        :param base: ["base",...]
+        :param comp: ["comp",...]
+        :param wfdict: word frequency dictionary
+        :return: F1
+        """
+        def attscale(word,wfdict,cut=100):
+            """
+            Scale word attention
+            :param word: word
+            :param wfdict: dict
+            :param cut: threshold
+            :return: att
+            """
+            att=np.sqrt(wfdict.get(word,cut*cut))
+            return att
+
+        if type(base)==type("string"):
+            base=word_tokenize(base)
+            base = [w.lower() for w in base]
+        if type(comp)==type("string"):
+            comp=word_tokenize(comp)
+            comp = [w.lower() for w in comp]
+        precision=0
+        tot=0
+        for item in comp:
+            att=attscale(item,wfdict)
+            tot=tot+att
+            if item in base:
+                precision=precision+att
+        precision=precision/tot
+
+        recall=0
+        tot = 0
+        for item in base:
+            att = attscale(item, wfdict)
+            tot = tot + att
+            if item in comp:
+                recall=recall+att
+        recall=recall/tot
+
+        F1=2 * (precision * recall) / (precision + recall)
+
+        return F1,precision,recall
+
+    def train_whtypedoc_prepare(self,squad):
+        """
+        Prepare a database to to type matching
+        :param wqa: SQUAD qa utility
+        :return: dict["what NN"]: dict(word-frequency)
+        """
+
+
+
+
+
+
 
 class WnetQAutil(object):
     """

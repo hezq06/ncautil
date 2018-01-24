@@ -15,6 +15,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from collections import OrderedDict
+import nltk
 from nltk.corpus import brown,treebank
 from nltk.tokenize import word_tokenize
 import gensim
@@ -32,6 +33,7 @@ class NLPutil(object):
         self.sub_corpus = None
         self.word_to_id=None
         self.id_to_word=None
+        self.word_to_cnt=None
         self.w2v_dict=None
         self.test_text=None
         self.labels=None
@@ -100,8 +102,12 @@ class NLPutil(object):
         print("Building vocabulary...")
         counter = collections.Counter(self.corpus)
         count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
-        words, _ = list(zip(*count_pairs))
+        words, counts = list(zip(*count_pairs))
         self.word_to_id = dict(zip(words, range(len(words))))
+        self.word_to_cnt = dict(zip(words, counts))
+        bv=self.word_to_cnt[words[0]]
+        for k,v in self.word_to_cnt.items():
+            self.word_to_cnt[k]=1/(self.word_to_cnt[k]/bv)
         self.id_to_word = {v: k for k, v in self.word_to_id.items()}
         return self.word_to_id, self.id_to_word
 
@@ -430,6 +436,8 @@ class SQuADutil(object):
         res["answers"] = anslist
 
         return res
+
+
 
 
 
