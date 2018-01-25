@@ -16,12 +16,15 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from collections import OrderedDict
 import nltk
+nltk.internals.config_java(options='-Xmx2048m')
 import pickle
 from nltk.corpus import brown,treebank
 from nltk.tokenize import word_tokenize
 from nltk.parse import stanford
 import gensim
 from ncautil.w2vutil import W2vUtil
+from nltk.tag import StanfordPOSTagger
+from nltk.tokenize import word_tokenize
 
 __author__ = "Harry He"
 
@@ -393,6 +396,10 @@ class SQuADutil(object):
         self.data_dev = None
         # self.get_data()
         self.parser = stanford.StanfordParser()
+        path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
+        os.environ['STANFORD_MODELS'] = path
+        self.pos = StanfordPOSTagger('english-caseless-left3words-distsim.tagger',
+                                path_to_jar=path + '/../stanford-postagger.jar')
 
     def get_data(self,mode="pickle"):
         if mode=="json":
@@ -404,9 +411,9 @@ class SQuADutil(object):
             self.data_dev = json.loads(json_data2)
         elif mode=="pickle":
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.pickle')
-            self.data_train = pickle.load(file, "rb")
+            self.data_train = pickle.load(open(file, "rb"))
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.pickle')
-            self.data_dev = pickle.load(file, "rb")
+            self.data_dev = pickle.load(open(file, "rb"))
 
     def save_data(self):
         file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.pickle')
@@ -498,19 +505,19 @@ class SQuADutil(object):
         ndocs = len(data)
         print("Pre POSing training data.")
         for ii_docs in range(ndocs):
-            print("Posing doc#"+str(ii_docs)+" in total "+str(ndocs))
+            print("Posing doc#" + str(ii_docs) + " in total " + str(ndocs))
             doc = self.data_train["data"][ii_docs]
             nparas = len(doc["paragraphs"])
             for ii_para in range(nparas):
-                print("    For doc#" + str(ii_docs) + " POSing para#" + str(ii_para) + " in total "+str(nparas))
+                print("    For doc#" + str(ii_docs) + " POSing para#" + str(ii_para) + " in total " + str(nparas))
                 para = doc["paragraphs"][ii_para]
-                context=para["context"]
-                sents=self.sent_seg(context)
-                context_pos=[]
+                context = para["context"]
+                sents = self.sent_seg(context)
+                context_pos = []
                 for sent in sents:
-                    pos=self.pos_tagger(sent)
+                    pos = self.pos_tagger(sent)
                     context_pos.append(pos)
-                self.data_train["data"][ii_docs]["paragraphs"][ii_para]["context_pos"]=context_pos
+                self.data_train["data"][ii_docs]["paragraphs"][ii_para]["context_pos"] = context_pos
                 nqas = len(para["qas"])
                 for ii_qas in range(nqas):
                     qas = para["qas"][ii_qas]
@@ -519,7 +526,8 @@ class SQuADutil(object):
                     self.data_train["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"] = []
                     for item in qas['answers']:
                         pos = self.pos_tagger(item['text'])
-                        self.data_train["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(pos)
+                        self.data_train["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(
+                            pos)
 
         data = self.data_dev["data"]
         ndocs = len(data)
@@ -548,6 +556,147 @@ class SQuADutil(object):
                         pos = self.pos_tagger(item['text'])
                         self.data_dev["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(pos)
 
+
+    def preprocess_pos_fast(self,chunck_size=5000,doc_start=None,doc_end=None,switch="train"):
+        """
+        Doing pos preprocessiong
+        :return:
+        """
+        ########### Training set
+
+        def chunks(l, n):
+            """Yield successive n-sized chunks from l."""
+            for i in range(0, len(l), n):
+                yield l[i:i + n]
+
+        mismatch=[]
+        print("Start collecting data in "+switch+" set! " )
+        data = self.data_train
+        if switch=="development":
+            data = self.data_dev
+        ndocs = len(data["data"])
+        if doc_start==None:
+            doc_start=0
+        if doc_end==None:
+            doc_end=ndocs
+        if doc_start>ndocs:
+            doc_start=ndocs
+        if doc_end>ndocs:
+            doc_end=ndocs
+        for ii_docs in range(doc_start,doc_end):
+            print("Working doc#" + str(ii_docs) + " in total " + str(doc_start)+"~"+str(doc_end))
+
+            wlall = []
+            doc = data["data"][ii_docs]
+            nparas = len(doc["paragraphs"])
+            for ii_para in range(nparas):
+                para = doc["paragraphs"][ii_para]
+                context=para["context"]
+                sents=self.sent_seg(context)
+                context_pos=[]
+                for sent in sents:
+                    pos=word_tokenize(sent)
+                    context_pos.append(pos)
+                    wlall=wlall+pos
+                data["data"][ii_docs]["paragraphs"][ii_para]["context_pos"]=context_pos
+                nqas = len(para["qas"])
+                for ii_qas in range(nqas):
+                    qas = para["qas"][ii_qas]
+                    pos = word_tokenize(qas["question"])
+                    wlall = wlall + pos
+                    data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["question_pos"] = pos
+                    data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"] = []
+                    for item in qas['answers']:
+                        pos = word_tokenize(item['text'])
+                        wlall = wlall + pos
+                        data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(pos)
+
+            print("Total words to parse in training set: " + str(len(wlall)))
+            print("Parsing......")
+            if len(wlall)>chunck_size:
+                wlall_chuncks=chunks(wlall,chunck_size)
+                posall=[]
+                for wlall_chunck in wlall_chuncks:
+                    posall_chunck = self.pos_tagger_fast(wlall_chunck)
+                    posall=posall+posall_chunck
+            else:
+                posall=self.pos_tagger_fast(wlall)
+            print("Answer writing.")
+
+            ptall=0
+
+            print("Answering doc#" + str(ii_docs) + " in total " + str(doc_start)+"~"+str(doc_end))
+            doc = data["data"][ii_docs]
+            nparas = len(doc["paragraphs"])
+            for ii_para in range(nparas):
+                para = doc["paragraphs"][ii_para]
+                context=para["context"]
+                sents=self.sent_seg(context)
+                context_pos=[]
+                for sent in sents:
+                    pos=word_tokenize(sent)
+                    sent_pos=[]
+                    for ii_w,wrd in enumerate(pos):
+                        sent_pos.append(posall[ptall])
+                        if posall[ptall][0] != wrd:
+                            print("Mismatch: "+str(posall[ptall][0])+", "+str(wrd))
+                            mismatch.append((posall[ptall][0],wrd))
+                            if ii_w + 1 < len(pos):
+                                if posall[ptall+1][0] == pos[ii_w+1]:
+                                    pass
+                                elif posall[ptall][0] == pos[ii_w+1]:
+                                    ptall = ptall - 1
+                                elif posall[ptall+2][0] == pos[ii_w+1]:
+                                    ptall = ptall + 1
+                                else:
+                                    raise Exception("Adjustment failed")
+                        ptall = ptall + 1
+                    context_pos.append(sent_pos)
+                    data["data"][ii_docs]["paragraphs"][ii_para]["context_pos"]=context_pos
+                nqas = len(para["qas"])
+                for ii_qas in range(nqas):
+                    qas = para["qas"][ii_qas]
+                    pos = word_tokenize(qas["question"])
+                    sent_pos = []
+                    for ii_w, wrd in enumerate(pos):
+                        sent_pos.append(posall[ptall])
+                        if posall[ptall][0] != wrd:
+                            print("Mismatch: " + str(posall[ptall][0]) + ", " + str(wrd))
+                            mismatch.append((posall[ptall][0], wrd))
+                            if ii_w + 1 < len(pos):
+                                if posall[ptall+1][0] == pos[ii_w+1]:
+                                    pass
+                                elif posall[ptall][0] == pos[ii_w+1]:
+                                    ptall = ptall - 1
+                                elif posall[ptall+2][0] == pos[ii_w+1]:
+                                    ptall = ptall + 1
+                                else:
+                                    raise Exception("Adjustment failed")
+                        ptall = ptall + 1
+                    data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["question_pos"] = sent_pos
+                    data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"] = []
+                    for item in qas['answers']:
+                        pos = word_tokenize(item['text'])
+                        for ii_w, wrd in enumerate(pos):
+                            sent_pos.append(posall[ptall])
+                            if posall[ptall][0] != wrd:
+                                print("Mismatch: " + str(posall[ptall][0]) + ", " + str(wrd))
+                                mismatch.append((posall[ptall][0], wrd))
+                                if ii_w + 1<len(pos):
+                                    if posall[ptall + 1][0] == pos[ii_w + 1]:
+                                        pass
+                                    elif posall[ptall][0] == pos[ii_w + 1]:
+                                        ptall = ptall - 1
+                                    elif posall[ptall + 2][0] == pos[ii_w + 1]:
+                                        ptall = ptall + 1
+                                    else:
+                                        raise Exception("Adjustment failed")
+                            ptall = ptall + 1
+                        data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(pos)
+
+        print("Mismatch summary:" +str(len(mismatch)))
+        print(mismatch)
+
     def sent_seg(self,sent):
         sents = nltk.sent_tokenize(sent)
         return sents
@@ -557,7 +706,10 @@ class SQuADutil(object):
         Calculate the part of speech tag
         :return: [(word,NN),...]
         """
-
+        if type(sent)==list:
+            sent=""
+            for w in sent:
+                sent=sent+" "+w
         psents = self.parser.raw_parse_sents([sent])
         a = []
         # GUI
@@ -568,6 +720,20 @@ class SQuADutil(object):
         ptree = a[0]
         pos = ptree.pos()
         return pos
+
+    def pos_tagger_fast(self,sent):
+        if type(sent)==type("string"):
+            sent=word_tokenize(sent)
+            sent = [w.lower() for w in sent]
+        def ini_pos():
+            path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
+            os.environ['STANFORD_MODELS'] = path
+            pos = StanfordPOSTagger('english-bidirectional-distsim.tagger',
+                                         path_to_jar=path + '/../stanford-postagger.jar')
+            return pos
+        # pos=ini_pos()
+        res=self.pos.tag(sent)
+        return res
 
 
 
