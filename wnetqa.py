@@ -226,11 +226,25 @@ class BaseBOCQA(object):
         :param wqa: SQUAD qa utility
         :return: dict["what NN"]: dict(word-frequency)
         """
+        allqa=squad.get_all()
+        # for exmp in allqa:
 
 
-
-
-
+    def train_contagger(self,boc_context,ans,threshold=0.95):
+        """
+        Tag a bag of concept to be answer or not
+        :param boc_context: list of context sentense boc
+        :param ans: answer str
+        :return: [0 0 1 1 0 0 ...]
+        """
+        res = np.zeros(len(boc_context))
+        for ii in range(len(res)):
+            F1, precision, recall=self.cal_f1(ans,boc_context)
+            if max(precision,recall)>threshold:
+                res[ii]=1
+        if max(res)==0:
+            print("Tag not found")
+        return res
 
 
 class WnetQAutil(object):

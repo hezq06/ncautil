@@ -16,8 +16,10 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from collections import OrderedDict
 import nltk
+import pickle
 from nltk.corpus import brown,treebank
 from nltk.tokenize import word_tokenize
+from nltk.parse import stanford
 import gensim
 from ncautil.w2vutil import W2vUtil
 
@@ -389,20 +391,33 @@ class SQuADutil(object):
     def __init__(self):
         self.data_train=None
         self.data_dev = None
-        self.get_data()
+        # self.get_data()
+        self.parser = stanford.StanfordParser()
 
-    def get_data(self):
-        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.json')
-        json_data = open(file).read()
-        self.data_train = json.loads(json_data)
-        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.json')
-        json_data2 = open(file).read()
-        self.data_dev = json.loads(json_data2)
-        self.ndoc_t=len(self.data_train["data"])
+    def get_data(self,mode="pickle"):
+        if mode=="json":
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.json')
+            json_data = open(file).read()
+            self.data_train = json.loads(json_data)
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.json')
+            json_data2 = open(file).read()
+            self.data_dev = json.loads(json_data2)
+        elif mode=="pickle":
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.pickle')
+            self.data_train = pickle.load(file, "rb")
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.pickle')
+            self.data_dev = pickle.load(file, "rb")
+
+    def save_data(self):
+        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_train-v1.1.pickle')
+        pickle.dump(self.data_train, open(file, "wb"))
+        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/SQuAD_dev-v1.1.pickle')
+        pickle.dump(self.data_dev, open(file, "wb"))
 
     def get_rnd(self,set="train"):
         """
         Get a random example
+        :param set: "train","dev"
         :return: dict["title":str,"context":str,'question':str,'answers':[str]]
         """
         res=dict([])
@@ -437,7 +452,122 @@ class SQuADutil(object):
 
         return res
 
+    def get_all(self,set="train"):
+        """
+        Get out all qa examples into a list
+        :param set: "train","dev"
+        :return:list
+        """
+        resall = []
 
+        if set == "dev":
+            data = self.data_dev["data"]
+        else:
+            data = self.data_train["data"]
+
+        ndocs = len(data)
+
+        for ii_docs in range(ndocs):
+            # print("Docs "+str(ii_docs)+" in total "+str(ndocs)+".")
+            doc = self.data_train["data"][ii_docs]
+            title = doc["title"]
+            nparas = len(doc["paragraphs"])
+            for ii_para in range(nparas):
+                para = doc["paragraphs"][ii_para]
+                context=para["context"]
+                nqas = len(para["qas"])
+                for ii_qas in range(nqas):
+                    qas = para["qas"][ii_qas]
+                    res=dict([])
+                    res["title"]=title
+                    res["context"] = context
+                    res["question"] = qas["question"]
+                    anslist = []
+                    for item in qas['answers']:
+                        anslist.append(item['text'])
+                    res["answers"] = anslist
+                    resall.append(res)
+        return resall
+
+    def preprocess_pos(self):
+        """
+        Doing pos preprocessiong
+        :return:
+        """
+        data = self.data_train["data"]
+        ndocs = len(data)
+        print("Pre POSing training data.")
+        for ii_docs in range(ndocs):
+            print("Posing doc#"+str(ii_docs)+" in total "+str(ndocs))
+            doc = self.data_train["data"][ii_docs]
+            nparas = len(doc["paragraphs"])
+            for ii_para in range(nparas):
+                print("    For doc#" + str(ii_docs) + " POSing para#" + str(ii_para) + " in total "+str(nparas))
+                para = doc["paragraphs"][ii_para]
+                context=para["context"]
+                sents=self.sent_seg(context)
+                context_pos=[]
+                for sent in sents:
+                    pos=self.pos_tagger(sent)
+                    context_pos.append(pos)
+                self.data_train["data"][ii_docs]["paragraphs"][ii_para]["context_pos"]=context_pos
+                nqas = len(para["qas"])
+                for ii_qas in range(nqas):
+                    qas = para["qas"][ii_qas]
+                    pos = self.pos_tagger(qas["question"])
+                    self.data_train["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["question_pos"] = pos
+                    self.data_train["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"] = []
+                    for item in qas['answers']:
+                        pos = self.pos_tagger(item['text'])
+                        self.data_train["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(pos)
+
+        data = self.data_dev["data"]
+        ndocs = len(data)
+        print("Pre POSing developmet data.")
+        for ii_docs in range(ndocs):
+            print("Posing doc#" + str(ii_docs) + " in total " + str(ndocs))
+            doc = self.data_dev["data"][ii_docs]
+            nparas = len(doc["paragraphs"])
+            for ii_para in range(nparas):
+                print("    For doc#" + str(ii_docs) + " POSing para#" + str(ii_para) + " in total " + str(nparas))
+                para = doc["paragraphs"][ii_para]
+                context = para["context"]
+                sents = self.sent_seg(context)
+                context_pos = []
+                for sent in sents:
+                    pos = self.pos_tagger(sent)
+                    context_pos.append(pos)
+                self.data_dev["data"][ii_docs]["paragraphs"][ii_para]["context_pos"] = context_pos
+                nqas = len(para["qas"])
+                for ii_qas in range(nqas):
+                    qas = para["qas"][ii_qas]
+                    pos = self.pos_tagger(qas["question"])
+                    self.data_dev["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["question_pos"] = pos
+                    self.data_dev["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"] = []
+                    for item in qas['answers']:
+                        pos = self.pos_tagger(item['text'])
+                        self.data_dev["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(pos)
+
+    def sent_seg(self,sent):
+        sents = nltk.sent_tokenize(sent)
+        return sents
+
+    def pos_tagger(self,sent):
+        """
+        Calculate the part of speech tag
+        :return: [(word,NN),...]
+        """
+
+        psents = self.parser.raw_parse_sents([sent])
+        a = []
+        # GUI
+        for line in psents:
+            for sentence in line:
+                a.append(sentence)
+
+        ptree = a[0]
+        pos = ptree.pos()
+        return pos
 
 
 
