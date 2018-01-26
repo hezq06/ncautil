@@ -395,7 +395,10 @@ class SQuADutil(object):
         self.data_train=None
         self.data_dev = None
         # self.get_data()
-        self.parser = stanford.StanfordParser()
+        try:
+            self.parser = stanford.StanfordParser()
+        except:
+            print("Stanford parser not working!!!")
         path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
         os.environ['STANFORD_MODELS'] = path
         self.pos = StanfordPOSTagger('english-caseless-left3words-distsim.tagger',
@@ -446,16 +449,28 @@ class SQuADutil(object):
         ppara=int(np.floor(rd2*nparas))
         para=doc["paragraphs"][ppara]
         res["context"] = para["context"]
+        try:
+            res["context_pos"] = para["context_pos"]
+        except:
+            print("No context_pos found")
 
         rd3 = np.random.random()
         nqas=len(para["qas"])
         pqas = int(np.floor(rd3 * nqas))
         qas=para["qas"][pqas]
         res["question"] = qas["question"]
+        try:
+            res["question_pos"] = qas["question_pos"]
+        except:
+            print("No question_pos found")
         anslist=[]
         for item in qas['answers']:
             anslist.append(item['text'])
         res["answers"] = anslist
+        try:
+            res["answers_pos"] = qas["answers_pos"]
+        except:
+            print("No answers_pos found")
 
         return res
 
@@ -463,7 +478,7 @@ class SQuADutil(object):
         """
         Get out all qa examples into a list
         :param set: "train","dev"
-        :return:list
+        :return:[res]
         """
         resall = []
 
@@ -481,20 +496,39 @@ class SQuADutil(object):
             nparas = len(doc["paragraphs"])
             for ii_para in range(nparas):
                 para = doc["paragraphs"][ii_para]
-                context=para["context"]
+                try:
+                    context=para["context_pos"]
+                except:
+                    context=para["context"]
+                    print(ii_docs)
+                    raise Exception("Uncomplete doc #"+str(ii_docs))
                 nqas = len(para["qas"])
                 for ii_qas in range(nqas):
-                    qas = para["qas"][ii_qas]
+                    qa = para["qas"][ii_qas]
                     res=dict([])
                     res["title"]=title
-                    res["context"] = context
-                    res["question"] = qas["question"]
+                    res["context_pos"] = context
+                    try:
+                        res["question_pos"] = qa["question_pos"]
+                    except:
+                        res["question_pos"] = qa["question"]
+                    try:
+                        res["answers_pos"] = qa['answers_pos']
+                    except:
+                        res["answers_pos"] = qa['answers']
                     anslist = []
-                    for item in qas['answers']:
+                    for item in qa['answers']:
                         anslist.append(item['text'])
                     res["answers"] = anslist
                     resall.append(res)
         return resall
+
+    def preprocess_format(self):
+        """
+        Adjusting
+        :return:
+        """
+        pass
 
     def preprocess_pos(self):
         """
@@ -578,12 +612,12 @@ class SQuADutil(object):
         if doc_start==None:
             doc_start=0
         if doc_end==None:
-            doc_end=ndocs
+            doc_end=ndocs-1
         if doc_start>ndocs:
             doc_start=ndocs
         if doc_end>ndocs:
-            doc_end=ndocs
-        for ii_docs in range(doc_start,doc_end):
+            doc_end=ndocs-1
+        for ii_docs in range(doc_start,doc_end+1):
             print("Working doc#" + str(ii_docs) + " in total " + str(doc_start)+"~"+str(doc_end))
 
             wlall = []
@@ -677,6 +711,7 @@ class SQuADutil(object):
                     data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"] = []
                     for item in qas['answers']:
                         pos = word_tokenize(item['text'])
+                        sent_pos = []
                         for ii_w, wrd in enumerate(pos):
                             sent_pos.append(posall[ptall])
                             if posall[ptall][0] != wrd:
@@ -692,7 +727,7 @@ class SQuADutil(object):
                                     else:
                                         raise Exception("Adjustment failed")
                             ptall = ptall + 1
-                        data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(pos)
+                        data["data"][ii_docs]["paragraphs"][ii_para]["qas"][ii_qas]["answers_pos"].append(sent_pos)
 
         print("Mismatch summary:" +str(len(mismatch)))
         print(mismatch)

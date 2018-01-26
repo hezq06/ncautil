@@ -10,6 +10,7 @@ from __future__ import print_function
 
 import os
 import collections
+import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -28,10 +29,11 @@ class BaseBOCQA(object):
     def __init__(self):
         self.parser = stanford.StanfordParser()
         self.qa=None
+        self.wfdict=None
         self.sep=["IN","TO",',']
         self.NN = ["NN", "NNS", "NNP", "NNPS"]
         self.V = ["VB", "VBD", "VBP", "VBZ"]
-        self.WH1=["who","when","why","where","how","how much","how many","how long"]
+        self.WH1=["who","whom","whose","when","why","where","how","how much","how many","how long"]
         self.WH2=["what","which"]
 
     def run(self,qa,wfdict):
@@ -52,7 +54,7 @@ class BaseBOCQA(object):
         f1, p, r = self.cal_scaledf1(qa['answers'][0], cntxsents[nn], wfdict)
         print(f1, p, r)
 
-    def cal_sentatt(self,qcons,ccons,wfdict):
+    def cal_sentatt(self,qcons,ccons):
         """
         Calculate the attention for each sentence and return the most relevant one
         :param qcons:
@@ -65,11 +67,11 @@ class BaseBOCQA(object):
             for ii in range(len(ccons)):
                 pt=0
                 for testcon in ccons[ii]:
-                    cpt,p,r=self.cal_scaledf1(qcon,testcon,wfdict)
+                    cpt,p,r=self.cal_scaledf1(qcon,testcon,self.wfdict)
                     if cpt>pt:
                         pt=cpt
                 pts[ii]=pts[ii]+pt
-        print(pts)
+        # print(pts)
         return np.argmax(pts)
 
     def sent_seg(self,sent):
@@ -83,10 +85,15 @@ class BaseBOCQA(object):
         :return:
         """
         res=None
-        type=None
-        print(sent)
-        sent = sent.lower()
-        pos=self.pos_tagger(sent)
+        typ=None
+        if type(sent)==type("string"):
+            sent = sent.lower()
+            pos=self.pos_tagger(sent)
+        elif type(sent)==list:
+            pos=[(w[0].lower(),w[1]) for w in sent]
+        else:
+            raise Exception("Type(sent) not supported")
+
         for ii,item in enumerate(pos):
             if item[0] in self.WH1:
                 res=item[0]
@@ -100,10 +107,13 @@ class BaseBOCQA(object):
                 while ii+1<len(pos):
                     ii=ii+1
                     if pos[ii][1] in self.NN:
-                        type=pos[ii][0]
+                        typ=pos[ii][0]
                         break
                 break
-        return res,type
+        # if res==None:
+            # print("WH not found!!!")
+            # print(sent)
+        return res,typ
 
     def pos_tagger(self,sent):
         """
@@ -127,7 +137,14 @@ class BaseBOCQA(object):
         Seperate bag of concepts
         :return:
         """
-        pos = self.pos_tagger(sent)
+        if type(sent) == type("string"):
+            sent = sent.lower()
+            pos = self.pos_tagger(sent)
+        elif type(sent) == list:
+            pos = [(w[0].lower(),w[1]) for w in sent]
+        else:
+            raise Exception("Type(sent) not supported")
+
         res=[]
         bag=[]
         for item in pos:
@@ -150,11 +167,16 @@ class BaseBOCQA(object):
         :param comp: ["comp",...]
         :return: F1
         """
+
         if type(base)==type("string"):
             base=word_tokenize(base)
             base = [w.lower() for w in base]
+        else:
+            base = [w.lower() for w in base]
         if type(comp)==type("string"):
             comp=word_tokenize(comp)
+            comp = [w.lower() for w in comp]
+        else:
             comp = [w.lower() for w in comp]
         precision=0
         for item in comp:
@@ -168,11 +190,15 @@ class BaseBOCQA(object):
                 recall=recall+1
         recall=recall/len(base)
 
-        F1=2 * (precision * recall) / (precision + recall)
+        try:
+            F1=2 * (precision * recall) / (precision + recall)
+        except ZeroDivisionError:
+            F1=0
 
         return F1,precision,recall
 
-    def cal_scaledf1(self,base,comp,wfdict):
+
+    def cal_scaledf1(self,base,comp):
         """
         Calculate the word frequency scaled F1 score of two list of tokens
         F1= 2 * (precision * recall) / (precision + recall)
@@ -201,7 +227,7 @@ class BaseBOCQA(object):
         precision=0
         tot=0
         for item in comp:
-            att=attscale(item,wfdict)
+            att=attscale(item,self.wfdict)
             tot=tot+att
             if item in base:
                 precision=precision+att
@@ -210,7 +236,7 @@ class BaseBOCQA(object):
         recall=0
         tot = 0
         for item in base:
-            att = attscale(item, wfdict)
+            att = attscale(item, self.wfdict)
             tot = tot + att
             if item in comp:
                 recall=recall+att
@@ -220,15 +246,90 @@ class BaseBOCQA(object):
 
         return F1,precision,recall
 
+    def pos_remove(self,input):
+        res=[]
+        if type(input[0])==tuple:
+            for item in input:
+                res.append(item[0])
+        elif type(input[0][0])==tuple:
+            for litem in input:
+                lres = []
+                for item in litem:
+                    lres.append(item[0])
+                res.append(lres)
+        else:
+            print(input)
+            raise Exception("Input format not recognized")
+        return res
+
     def train_whtypedoc_prepare(self,squad):
         """
         Prepare a database to to type matching
         :param wqa: SQUAD qa utility
         :return: dict["what NN"]: dict(word-frequency)
         """
-        allqa=squad.get_all()
-        # for exmp in allqa:
+        def strprint(tlist):
+            strg=""
+            try:
+                print(strg+tlist)
+            except:
+                for item in tlist:
+                    try:
+                        strg=strg+" "+item[0]
+                    except:
+                        for subitem in item:
+                            strg = strg + " " + subitem[0]
+                print(strg)
 
+        res=dict([])
+        typeflag=self.WH1+self.WH2+["UNK"]
+        for entry in typeflag:
+            res[entry]=[] # list at beginning
+        allqa=squad.get_all()
+        for ii_doc in range(len(allqa)):
+            if ii_doc%1000==1:
+                print("Working doc#" + str(ii_doc) + " in total " + str(len(allqa)))
+        # for ii_doc in range(27,28): # for text purpose
+        #     strprint(allqa[ii_doc]["context_pos"])
+        #     strprint(allqa[ii_doc]["question_pos"])
+        #     strprint(allqa[ii_doc]["answers"][0])
+            qu=allqa[ii_doc]["question_pos"]
+            wh,ty=self.qwh_kw(qu)
+
+            # Pick up sentence if interest
+            qcons = self.boc_seg(qu)
+            cntxsents = allqa[ii_doc]["context_pos"]
+            ccons = []
+            for sent in cntxsents:
+                ccon = self.boc_seg(sent)
+                ccons.append(ccon)
+            nn = self.cal_sentatt(qcons, ccons, self.wfdict)
+            sent=cntxsents[nn]
+            bocseg_sent=self.boc_seg(sent)
+            bocseg_sent=self.pos_remove(bocseg_sent)
+            bocseg_ans=self.boc_seg(allqa[ii_doc]["answers_pos"][0])
+            # print(allqa[ii_doc]["answers_pos"][0])
+            bocseg_ans = self.pos_remove(bocseg_ans)
+            ctag=self.train_contagger(bocseg_sent,bocseg_ans)
+            for ii in range(len(ctag)):
+                if ctag[ii]==1:
+                    if type(ty)!=type(None):
+                        for n, item in enumerate(bocseg_sent[ii]):
+                            if item.lower() == ty.lower():
+                                bocseg_sent[ii][n] = "NN"
+                    try:
+                        res[wh]=res[wh]+bocseg_sent[ii]
+                    except KeyError:
+                        res["UNK"] = res["UNK"] + bocseg_sent[ii]
+        for k,v in res.items():
+            counter = collections.Counter(v)
+            count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
+            words, counts = list(zip(*count_pairs))
+            res[k] = dict(zip(words, counts))
+
+        pickle.dump(res, open("whtype_traindata.pickle", "wb"))
+
+        return res
 
     def train_contagger(self,boc_context,ans,threshold=0.95):
         """
@@ -237,14 +338,68 @@ class BaseBOCQA(object):
         :param ans: answer str
         :return: [0 0 1 1 0 0 ...]
         """
+        assert type(boc_context[0][0])==type("string")
+        assert type(ans[0][0]) == type("string")
         res = np.zeros(len(boc_context))
-        for ii in range(len(res)):
-            F1, precision, recall=self.cal_f1(ans,boc_context)
-            if max(precision,recall)>threshold:
-                res[ii]=1
-        if max(res)==0:
-            print("Tag not found")
+        for ii_boc in range(len(res)):
+            for ii_ans in range(len(ans)):
+                F1, precision, recall=self.cal_f1(ans[ii_ans],boc_context[ii_boc])
+                # print(F1, precision, recall,ans,boc_context[ii_boc] )
+                if max(precision,recall)>threshold:
+                    res[ii_boc]=1
+        # if max(res)==0:
+        #     print("Tag not found")
         return res
+
+    def train_dataforcontagger(self,squad):
+        """
+        Producing training data for SVM concept tagger
+        [([F1wQ,+1F1wQ,-1F1wQ,Tyscore],0/1)]
+        :return:
+        """
+        res=[]
+
+        def cal_whtypescore(self, comp):
+            """
+            Cal wh type tf-idf score
+            :param comp:
+            :return:
+            """
+            pass
+
+        allqa = squad.get_all()
+        for ii_doc in range(5):
+            qu = allqa[ii_doc]["question_pos"]
+            # Pick up sentence if interest
+            qcons = self.boc_seg(qu)
+            cntxsents = allqa[ii_doc]["context_pos"]
+            ccons = []
+            for sent in cntxsents:
+                ccon = self.boc_seg(sent)
+                ccons.append(ccon)
+            nn = self.cal_sentatt(qcons, ccons)
+            sent = cntxsents[nn]
+            bocseg_sent = self.boc_seg(sent)
+            bocseg_sent = self.pos_remove(bocseg_sent)
+            bocseg_ans = self.boc_seg(allqa[ii_doc]["answers_pos"][0])
+            # print(allqa[ii_doc]["answers_pos"][0])
+            bocseg_ans = self.pos_remove(bocseg_ans)
+            ctag = self.train_contagger(bocseg_sent, bocseg_ans)
+            for ii_boc in range(len(bocseg_sent)):
+                cpt,p,r=self.cal_scaledf1(qcons,bocseg_sent[ii_boc])
+                F1wQ = cpt
+                Fm1wQ = 0
+                Fp1wQ = 0
+                if ii_boc>0:
+                    cpt, p, r = self.cal_scaledf1(qcons, bocseg_sent[ii_boc-1])
+                    Fm1wQ = cpt
+                if ii_boc<len(bocseg_sent)-1:
+                    cpt, p, r = self.cal_scaledf1(qcons, bocseg_sent[ii_boc + 1])
+                    Fp1wQ = cpt
+                tytfidf=cal_whtypescore(bocseg_sent[ii_boc])
+                res.append(([F1wQ,Fm1wQ,Fp1wQ,tytfidf],ctag[ii_boc]))
+        return res
+
 
 
 class WnetQAutil(object):
@@ -254,6 +409,7 @@ class WnetQAutil(object):
     def __init__(self):
         self.parser=stanford.StanfordParser()
         self.squad=SQuADutil()
+        self.squad.get_data(mode="pickle")
         self.neglist=['``','\'\'',',','.','?']
         self.NN=["NN","NNS","NNP","NNPS"]
         self.V = ["VB", "VBG", "VBN", "VBP","VBZ"]
