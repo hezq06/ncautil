@@ -147,6 +147,10 @@ class NLPutil(object):
             print("Except list: length "+str(len(skip)))
             print(skip)
             return self.w2v_dict
+        elif mode=="gensim_raw":
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/GoogleNews-vectors-negative300.bin')
+            model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
+            return model
 
     def proj_w2v(self,w2v_dict,pM):
         """
@@ -177,7 +181,7 @@ class NLPutil(object):
         self.plot_txtmat(txtmat)
         return txtmat
 
-    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None):
+    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None,title=None):
         data=np.array(data)
         assert len(data.shape) == 2
         fig,ax=plt.subplots()
@@ -203,6 +207,8 @@ class NLPutil(object):
                 labels[ii] = str(texty[ii + int(start)])
             ax.set_yticklabels(labels, rotation=0)
         plt.colorbar(fig)
+        if type(title) != type(None):
+            plt.title(title)
         plt.show()
 
     def cal_cosdist(self,v1,v2):

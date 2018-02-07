@@ -187,6 +187,8 @@ class WindAppNet(TFNet):
     Trying to reproduce result "Natural Language Processing (Almost) from Scratch", by Ronan Collobert
     """
     def __init__(self,nlputil,option=None):
+        if type(option)==type(None):
+            option=dict([])
         super(WindAppNet, self).__init__(option=option)
         self.nlputil = nlputil
         self.win_size = option.get("win_size",5)

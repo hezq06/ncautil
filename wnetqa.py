@@ -30,13 +30,13 @@ class BaseBOCQA(object):
         self.parser = stanford.StanfordParser()
         self.qa=None
         self.wfdict=None
-        self.sep=["IN","TO",',']
+        self.sep=["IN","TO",',','CC']
         self.NN = ["NN", "NNS", "NNP", "NNPS"]
         self.V = ["VB", "VBD", "VBP", "VBZ"]
         self.WH1=["who","whom","whose","when","why","where","how","how much","how many","how long"]
         self.WH2=["what","which"]
 
-    def run(self,qa,wfdict):
+    def run(self,qa):
         """
         Main entrance point for base BOC QA system.
         :param qa: SquadQAutil
@@ -48,17 +48,17 @@ class BaseBOCQA(object):
         for sent in cntxsents:
             ccon=self.boc_seg(sent)
             ccons.append(ccon)
-        nn=self.cal_sentatt(qcons,ccons,wfdict)
+        nn=self.cal_sentatt(qcons,ccons)
         print("Answer sentence is:")
         print(cntxsents[nn])
-        f1, p, r = self.cal_scaledf1(qa['answers'][0], cntxsents[nn], wfdict)
+        f1, p, r = self.cal_scaledf1(qa['answers'][0], cntxsents[nn])
         print(f1, p, r)
 
     def cal_sentatt(self,qcons,ccons):
         """
         Calculate the attention for each sentence and return the most relevant one
-        :param qcons:
-        :param ccons:
+        :param qcons:[[con],[con]]
+        :param ccons:[[[con],[con]]--sent,[[con],[con]]--sent]
         :param wfdict:
         :return:
         """
@@ -67,11 +67,10 @@ class BaseBOCQA(object):
             for ii in range(len(ccons)):
                 pt=0
                 for testcon in ccons[ii]:
-                    cpt,p,r=self.cal_scaledf1(qcon,testcon,self.wfdict)
+                    cpt,p,r=self.cal_scaledf1(qcon,testcon)
                     if cpt>pt:
                         pt=cpt
                 pts[ii]=pts[ii]+pt
-        # print(pts)
         return np.argmax(pts)
 
     def sent_seg(self,sent):
@@ -242,7 +241,10 @@ class BaseBOCQA(object):
                 recall=recall+att
         recall=recall/tot
 
-        F1=2 * (precision * recall) / (precision + recall)
+        if precision + recall != 0:
+            F1=2 * (precision * recall) / (precision + recall)
+        else:
+            F1=0
 
         return F1,precision,recall
 
@@ -303,7 +305,7 @@ class BaseBOCQA(object):
             for sent in cntxsents:
                 ccon = self.boc_seg(sent)
                 ccons.append(ccon)
-            nn = self.cal_sentatt(qcons, ccons, self.wfdict)
+            nn = self.cal_sentatt(qcons, ccons)
             sent=cntxsents[nn]
             bocseg_sent=self.boc_seg(sent)
             bocseg_sent=self.pos_remove(bocseg_sent)
@@ -358,18 +360,55 @@ class BaseBOCQA(object):
         :return:
         """
         res=[]
+        whtypescoredict=pickle.load(open("whtype_traindata.pickle", "rb"))
+        WFDtotv = 0
+        for v in self.wfdict.values():
+            WFDtotv = WFDtotv + v
 
-        def cal_whtypescore(self, comp):
+        def cal_whtypescore(comp,wh,ty):
             """
-            Cal wh type tf-idf score
-            :param comp:
+            Cal wh type tf-idf like score
+            :param comp:[w1 w2 w3 ...]
             :return:
             """
-            pass
+            for nn, item in enumerate(comp):
+                assert type(item) == type("string")
+                if item == ty:
+                    comp[nn] = "NN"
+            if type(wh)==type(None):
+                wh="UNK"
+
+            tydict = whtypescoredict[wh]
+            totv = 0
+            for v in tydict.values():
+                totv = totv + v
+
+            def caltfidf(item,lowcut=1e-6):
+                ff=tydict.get(item,0)
+                ffs=ff/totv
+                ffc=self.wfdict.get(item,0)/WFDtotv
+                restfidf=0
+                if ffs*ffc!=0:
+                    restfidf=ffs*np.log(ffs/ffc)
+                elif ffs==0:
+                    restfidf=0
+                elif ffc==0:
+                    restfidf = ffs * np.log(ffs / lowcut)
+                return restfidf
+
+            resscore=0
+            for item in comp:
+                sc = caltfidf(item)
+                resscore=resscore+sc
+
+            return resscore
 
         allqa = squad.get_all()
-        for ii_doc in range(5):
+        for ii_doc in range(len(allqa)):
+            if ii_doc%1000==1:
+                print("Working doc#" + str(ii_doc) + " in total " + str(len(allqa)))
             qu = allqa[ii_doc]["question_pos"]
+            wh, ty = self.qwh_kw(qu)
             # Pick up sentence if interest
             qcons = self.boc_seg(qu)
             cntxsents = allqa[ii_doc]["context_pos"]
@@ -385,18 +424,19 @@ class BaseBOCQA(object):
             # print(allqa[ii_doc]["answers_pos"][0])
             bocseg_ans = self.pos_remove(bocseg_ans)
             ctag = self.train_contagger(bocseg_sent, bocseg_ans)
+            qu=self.pos_remove(qu)
             for ii_boc in range(len(bocseg_sent)):
-                cpt,p,r=self.cal_scaledf1(qcons,bocseg_sent[ii_boc])
+                cpt,p,r=self.cal_scaledf1(qu,bocseg_sent[ii_boc])
                 F1wQ = cpt
                 Fm1wQ = 0
                 Fp1wQ = 0
                 if ii_boc>0:
-                    cpt, p, r = self.cal_scaledf1(qcons, bocseg_sent[ii_boc-1])
+                    cpt, p, r = self.cal_scaledf1(qu, bocseg_sent[ii_boc-1])
                     Fm1wQ = cpt
                 if ii_boc<len(bocseg_sent)-1:
-                    cpt, p, r = self.cal_scaledf1(qcons, bocseg_sent[ii_boc + 1])
+                    cpt, p, r = self.cal_scaledf1(qu, bocseg_sent[ii_boc + 1])
                     Fp1wQ = cpt
-                tytfidf=cal_whtypescore(bocseg_sent[ii_boc])
+                tytfidf=cal_whtypescore(bocseg_sent[ii_boc],wh,ty)
                 res.append(([F1wQ,Fm1wQ,Fp1wQ,tytfidf],ctag[ii_boc]))
         return res
 
