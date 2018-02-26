@@ -27,6 +27,39 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_cantorseq(self,length,depth=4):
+        """
+        Generate cantor factal sequence
+        :param length:
+        :return:
+        """
+        def cantor(inl):
+            """
+            Cantor operation on a list, 1->101,0->000
+            :param inl:
+            :return: outlist
+            """
+            res=[]
+            for num in inl:
+                if num==0:
+                    res=res+[0,0,0]
+                elif num==1:
+                    res = res + [1, 0, 1]
+                else:
+                    raise Exception("Number not supported!")
+            return res
+
+        resseq=[]
+        for iin in range(length):
+            dp=int(np.random.rand()*depth)+1
+            # For test
+            dp=depth
+            subseq=[1]
+            for iid in range(dp):
+                subseq=cantor(subseq)
+            resseq=resseq+subseq
+        return resseq
+
     def gen_ABseq(self, length):
         """
         Generate ABseq one hot
@@ -70,6 +103,33 @@ class SeqGen(object):
         res = []
         for ii in range(length):
             if ii % 4 in [0,1] :
+                # pick from class A
+                id = int(np.floor(np.random.rand() * nA))
+                pknum = cA[id]
+                res.append(pknum)
+            else:
+                # pick from class B
+                id = int(np.floor(np.random.rand() * nB))
+                pknum = cB[id]
+                res.append(pknum)
+        return res
+
+    def gen_AAABBBseq(self, length):
+        """
+        Generate AABBseq one hot
+        :param length:
+        :return:
+        """
+        cA = [2, 3, 5, 7, 11, 13]
+        cB = [0, 1, 4, 6, 8, 9, 10, 12, 14, 15]
+        self.vocab["cA"] = cA
+        self.vocab["cB"] = cB
+
+        nA = len(cA)
+        nB = len(cB)
+        res = []
+        for ii in range(length):
+            if ii % 6 in [0,1,2] :
                 # pick from class A
                 id = int(np.floor(np.random.rand() * nA))
                 pknum = cA[id]
@@ -151,17 +211,16 @@ class SeqGen(object):
                 res.append(pknum)
         return res
 
-    def one_hot(self,num):
-        ytemp = np.zeros(16)
+    def one_hot(self,num,length=16):
+        ytemp = np.zeros(length)
         ytemp[num] = 1
         return ytemp
 
-class RNN(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(RNN, self).__init__()
+class RNN1(torch.nn.Module):
+    def __init__(self, input_size,hidden_size, output_size):
+        super(RNN1, self).__init__()
 
         self.hidden_size = hidden_size
-
         self.i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
         self.i2o = torch.nn.Linear(input_size + hidden_size, output_size)
         self.softmax = torch.nn.LogSoftmax()
@@ -176,6 +235,299 @@ class RNN(torch.nn.Module):
     def initHidden(self):
         return Variable(torch.zeros(1,self.hidden_size))
 
+class RNN2(torch.nn.Module):
+    """
+    Not very good
+    """
+    def __init__(self, input_size,hidden_size, mid_size,output_size):
+        super(RNN2, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.i2m = torch.nn.Linear(input_size + hidden_size, mid_size)
+        self.m2h = torch.nn.Linear(mid_size, hidden_size)
+        self.m2o = torch.nn.Linear(mid_size, output_size)
+        self.sigmoid = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax()
+
+    def forward(self, input, hidden):
+        combined = torch.cat((input, hidden), 1)
+        mid = self.i2m(combined)
+        mid=self.sigmoid(mid)
+        hidden = self.m2h(mid)
+        output = self.m2o(mid)
+        output = self.softmax(output)
+        return output, hidden
+
+    def initHidden(self):
+        return Variable(torch.zeros(1,self.hidden_size))
+
+class RNNR2(torch.nn.Module):
+    def __init__(self, input_size,hidden1_size, hidden2_size,output_size):
+        super(RNNR2, self).__init__()
+
+        self.hidden1_size = hidden1_size
+        self.hidden2_size = hidden2_size
+        self.i2h1 = torch.nn.Linear(input_size + hidden1_size, hidden1_size)
+        self.i2o = torch.nn.Linear(input_size + hidden1_size, output_size)
+        self.h12h1 = torch.nn.Linear(hidden1_size + hidden2_size, hidden1_size)
+        self.h12h2 = torch.nn.Linear(hidden1_size + hidden2_size, hidden2_size)
+        # self.h12h1.weight = torch.nn.Parameter(torch.cat((torch.eye(hidden1_size,hidden1_size), torch.zeros(hidden1_size,hidden2_size)), 1))
+        # self.h12h2.weight = torch.nn.Parameter(torch.cat((torch.zeros(hidden2_size,hidden1_size),torch.eye(hidden2_size,hidden2_size)), 1))
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.softmax = torch.nn.LogSoftmax()
+
+    def forward(self, input, hidden):
+        hidden1=hidden[0]
+        hidden2=hidden[1]
+        hidden1N=self.sigmoid(hidden1)
+        combined2 = torch.cat((hidden1N, hidden2), 1)
+        hidden2 = self.h12h2(combined2)
+        hidden1 = self.h12h1(combined2)
+        combined1 = torch.cat((input, hidden1), 1)
+        hidden1=self.i2h1(combined1)
+        output = self.i2o(combined1)
+        output = self.softmax(output)
+        return output, [hidden1, hidden2]
+
+    def initHidden(self):
+        return [Variable(torch.zeros(1,self.hidden1_size), requires_grad=True),Variable(torch.zeros(1,self.hidden2_size), requires_grad=True)]
+
+class RNNR3(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(RNNR3, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.l32h3 = torch.nn.Linear(hidden_size + hidden_size, hidden_size)
+        self.l32h2 = torch.nn.Linear(hidden_size + hidden_size, hidden_size)
+        self.l22h2 = torch.nn.Linear(hidden_size + hidden_size, hidden_size)
+        self.l22h1 = torch.nn.Linear(hidden_size + hidden_size, hidden_size)
+        self.l12h1 = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.l12o = torch.nn.Linear(input_size + hidden_size, output_size)
+
+        self.nonlinear = torch.nn.Sigmoid()
+        self.softmax = torch.nn.LogSoftmax()
+
+    def forward(self, input, hidden):
+        hidden1 = hidden[0]
+        hidden2 = hidden[1]
+        hidden3 = hidden[2]
+        hidden2N = self.nonlinear(hidden2)
+        combined3 = torch.cat((hidden3, hidden2N), 1)
+        hidden3 = self.l32h3(combined3)
+        hidden2 = self.l32h2(combined3)
+
+        hidden1N = self.nonlinear(hidden1)
+        combined2 = torch.cat((hidden2, hidden1N), 1)
+        hidden2 = self.l22h2(combined2)
+        hidden1 = self.l22h1(combined2)
+
+        combined1 = torch.cat((hidden1, input), 1)
+        hidden1 = self.l12h1(combined1)
+        output = self.l12o(combined1)
+        output = self.softmax(output)
+        return output, [hidden1, hidden2, hidden3]
+
+    def initHidden(self):
+        return [Variable(torch.zeros(1, self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(1, self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(1, self.hidden_size), requires_grad=True)]
+
+class LSTM(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(LSTM, self).__init__()
+        self.input_size=input_size
+        self.hidden_size=hidden_size
+        self.output_size=output_size
+        self.lstm = torch.nn.LSTM(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.softmax = torch.nn.LogSoftmax()
+
+    def forward(self, input, hidden):
+        # print(input,hidden)
+        hout, hidden = self.lstm(input.view(1, 1, self.input_size), hidden)
+        output=self.h2o(hout.view(self.hidden_size))
+        output = self.softmax(output)
+        return output, hidden
+
+    def initHidden(self):
+        return (Variable(torch.zeros(1, 1, self.hidden_size)),Variable(torch.zeros(1, 1, self.hidden_size)))
+
+class CNN(torch.nn.Module):
+    def __init__(self, vec_size,vec_len, kwid):
+        super(CNN, self).__init__()
+
+        self.vec_size = vec_size
+        for ii in range(vec_size):
+            
+        self.i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.i2o = torch.nn.Linear(input_size + hidden_size, output_size)
+        self.softmax = torch.nn.LogSoftmax()
+
+    def forward(self, input, hidden):
+        combined = torch.cat((input, hidden), 1)
+        hidden = self.i2h(combined)
+        output = self.i2o(combined)
+        output = self.softmax(output)
+        return output, hidden
+
+    def initHidden(self):
+        return Variable(torch.zeros(1,self.hidden_size))
+
+class PT_CNN_FRAC(object):
+    def __init__(self):
+        self.seqgen = SeqGen()
+
+    def run(self,clength,learning_rate=1e-2,window=200,kwid=5):
+        seqs = self.seqgen.gen_cantorseq(clength)
+
+
+class PT_RNN_Cantor(object):
+    def __init__(self):
+        self.seqgen = SeqGen()
+        self.model = None
+
+    def do_eval(self,step,hidden=None,init=1):
+        seqres = []
+        seqres.append(init)
+        xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(init,length=2)).reshape(-1, 2)), requires_grad=False)
+        xin = xin.type(torch.FloatTensor)
+
+        def linp(vec):
+            """
+            Softmax function
+            :param vec:
+            :return:
+            """
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        def logp(vec):
+            """
+            LogSoftmax function
+            :param vec:
+            :return:
+            """
+            vec = np.exp(vec)
+            dwn = np.sum(vec)
+            return vec / dwn
+        if type(hidden) == type(None):
+            hidden = self.model.initHidden()
+        for ii in range(step):
+            y_pred, hidden = self.model(xin, hidden)
+            ynp = y_pred.data.numpy().reshape(2)
+            rndp = np.random.rand()
+            pii = logp(ynp)
+            # print(ynp)
+            # print(pii)
+            dig = 0
+            for ii in range(len(pii)):
+                rndp = rndp - pii[ii]
+                if rndp < 0:
+                    dig = ii
+                    break
+            xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig,length=2)).reshape(-1, 2)), requires_grad=False)
+            xin = xin.type(torch.FloatTensor)
+            seqres.append(dig)
+
+        return seqres
+
+
+    def run(self,clength,learning_rate=1e-2,window=200):
+        seqs = self.seqgen.gen_cantorseq(clength)
+        # def __init__(self, input_size, concept_size, hidden_size, output_size):
+        # rnn=RNN1(2, 2, 2)
+
+        # rnn = RNN2(2, 10, 10, 2)
+
+        # rnn = RNNR2(2, 10, 10, 2)
+
+        # rnn = RNNR3(2, 10, 2)
+
+        rnn = LSTM(2, 10, 2)
+
+        # rnn.zero_grad()
+
+        def customized_loss(xl, yl, model):
+            # print(x,y)
+            l2_reg = Variable(torch.FloatTensor(1), requires_grad=True)
+            for ii,W in enumerate(model.parameters()):
+                l2_reg = l2_reg + W.norm(2)
+            loss=0
+            for ii in range(len(xl)):
+                loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
+                # loss = loss - (torch.sum(xl[ii] * yl[ii]))
+                # loss = loss - (torch.sum(torch.exp(xl[ii]) * yl[ii]))
+            return loss + 0.00 * l2_reg
+
+
+        optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+        # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+
+        his = 0
+        step=len(seqs)
+        for ii in range(0,step-window,window):
+            outputl=[]
+            yl=[]
+            hidden = rnn.initHidden()
+            for nn in range(window):
+                num1=seqs[ii+nn]
+                num2 = seqs[ii+nn+1]
+                np1= np.array(self.seqgen.one_hot(num1,length=2))
+                np2 = np.array(self.seqgen.one_hot(num2,length=2))
+                x = Variable(torch.from_numpy(np1.reshape(-1, 2)), requires_grad=True)
+                y = Variable(torch.from_numpy(np2.reshape(-1, 2)), requires_grad=False)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                output, hidden = rnn(x, hidden)
+                outputl.append(output)
+                yl.append(y)
+            loss = customized_loss(outputl, yl, rnn)
+
+            if int(ii / 5000) != his:
+                print(ii, loss.data[0])
+                his=int(ii / 5000)
+
+            optimizer.zero_grad()
+
+            # for para in rnn.parameters():
+            #     print(para)
+
+            # Backward pass: compute gradient of the loss with respect to model
+            # parameters
+            loss.backward()
+
+            # Calling the step function on an Optimizer makes an update to its
+            # parameters
+            optimizer.step()
+
+        self.model=rnn
+
+        return hidden
+
+
+
+class RNN(torch.nn.Module):
+    def __init__(self, input_size, concept_size,hidden_size, output_size):
+        super(RNN, self).__init__()
+
+        self.hidden_size = hidden_size
+
+        self.i2c = torch.nn.Linear(input_size , concept_size)
+        self.c2h = torch.nn.Linear(concept_size + hidden_size, hidden_size)
+        self.c2o = torch.nn.Linear(concept_size + hidden_size, output_size)
+        self.softmax = torch.nn.LogSoftmax()
+
+    def forward(self, input, hidden):
+        concept = self.i2c(input)
+        combined = torch.cat((concept, hidden), 1)
+        hidden = self.c2h(combined)
+        output = self.c2o(combined)
+        output = self.softmax(output)
+        return output, hidden, concept
+
+    def initHidden(self):
+        return Variable(torch.zeros(1,self.hidden_size))
+
 class PT_RNN(object):
     """
     PyTorch Recurrent Net
@@ -185,6 +537,7 @@ class PT_RNN(object):
         self.model = None
 
     def do_eval(self,step,mode="AABBCC"):
+        recorder=[]
         id1 = int(np.floor(np.random.rand() * 4))
         if id1 in [0,1]:
             id2 = int(np.floor(np.random.rand() * len(self.seqgen.vocab["cA"])))
@@ -222,6 +575,8 @@ class PT_RNN(object):
         hidden = self.model.initHidden()
         for ii in range(step):
             y_pred,hidden = self.model(xin,hidden)
+            rec = np.concatenate((y_pred.data.numpy(), hidden.data.numpy()), axis=1)
+            recorder.append(rec.reshape(-1))
             ynp=y_pred.data.numpy().reshape(16)
             rndp = np.random.rand()
             pii = logp(ynp)
@@ -233,8 +588,9 @@ class PT_RNN(object):
                 if rndp<0:
                     dig = ii
                     break
-            xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig)).reshape(-1,16)), requires_grad=False)
-            xin = xin.type(torch.FloatTensor)
+            # xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig)).reshape(-1,16)), requires_grad=False)
+            # xin = xin.type(torch.FloatTensor)
+            xin = torch.exp(y_pred)
             seqres.append(dig)
 
         tot=0
@@ -276,17 +632,46 @@ class PT_RNN(object):
                     right=right+1
                 print(int1,int2,int3,int4,int5,int6)
             print("True rate is: "+str(right/tot))
+        elif mode =="AAABBB":
+            vA = self.seqgen.vocab["cA"]
+            vB = self.seqgen.vocab["cB"]
+            for ii in range(len(seqres) - 5):
+                tot = tot + 1
+                int1 = seqres[ii]
+                int2 = seqres[ii + 1]
+                int3 = seqres[ii + 2]
+                int4 = seqres[ii + 3]
+                int5 = seqres[ii + 4]
+                int6 = seqres[ii + 5]
+                if ((int1 in vA) and (int2 in vA) and (int3 in vA) and (int4 in vB) and (int5 in vB) and (int6 in vB)) \
+                        or ((int1 in vA) and (int2 in vA) and (int3 in vB) and (int4 in vB) and (int5 in vB) and (
+                        int6 in vA)) \
+                        or ((int1 in vA) and (int2 in vB) and (int3 in vB) and (int4 in vB) and (int5 in vA) and (
+                        int6 in vA)) \
+                        or ((int1 in vB) and (int2 in vB) and (int3 in vB) and (int4 in vA) and (int5 in vA) and (
+                        int6 in vA)) \
+                        or ((int1 in vB) and (int2 in vB) and (int3 in vA) and (int4 in vA) and (int5 in vA) and (
+                        int6 in vB)) \
+                        or ((int1 in vB) and (int2 in vA) and (int3 in vA) and (int4 in vA) and (int5 in vB) and (
+                        int6 in vB)):
+                    right = right + 1
+                print(int1, int2, int3, int4, int5, int6)
+            print("True rate is: " + str(right / tot))
+
+        return np.array(recorder).T
 
     def run(self,step,learning_rate=5e-3,mode="AABBCC",window=30):
         if mode == "AABB":
             seqs = self.seqgen.gen_AABBseq(step)
         elif mode == "AABBCC":
             seqs = self.seqgen.gen_AABBCCseq(step)
+        elif mode == "AAABBB":
+            seqs = self.seqgen.gen_AAABBBseq(step)
         else:
             raise Exception("Mode not recognize.")
 
-        #def __init__(self, input_size, hidden_size, output_size)
-        rnn=RNN(16, 6, 16)
+        # def __init__(self, input_size, concept_size, hidden_size, output_size):
+        rnn=RNN1(16, 2, 16)
 
         # rnn.zero_grad()
 
@@ -294,7 +679,7 @@ class PT_RNN(object):
             # print(x,y)
             l2_reg = Variable(torch.FloatTensor(1), requires_grad=True)
             for W in model.parameters():
-                l2_reg = l2_reg + W.norm(2)
+                l2_reg = l2_reg + W.norm(1)
             loss=0
             for ii in range(len(xl)):
                 loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
