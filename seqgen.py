@@ -27,7 +27,7 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
-    def gen_cantorseq(self,length,depth=4):
+    def gen_cantorseq(self,length,depth=2):
         """
         Generate cantor factal sequence
         :param length:
@@ -212,9 +212,16 @@ class SeqGen(object):
         return res
 
     def one_hot(self,num,length=16):
-        ytemp = np.zeros(length)
-        ytemp[num] = 1
-        return ytemp
+        if type(num) == type(1):
+            res = np.zeros(length)
+            res[num] = 1
+        else:
+            res=[]
+            for nn in num:
+                ytemp = np.zeros(length)
+                ytemp[nn] = 1
+                res.append(ytemp)
+        return res
 
 class RNN1(torch.nn.Module):
     def __init__(self, input_size,hidden_size, output_size):
@@ -353,33 +360,141 @@ class LSTM(torch.nn.Module):
     def initHidden(self):
         return (Variable(torch.zeros(1, 1, self.hidden_size)),Variable(torch.zeros(1, 1, self.hidden_size)))
 
+# class CNNA(torch.nn.Module):
+#     def __init__(self, vec_size, kwid):
+#         """
+#         CNN for fractal detection
+#         :param vec_size: input vector element size
+#         :param kwid: convolutional window
+#         """
+#         super(CNNA, self).__init__()
+#         self.kwid=kwid
+#         self.vec_size = vec_size
+#         self.kns=[]
+#         for ii in range(vec_size):
+#             self.kns.append(torch.nn.Linear(kwid, vec_size))
+#         self.sigmoid = torch.nn.Sigmoid()
+#
+#     def forward(self, input):
+#         for ii_step in range(len(input)-self.kwid+1):
+#             for ii_conv in range(len(self.kns))
+#                 convl1=
+#         output = self.i2o(combined)
+#         output = self.softmax(output)
+#         return output
+#
+#     def initHidden(self):
+#         return Variable(torch.zeros(1,self.hidden_size))
+
 class CNN(torch.nn.Module):
-    def __init__(self, vec_size,vec_len, kwid):
+    def __init__(self, vec_size, kwid):
+        """
+        CNN for fractal detection
+        :param vec_size: input vector element size
+        :param kwid: convolutional window
+        """
         super(CNN, self).__init__()
-
+        self.kwid=kwid
         self.vec_size = vec_size
-        for ii in range(vec_size):
-            
-        self.i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
-        self.i2o = torch.nn.Linear(input_size + hidden_size, output_size)
-        self.softmax = torch.nn.LogSoftmax()
+        # class torch.nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
+        self.conv=torch.nn.Conv1d(vec_size,vec_size,kwid,bias=False)
+        # class torch.nn.MaxPool1d(kernel_size, stride=None, padding=0, dilation=1, return_indices=False, ceil_mode=False)
+        # self.relu = torch.nn.ReLU()
+        self.pool = torch.nn.MaxPool1d(kwid)
+        self.softmax=torch.nn.Softmax(dim=1)
 
-    def forward(self, input, hidden):
-        combined = torch.cat((input, hidden), 1)
-        hidden = self.i2h(combined)
-        output = self.i2o(combined)
-        output = self.softmax(output)
-        return output, hidden
+    def forward(self, input):
+        conv1=self.conv(input)
+        # sigm1=self.relu(conv1)
+        pool1 = self.pool(conv1)
+        output = self.softmax(pool1)
+        return output
 
-    def initHidden(self):
-        return Variable(torch.zeros(1,self.hidden_size))
+class PT_RNN_PDC(object):
+    """
+    PyTorch RNN for predictive coding
+    """
+    def __init__(self):
+        pass
 
 class PT_CNN_FRAC(object):
     def __init__(self):
         self.seqgen = SeqGen()
+        self.seqs = None
+        self.window=None
+        self.model=None
+        self.batch_size=None
 
-    def run(self,clength,learning_rate=1e-2,window=200,kwid=5):
-        seqs = self.seqgen.gen_cantorseq(clength)
+    def do_eval(self):
+        nn_strat = int(np.random.rand() * len(self.seqs) - self.window)
+        data_train = np.array(self.seqs)[nn_strat:nn_strat + self.window]
+        data_train = np.array(self.seqgen.one_hot(data_train, length=2))
+        pt_data = Variable(torch.from_numpy(data_train.T.reshape(1, 2, -1)), requires_grad=True)
+        pt_data=pt_data.type(torch.FloatTensor)
+        output = self.model(pt_data)
+        return output.data.numpy()
+
+    def run(self, clength, step_train,batch_size=10,learning_rate=1e-2,window=500,kwid=3):
+        self.batch_size=batch_size
+        self.seqs = self.seqgen.gen_cantorseq(clength)
+        self.window=window
+
+        cnn = CNN(2, kwid)
+
+        # rnn.zero_grad()
+
+        def customized_loss(input, data_train, model):
+            maxcov = Variable(torch.from_numpy(np.zeros(self.batch_size)), requires_grad=True)
+            maxcov = maxcov.type(torch.FloatTensor)
+            for ii_step in range(len(data_train[0][0])-len(input[0].t())+1):
+                for ii_batch in range(self.batch_size):
+                    npdatapck = Variable(torch.from_numpy(data_train[ii_batch][:,ii_step:ii_step+len(input[0].t())].T), requires_grad=True)
+                    npdatapck = npdatapck.type(torch.FloatTensor)
+                    conv=torch.sum(torch.mul(npdatapck,input[ii_batch].t()))
+                    if (conv[0]>maxcov[ii_batch]).data.numpy():
+                        maxcov[ii_batch]=conv
+            loss=-maxcov
+            return loss.sum()
+
+        optimizer = torch.optim.Adam(cnn.parameters(), lr=learning_rate, weight_decay=0)
+        # optimizer = torch.optim.SGD(cnn.parameters(), lr=learning_rate)
+
+        # random data feeding of CNN for step_train
+        his=0
+        loss_tab=[]
+        for ii_train in range(step_train):
+            data_train_batch=[]
+            for ii_batch in range(batch_size):
+                nn_strat=int(np.random.rand()*(len(self.seqs)-window))
+                data_train=np.array(self.seqs)[nn_strat:nn_strat+window]
+                data_train = np.array(self.seqgen.one_hot(data_train, length=2))
+                data_train_batch.append(data_train.T)
+            pt_data=Variable(torch.from_numpy(np.array(data_train_batch)))
+            pt_data = pt_data.type(torch.FloatTensor)
+            output=cnn(pt_data)
+            loss=customized_loss(output,data_train_batch,cnn)
+
+            if int(ii_train / 300) != his:
+                print(ii_train, loss.data[0])
+                his=int(ii_train / 300)
+
+            loss_tab.append(loss.data[0])
+
+            optimizer.zero_grad()
+
+            # for para in rnn.parameters():
+            #     print(para)
+
+            # Backward pass: compute gradient of the loss with respect to model
+            # parameters
+            loss.backward()
+
+            # Calling the step function on an Optimizer makes an update to its
+            # parameters
+            optimizer.step()
+        plt.plot(loss_tab)
+        plt.show()
+        self.model = cnn
 
 
 class PT_RNN_Cantor(object):
@@ -1306,4 +1421,12 @@ class TF_FFN(TFNet):
             else:
                 self.run_training(sess,datain,dataout,mode=None)
 
+if __name__ == "__main__":
+    from ncautil.nlputil import NLPutil
+    nlp = NLPutil()
+    sqg = SeqGen()
+    seq = sqg.gen_cantorseq(2)
+    nlp.plot_txtmat(np.array(seq).reshape(1, -1))
+    ptc = PT_CNN_FRAC()
+    ptc.run(100, 1000, learning_rate=1e-2, window=18, kwid=3)
 
