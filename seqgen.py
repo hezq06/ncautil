@@ -27,6 +27,25 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_contextseq(self,length, period, delta=0.5):
+        """
+        Generate context varying sequence
+        :param length: length of certain context
+        :param delta: varying of period
+        :return: res=[]
+        """
+        res=[]
+        context1=[0,0,1]
+        context2=[1,1,1,0,0]
+        for ii_l in range(length):
+            p1=int((1+delta*(np.random.rand()-0.5)*2)*period)
+            for ii_p1 in range(p1):
+                res=res+context1
+            p2 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period)
+            for ii_p2 in range(p2):
+                res=res+context2
+        return res
+
     def gen_cantorseq(self,length,depth=2):
         """
         Generate cantor factal sequence
@@ -223,6 +242,33 @@ class SeqGen(object):
                 res.append(ytemp)
         return res
 
+class RNN_PDC(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(RNN_PDC, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.r1i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.r1i2o = torch.nn.Linear(input_size + hidden_size, output_size)
+        self.r2i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.r2i2o = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.softmax = torch.nn.LogSoftmax(dim=1)
+        self.sigmoid = torch.nn.Sigmoid()
+
+    def forward(self, input, hidden, result):
+        combined1 = torch.cat((input, hidden[0]), 1)
+        hidden1 = self.r1i2h(combined1)
+        output = self.r1i2o(combined1)
+        output = self.softmax(output)
+        errin=result-input
+        combined2=torch.cat((errin, hidden[1]), 1)
+        hidden2 = self.r2i2h(combined2)
+        hadj=self.r2i2o(combined2)
+        hidden1=hidden1*self.sigmoid(hadj)
+        return output, [hidden1,hidden2]
+
+    def initHidden(self):
+        return [Variable(torch.zeros(1,self.hidden_size)),Variable(torch.zeros(1,self.hidden_size))]
+
 class RNN1(torch.nn.Module):
     def __init__(self, input_size,hidden_size, output_size):
         super(RNN1, self).__init__()
@@ -232,7 +278,7 @@ class RNN1(torch.nn.Module):
         self.i2o = torch.nn.Linear(input_size + hidden_size, output_size)
         self.softmax = torch.nn.LogSoftmax()
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden, y):
         combined = torch.cat((input, hidden), 1)
         hidden = self.i2h(combined)
         output = self.i2o(combined)
@@ -412,12 +458,148 @@ class CNN(torch.nn.Module):
 
 class PT_RNN_PDC(object):
     """
-    PyTorch RNN for predictive coding
+    RNN predictive coding testing
     """
     def __init__(self):
-        pass
+        self.seqgen = SeqGen()
+        self.seqs = None
+        self.model = None
+
+    def do_eval(self,step,hidden=None,init=0):
+        seqres = []
+        seqres.append(init)
+        xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(init, length=2)).reshape(-1, 2)),
+                       requires_grad=False)
+        xin = xin.type(torch.FloatTensor)
+
+        def linp(vec):
+            """
+            Softmax function
+            :param vec:
+            :return:
+            """
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        def logp(vec):
+            """
+            LogSoftmax function
+            :param vec:
+            :return:
+            """
+            vec = np.exp(vec)
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        if type(hidden) == type(None):
+            hidden = self.model.initHidden()
+        for ii in range(step):
+            y = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(self.seqs[ii], length=2)).reshape(-1, 2)),
+                           requires_grad=False)
+            y = y.type(torch.FloatTensor)
+            y_pred, hidden = self.model(xin, hidden, y)
+            ynp = y_pred.data.numpy().reshape(2)
+            rndp = np.random.rand()
+            pii = logp(ynp)
+            # print(ynp)
+            # print(pii)
+            dig = 0
+            for ii in range(len(pii)):
+                rndp = rndp - pii[ii]
+                if rndp < 0:
+                    dig = ii
+                    break
+            xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig, length=2)).reshape(-1, 2)),
+                           requires_grad=False)
+            xin = xin.type(torch.FloatTensor)
+            seqres.append(dig)
+
+        return seqres,self.seqs
+
+
+    def run(self,length,period,delta=0.5,learning_rate=1e-2,window=10):
+        print("Sequence generating...")
+        seqs = self.seqgen.gen_contextseq(length, period, delta=delta)
+        self.seqs = seqs
+        # def __init__(self, input_size, concept_size, hidden_size, output_size):
+        print("Learning preparation...")
+        # rnn=RNN1(2, 5, 2)
+
+        rnn = RNN_PDC(2, 5, 2)
+
+        # rnn = RNN2(2, 10, 10, 2)
+
+        # rnn = RNNR2(2, 10, 10, 2)
+
+        # rnn = RNNR3(2, 10, 2)
+
+        # rnn = LSTM(2, 10, 2)
+
+        # rnn.zero_grad()
+
+        def customized_loss(xl, yl, model):
+            # print(x,y)
+            l2_reg = Variable(torch.FloatTensor(1), requires_grad=True)
+            for ii,W in enumerate(model.parameters()):
+                l2_reg = l2_reg + W.norm(2)
+            loss=0
+            for ii in range(len(xl)):
+                loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
+                # loss = loss - (torch.sum(xl[ii] * yl[ii]))
+                # loss = loss - (torch.sum(torch.exp(xl[ii]) * yl[ii]))
+            return loss #+ 0.00 * l2_reg
+
+
+        optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+        # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+
+        his = 0
+        step=len(seqs)
+        train_data=[]
+        for ii in range(0,step-window,window):
+            outputl=[]
+            yl=[]
+            hidden = rnn.initHidden()
+            for nn in range(window):
+                num1=seqs[ii+nn]
+                num2 = seqs[ii+nn+1]
+                np1= np.array(self.seqgen.one_hot(num1,length=2))
+                np2 = np.array(self.seqgen.one_hot(num2,length=2))
+                x = Variable(torch.from_numpy(np1.reshape(-1, 2)), requires_grad=True)
+                y = Variable(torch.from_numpy(np2.reshape(-1, 2)), requires_grad=False)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                output, hidden = rnn(x, hidden, y)
+                outputl.append(output)
+                yl.append(y)
+            loss = customized_loss(outputl, yl, rnn)
+
+            if int(ii / 1000) != his:
+                print(ii, loss.data[0])
+                his=int(ii / 1000)
+            train_data.append(loss.data[0])
+
+            optimizer.zero_grad()
+
+            # for para in rnn.parameters():
+            #     print(para)
+
+            # Backward pass: compute gradient of the loss with respect to model
+            # parameters
+            loss.backward()
+
+            # Calling the step function on an Optimizer makes an update to its
+            # parameters
+            optimizer.step()
+
+        plt.plot(train_data)
+        plt.show()
+
+        self.model=rnn
 
 class PT_CNN_FRAC(object):
+    """
+    CNN for fractal detection
+    """
     def __init__(self):
         self.seqgen = SeqGen()
         self.seqs = None
@@ -548,10 +730,10 @@ class PT_RNN_Cantor(object):
         return seqres
 
 
-    def run(self,clength,learning_rate=1e-2,window=200):
+    def run(self,clength,learning_rate=1e-2,window=10):
         seqs = self.seqgen.gen_cantorseq(clength)
         # def __init__(self, input_size, concept_size, hidden_size, output_size):
-        # rnn=RNN1(2, 2, 2)
+        rnn=RNN1(2, 5, 2)
 
         # rnn = RNN2(2, 10, 10, 2)
 
@@ -559,7 +741,7 @@ class PT_RNN_Cantor(object):
 
         # rnn = RNNR3(2, 10, 2)
 
-        rnn = LSTM(2, 10, 2)
+        # rnn = LSTM(2, 10, 2)
 
         # rnn.zero_grad()
 
