@@ -16,6 +16,7 @@ from ncautil.tfnlp import TFNet
 import tensorflow as tf
 import torch
 from torch.autograd import Variable
+from scipy.optimize import minimize
 
 __author__ = "Harry He"
 
@@ -27,6 +28,51 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_cellauto(self,size,length,period,delta=0.5):
+        """
+        Generation of cellular automaton
+        :param size: world size
+        :param length: sequence length
+        :return: res=[]
+        """
+        rule30={
+            "111":0, "110":0, "101":0, "100":1,"011":1,"010":1,"001":1,"000":0,
+        }
+        rule110={
+            "111":0,"110":1,"101":1,"100":0,"011":1,"010":1,"001":1,"000":0,
+        }
+        res=[]
+        init=[0]*size
+        init[0]=1
+
+        def cellauto(input,rule):
+            """
+            use rull to convert input vec to output vec, periodic boundary condition
+            :param input:
+            :param rule:
+            :return: output
+            """
+            assert len(input)>=3
+            output=input[:]
+            for ii in range(len(input)):
+                item1=input[(ii-1)%len(input)]
+                item2=input[ii]
+                item3=input[(ii+1)%len(input)]
+                ikey=str(item1)+str(item2)+str(item3)
+                output[ii]=rule[ikey]
+            return output
+
+        for ii_l in range(length):
+            p1=int((1+delta*(np.random.rand()-0.5)*2)*period)
+            for ii_p1 in range(p1):
+                nitem=cellauto(res[-1],rule30)
+                res.append(nitem)
+            p2 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period)
+            for ii_p2 in range(p2):
+                nitem = cellauto(res[-1], rule110)
+                res.append(nitem)
+        return res
+
     def gen_contextseq(self,length, period, delta=0.5):
         """
         Generate context varying sequence
@@ -36,7 +82,9 @@ class SeqGen(object):
         """
         res=[]
         context1=[0,0,1]
+        # context1 = [1,1,1,0,0]
         context2=[1,1,1,0,0]
+        context3 = [1,1,0]
         for ii_l in range(length):
             p1=int((1+delta*(np.random.rand()-0.5)*2)*period)
             for ii_p1 in range(p1):
@@ -44,6 +92,9 @@ class SeqGen(object):
             p2 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period)
             for ii_p2 in range(p2):
                 res=res+context2
+            p3 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period)
+            for ii_p3 in range(p3):
+                res = res + context3
         return res
 
     def gen_cantorseq(self,length,depth=2):
@@ -259,15 +310,114 @@ class RNN_PDC(torch.nn.Module):
         hidden1 = self.r1i2h(combined1)
         output = self.r1i2o(combined1)
         output = self.softmax(output)
-        errin=result-input
+        errin=result-torch.exp(output)
         combined2=torch.cat((errin, hidden[1]), 1)
         hidden2 = self.r2i2h(combined2)
         hadj=self.r2i2o(combined2)
-        hidden1=hidden1*self.sigmoid(hadj)
+        hidden1=hidden1+hadj
         return output, [hidden1,hidden2]
 
     def initHidden(self):
-        return [Variable(torch.zeros(1,self.hidden_size)),Variable(torch.zeros(1,self.hidden_size))]
+        return [Variable(torch.zeros(1,self.hidden_size), requires_grad=True),Variable(torch.zeros(1,self.hidden_size), requires_grad=True)]
+
+class RNN_PDC2(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(RNN_PDC2, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.r1i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.r1i2o = torch.nn.Linear(input_size + hidden_size, output_size)
+        self.err2c = torch.nn.Linear(input_size, hidden_size,bias=False)
+        self.c2r1h = torch.nn.Linear(hidden_size, hidden_size)
+        self.softmax = torch.nn.LogSoftmax(dim=1)
+        self.sigmoid = torch.nn.Sigmoid()
+
+    def forward(self, input, hidden, result):
+        combined1 = torch.cat((input, hidden[0]), 1)
+        hidden1 = self.r1i2h(combined1)
+        output = self.r1i2o(combined1)
+        output = self.softmax(output)
+        errin=result-torch.exp(output)
+        context=self.sigmoid(hidden[1])
+        context=context+self.sigmoid(self.err2c(errin))
+        hidden1=hidden1+context
+        return output, [hidden1,context]
+
+    def initHidden(self):
+        return [Variable(torch.zeros(1,self.hidden_size), requires_grad=True),Variable(torch.zeros(1,self.hidden_size), requires_grad=True)]
+
+class RNN_PDC3(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, pipe_size, output_size):
+        super(RNN_PDC3, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.pipe_size = pipe_size
+        self.input_size = input_size
+        self.r1i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.r1i2o = torch.nn.Linear(input_size + hidden_size, output_size)
+        self.err2c = torch.nn.Linear(input_size*pipe_size ,hidden_size, bias=False)
+        self.c2r1h = torch.nn.Linear(hidden_size, hidden_size)
+        self.softmax = torch.nn.LogSoftmax(dim=1)
+        self.sigmoid = torch.nn.Sigmoid()
+
+    def forward(self, input, hidden, result):
+        combined1 = torch.cat((input, hidden[0]), 1)
+        hidden1 = self.r1i2h(combined1)
+        output = self.r1i2o(combined1)
+        output = self.softmax(output)
+        errin = result - torch.exp(output)
+        errpipe=hidden[1]
+        errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
+        context = 2*self.sigmoid(hidden[2])-1
+        context = context + (2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)
+        hidden1 = hidden1 + context
+        return output, [hidden1, errpipe, context]
+
+    def initHidden(self):
+        return [Variable(torch.zeros(1, self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, self.hidden_size), requires_grad=True)]
+
+class RNN_PDC_LSTM(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, pipe_size, output_size):
+        super(RNN_PDC_LSTM, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.pipe_size = pipe_size
+        self.input_size = input_size
+        self.lstm = torch.nn.LSTM(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.err2c = torch.nn.Linear(input_size*pipe_size ,hidden_size, bias=False)
+        self.c2r1h = torch.nn.Linear(hidden_size, hidden_size)
+        self.softmax = torch.nn.LogSoftmax()
+        self.sigmoid = torch.nn.Sigmoid()
+        self.hardtanh=torch.nn.Hardtanh()
+
+    def forward(self, input, hidden, result):
+        """
+
+        :param input:
+        :param hidden: [(lstm h0, c0),(errpipe),context]
+        :param result:
+        :return:
+        """
+        hidden0=hidden[0][0].view(1, 1, self.hidden_size)
+        c0 = hidden[0][1].view(1, 1, self.hidden_size)
+        hout, (hidden1,c1) = self.lstm(input.view(1, 1, self.input_size), (hidden0,c0))
+        output = self.h2o(hout.view(self.hidden_size))
+        output = self.softmax(output)
+        errin = result - torch.exp(output)
+        errpipe=hidden[1]
+        errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
+        context = self.hardtanh(hidden[2]) #2*self.sigmoid(hidden[2])-1
+        context = context+(2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)
+        hidden1 = hidden1 + context
+        return output, [(hidden1,c1), errpipe, context]
+
+    def initHidden(self):
+        return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, self.hidden_size), requires_grad=True)]
 
 class RNN1(torch.nn.Module):
     def __init__(self, input_size,hidden_size, output_size):
@@ -276,7 +426,7 @@ class RNN1(torch.nn.Module):
         self.hidden_size = hidden_size
         self.i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
         self.i2o = torch.nn.Linear(input_size + hidden_size, output_size)
-        self.softmax = torch.nn.LogSoftmax()
+        self.softmax = torch.nn.LogSoftmax(dim=1)
 
     def forward(self, input, hidden, y):
         combined = torch.cat((input, hidden), 1)
@@ -286,7 +436,7 @@ class RNN1(torch.nn.Module):
         return output, hidden
 
     def initHidden(self):
-        return Variable(torch.zeros(1,self.hidden_size))
+        return Variable(torch.zeros(1,self.hidden_size), requires_grad=True)
 
 class RNN2(torch.nn.Module):
     """
@@ -330,7 +480,7 @@ class RNNR2(torch.nn.Module):
         self.sigmoid = torch.nn.Sigmoid()
         self.softmax = torch.nn.LogSoftmax()
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden, y=None):
         hidden1=hidden[0]
         hidden2=hidden[1]
         hidden1N=self.sigmoid(hidden1)
@@ -396,8 +546,7 @@ class LSTM(torch.nn.Module):
         self.h2o = torch.nn.Linear(hidden_size, output_size)
         self.softmax = torch.nn.LogSoftmax()
 
-    def forward(self, input, hidden):
-        # print(input,hidden)
+    def forward(self, input, hidden, y=None):
         hout, hidden = self.lstm(input.view(1, 1, self.input_size), hidden)
         output=self.h2o(hout.view(self.hidden_size))
         output = self.softmax(output)
@@ -456,6 +605,153 @@ class CNN(torch.nn.Module):
         output = self.softmax(pool1)
         return output
 
+class PT_2step(object):
+    """
+    2 step learning extension of pytorch
+    """
+    def __init__(self):
+        self.model=None
+        self.seqgen = SeqGen()
+
+    def do_eval(self, step, hidden=None, init=0):
+        seqres = []
+        seqres.append(init)
+        xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(init, length=2)).reshape(-1, 2)),
+                       requires_grad=False)
+        xin = xin.type(torch.FloatTensor)
+
+        def linp(vec):
+            """
+            Softmax function
+            :param vec:
+            :return:
+            """
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        def logp(vec):
+            """
+            LogSoftmax function
+            :param vec:
+            :return:
+            """
+            vec = np.exp(vec)
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        if type(hidden) == type(None):
+            hidden = self.model.initHidden()
+        for ii in range(step):
+            y = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(self.seqs[ii], length=2)).reshape(-1, 2)),
+                         requires_grad=False)
+            y = y.type(torch.FloatTensor)
+            y_pred, hidden = self.model(xin, hidden, y)
+            ynp = y_pred.data.numpy().reshape(2)
+            rndp = np.random.rand()
+            pii = logp(ynp)
+            # print(ynp)
+            # print(pii)
+            dig = 0
+            for ii in range(len(pii)):
+                rndp = rndp - pii[ii]
+                if rndp < 0:
+                    dig = ii
+                    break
+            xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig, length=2)).reshape(-1, 2)),
+                           requires_grad=False)
+            xin = xin.type(torch.FloatTensor)
+            seqres.append(dig)
+
+        return seqres, self.seqs
+
+    def run(self,length,period,delta=0.5,learning_rate=1e-2,window=10):
+        print("Sequence generating...")
+        seqs = self.seqgen.gen_contextseq(length, period, delta=delta)
+        self.seqs = seqs
+        # def __init__(self, input_size, concept_size, hidden_size, output_size):
+        print("Learning preparation...")
+
+        # rnn=RNN1(2, 5, 2)
+        rnn = RNN_PDC2(2, 5, 2)
+
+        def customized_loss(xl, yl, model):
+            # print(x,y)
+            l2_reg = Variable(torch.FloatTensor(1), requires_grad=True)
+            for ii,W in enumerate(model.parameters()):
+                l2_reg = l2_reg + W.norm(2)
+            loss=0
+            for ii in range(len(xl)):
+                loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
+                # loss = loss - (torch.sum(xl[ii] * yl[ii]))
+                # loss = loss - (torch.sum(torch.exp(xl[ii]) * yl[ii]))
+            return loss #+ 0.00 * l2_reg
+
+        def rnn_ffc(ii,hidden):
+            """
+            rnn feedforward chain
+            :return:
+            """
+            outputl = []
+            yl = []
+            for nn in range(window):
+                num1 = self.seqs[ii + nn]
+                num2 = self.seqs[ii + nn + 1]
+                np1 = np.array(self.seqgen.one_hot(num1, length=2))
+                np2 = np.array(self.seqgen.one_hot(num2, length=2))
+                x = Variable(torch.from_numpy(np1.reshape(-1, 2)), requires_grad=True)
+                y = Variable(torch.from_numpy(np2.reshape(-1, 2)), requires_grad=False)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                output, hidden = rnn(x, hidden, y)
+                outputl.append(output)
+                yl.append(y)
+            loss = customized_loss(outputl, yl, rnn)
+            return loss
+
+        optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+        # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+
+        his = 0
+        step = len(seqs)
+        train_data = []
+        hidden = rnn.initHidden()
+        for ii in range(0, step - window, window):
+
+            # ### Here comes in step 1, hidden optimization (scipy minimize approach)
+            #
+            # def fun(para):
+            #     hidden=Variable(torch.from_numpy(para.reshape(1,-1)), requires_grad=False)
+            #     hidden = hidden.type(torch.FloatTensor)
+            #     loss = rnn_ffc(hidden)
+            #     return loss.data.numpy()[0]
+            # x=hidden.data.numpy()
+            # res=minimize(fun, x, method='SLSQP')
+            # print(res)
+            # hidden=res.x
+
+            optimizerH = torch.optim.Adam(hidden, lr=learning_rate, weight_decay=0)
+            for ii_step in range(10):
+                loss = rnn_ffc(ii,hidden)
+                optimizerH.zero_grad()
+                loss.backward()
+                optimizerH.step()
+
+            ### Then comes step 2, synapse potimization
+            loss = rnn_ffc(ii,hidden)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            if int(ii / 10) != his:
+                print(ii, loss.data[0])
+                his = int(ii / 10)
+            train_data.append(loss.data[0])
+
+
+        plt.plot(train_data)
+        plt.show()
+
+        self.model = rnn
+
 class PT_RNN_PDC(object):
     """
     RNN predictive coding testing
@@ -493,8 +789,10 @@ class PT_RNN_PDC(object):
 
         if type(hidden) == type(None):
             hidden = self.model.initHidden()
+        hiddenres = []
+        hiddenres.append(hidden)
         for ii in range(step):
-            y = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(self.seqs[ii], length=2)).reshape(-1, 2)),
+            y = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(self.seqs[ii+1], length=2)).reshape(-1, 2)),
                            requires_grad=False)
             y = y.type(torch.FloatTensor)
             y_pred, hidden = self.model(xin, hidden, y)
@@ -512,9 +810,11 @@ class PT_RNN_PDC(object):
             xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig, length=2)).reshape(-1, 2)),
                            requires_grad=False)
             xin = xin.type(torch.FloatTensor)
+            xin = y
             seqres.append(dig)
+            hiddenres.append(hidden)
 
-        return seqres,self.seqs
+        return seqres,self.seqs,hiddenres
 
 
     def run(self,length,period,delta=0.5,learning_rate=1e-2,window=10):
@@ -523,9 +823,11 @@ class PT_RNN_PDC(object):
         self.seqs = seqs
         # def __init__(self, input_size, concept_size, hidden_size, output_size):
         print("Learning preparation...")
-        # rnn=RNN1(2, 5, 2)
+        # rnn=RNN(2, 5, 2)
 
-        rnn = RNN_PDC(2, 5, 2)
+        # rnn = RNN_PDC3(2, 5, 6, 2)
+
+        rnn = RNN_PDC_LSTM(2, 10, 6, 2)
 
         # rnn = RNN2(2, 10, 10, 2)
 
@@ -544,9 +846,9 @@ class PT_RNN_PDC(object):
                 l2_reg = l2_reg + W.norm(2)
             loss=0
             for ii in range(len(xl)):
-                loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
+                # loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
                 # loss = loss - (torch.sum(xl[ii] * yl[ii]))
-                # loss = loss - (torch.sum(torch.exp(xl[ii]) * yl[ii]))
+                loss = loss - (torch.sum(torch.exp(xl[ii]) * yl[ii]))
             return loss #+ 0.00 * l2_reg
 
 
