@@ -13,10 +13,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from ncautil.tfnlp import TFNet
+from ncautil.ncalearn import pca_proj
 import tensorflow as tf
 import torch
 from torch.autograd import Variable
 from scipy.optimize import minimize
+from sklearn.manifold import TSNE
+from mpl_toolkits.mplot3d import Axes3D
+from sklearn.cluster import KMeans
 
 __author__ = "Harry He"
 
@@ -35,15 +39,17 @@ class SeqGen(object):
         :param length: sequence length
         :return: res=[]
         """
-        rule30={
+        rule301={
             "111":0, "110":0, "101":0, "100":1,"011":1,"010":1,"001":1,"000":0,
         }
-        rule110={
+        rule1101={
             "111":0,"110":1,"101":1,"100":0,"011":1,"010":1,"001":1,"000":0,
         }
         res=[]
         init=[0]*size
         init[0]=1
+        res.append(init)
+        context=[]
 
         def cellauto(input,rule):
             """
@@ -60,18 +66,22 @@ class SeqGen(object):
                 item3=input[(ii+1)%len(input)]
                 ikey=str(item1)+str(item2)+str(item3)
                 output[ii]=rule[ikey]
+            if np.max(np.array(output))==0:
+                output[0]=1
             return output
 
         for ii_l in range(length):
             p1=int((1+delta*(np.random.rand()-0.5)*2)*period)
             for ii_p1 in range(p1):
-                nitem=cellauto(res[-1],rule30)
+                nitem=cellauto(res[-1],rule301)
                 res.append(nitem)
+                context.append(-1)
             p2 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period)
             for ii_p2 in range(p2):
-                nitem = cellauto(res[-1], rule110)
+                nitem = cellauto(res[-1], rule1101)
                 res.append(nitem)
-        return res
+                context.append(1)
+        return res,context
 
     def gen_contextseq(self,length, period, delta=0.5):
         """
@@ -96,6 +106,102 @@ class SeqGen(object):
             for ii_p3 in range(p3):
                 res = res + context3
         return res
+
+    def gen_contextseq_ABC(self,length, period, delta=0.5):
+        """
+        Generate context varying sequence
+        :param length: length of certain context
+        :param delta: varying of period
+        :return: res=[]
+        """
+        tres=[]
+        res=[]
+        cA = [2, 3, 5, 7, 11, 13]
+        cB = [0, 1, 4, 6, 8, 9, 10, 12, 14, 15]
+        nA = len(cA)
+        nB = len(cB)
+        context1=[0,0,1]
+        contextt_1 = [-1, -1, -1]
+        context2 = [0, 0, 1, 1]
+        contextt_2 = [0.5, 0.5, 0.5, 0.5]
+        context3 = [0, 0, 1, 1, 1]
+        contextt_3 = [1, 1, 1, 1, 1]
+        contextt_tracker=[]
+        for ii_l in range(length):
+            p1=int((1+delta*(np.random.rand()-0.5)*2)*period)
+            for ii_p1 in range(p1):
+                tres=tres+context1
+                contextt_tracker=contextt_tracker+contextt_1
+            p2 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period)
+            for ii_p2 in range(p2):
+                tres=tres+context2
+                contextt_tracker = contextt_tracker + contextt_2
+            p3 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period)
+            for ii_p3 in range(p3):
+                tres = tres + context3
+                contextt_tracker = contextt_tracker + contextt_3
+        for item in tres:
+            if item==0:
+                id = int(np.floor(np.random.rand() * nA))
+                pknum = cA[id]
+            elif item==1:
+                id = int(np.floor(np.random.rand() * nB))
+                pknum = cB[id]
+            res.append(pknum)
+        return res,contextt_tracker
+
+    def gen_contextseq_h(self,length, period1, period2, delta=0.5):
+        """
+        Generate context varying sequence with 2 level hierachy
+        :param length: length of certain context
+        :param delta: varying of period
+        :return: res=[]
+        """
+        res=[]
+        context1=[0,0,1]
+        contextb_t1=[0,0,0]
+        context2 = [0, 0, 1, 1]
+        contextb_t2 = [1, 1, 1, 1]
+        context3=[0,0,1,1,1]
+        contextb_t3 = [2,2,2,2,2]
+        contextt_tracker = []
+        contextb_tracker = []
+        for ii_l in range(length):
+            p1=int((1+delta*(np.random.rand()-0.5)*2)*period1)
+            for ii_p1 in range(p1):
+                p11=int((1+delta*(np.random.rand()-0.5)*2)*period2)
+                for ii_p1 in range(p11):
+                    res=res+context1
+                    contextb_tracker=contextb_tracker+contextb_t1
+                    contextt_tracker=contextt_tracker+[-1]*len(context1)
+                p21 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period2)
+                for ii_p2 in range(p21):
+                    res=res+context2
+                    contextb_tracker = contextb_tracker + contextb_t2
+                    contextt_tracker = contextt_tracker + [-1] * len(context2)
+                p31 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period2)
+                for ii_p3 in range(p31):
+                    res = res + context3
+                    contextb_tracker = contextb_tracker + contextb_t3
+                    contextt_tracker = contextt_tracker + [-1] * len(context3)
+            p2 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period1)
+            for ii_p2 in range(p2):
+                p32 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period2)
+                for ii_p3 in range(p32):
+                    res = res + context3
+                    contextb_tracker = contextb_tracker + contextb_t3
+                    contextt_tracker = contextt_tracker + [1] * len(context3)
+                p22 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period2)
+                for ii_p2 in range(p22):
+                    res = res + context2
+                    contextb_tracker = contextb_tracker + contextb_t2
+                    contextt_tracker = contextt_tracker + [1] * len(context2)
+                p12 = int((1 + delta * (np.random.rand() - 0.5) * 2) * period2)
+                for ii_p1 in range(p12):
+                    res = res + context1
+                    contextb_tracker = contextb_tracker + contextb_t1
+                    contextt_tracker = contextt_tracker + [1] * len(context1)
+        return res,contextt_tracker,contextb_tracker
 
     def gen_cantorseq(self,length,depth=2):
         """
@@ -293,7 +399,96 @@ class SeqGen(object):
                 res.append(ytemp)
         return res
 
+    def pltsne(self,context,downsample=10):
+        """
+        Plot tsne clustering of context
+        :param data: (length,dim)
+        :return:
+        """
+        context=np.array(context)
+        assert len(context.shape)==2
+        assert len(context)>len(context[0])
+        tsnetrainer = TSNE(perplexity=20, n_components=2, init='pca', n_iter=5000, method='exact')
+        ebmpick = context[0:-1:downsample, :]
+        print(ebmpick.shape)
+        last_tsne = tsnetrainer.fit_transform(ebmpick)
+        plt.figure(figsize=(18, 18))  # in inches
+        for i in range(len(ebmpick)):
+            x, y = last_tsne[i, :]
+            plt.scatter(x, y)
+        plt.show()
+
+    def pltpca(self,context,dim=2,downsample=1,cluster=None):
+        """
+        Plot PCA of context
+        :param context:
+        :param dim:
+        :param downsample:
+        :return:
+        """
+        context = np.array(context)
+        assert len(context.shape) == 2
+        assert len(context) > len(context[0])
+        ebmpick = context[0:-1:downsample, :]
+        print(ebmpick.shape)
+        res,pM=pca_proj(ebmpick.T, dim)
+        plt.figure(figsize=(18, 18))  # in inches
+        print("Plotting result...")
+        if type(cluster)==type(None):
+            for i in range(len(ebmpick)):
+                x, y = res.T[i, :]
+                plt.scatter(x, y,marker='+')
+        else:
+            clist=["b","g","r","y"]
+            for i in range(len(ebmpick)):
+                x, y = res.T[i, :]
+                c=cluster[i]
+                plt.scatter(x, y,c=clist[c],marker='+')
+        # plt.show()
+        plt.hist2d(res.T[:,0],res.T[:,1],bins=30)
+        plt.colorbar()
+        plt.show()
+
+    def plt3d(self,context,downsample=1,cluster=None):
+        """
+        Plot 3D of context
+        :param context:
+        :param dim:
+        :param downsample:
+        :param cluster:
+        :return:
+        """
+        context = np.array(context)
+        assert len(context.shape) == 2
+        assert len(context) > len(context[0])
+        ebmpick = context[0:-1:downsample, :]
+        print(ebmpick.shape)
+        plt.figure(figsize=(18, 18))  # in inches
+        print("Plotting result...")
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        if type(cluster) == type(None):
+            for i in range(len(ebmpick)):
+                x, y, z = ebmpick[i, :]
+                ax.scatter(x, y, z)
+        else:
+            clist = ["b", "g", "r"]
+            for i in range(len(ebmpick)):
+                x, y, z = ebmpick[i, :]
+                c = cluster[i]
+                ax.scatter(x, y, z, c=clist[c])
+
+        ax.set_xlabel('X Label')
+        ax.set_ylabel('Y Label')
+        ax.set_zlabel('Z Label')
+        plt.show()
+
 class RNN_PDC(torch.nn.Module):
+    """
+    RNN+RNN Context Layer
+    """
     def __init__(self, input_size, hidden_size, output_size):
         super(RNN_PDC, self).__init__()
 
@@ -378,17 +573,63 @@ class RNN_PDC3(torch.nn.Module):
                 Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
                 Variable(torch.zeros(1, self.hidden_size), requires_grad=True)]
 
+class RNN_PDC_HTANH(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+        super(RNN_PDC_HTANH, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.pipe_size = pipe_size
+        self.input_size = input_size
+        self.context_size = context_size
+        self.r1i2h = torch.nn.Linear(input_size + hidden_size, hidden_size)
+        self.r1i2o = torch.nn.Linear(input_size + hidden_size, output_size)
+        self.err2c = torch.nn.Linear(input_size*pipe_size ,context_size, bias=False)
+        self.c2r1h = torch.nn.Linear(context_size, hidden_size)
+        self.c2c = torch.nn.Linear(context_size, context_size)
+        self.softmax = torch.nn.LogSoftmax(dim=1)
+        self.sigmoid = torch.nn.Sigmoid()
+        self.hardtanh = torch.nn.Hardtanh()
+
+    def forward(self, input, hidden, result):
+        """
+
+        :param input:
+        :param hidden: [h0, errpipe ,context]
+        :param result:
+        :return:
+        """
+        combined1 = torch.cat((input, hidden[0]), 1)
+        hidden1 = self.r1i2h(combined1)
+        output = self.r1i2o(combined1)
+        output = self.softmax(output)
+        errin = result - torch.exp(output)
+        errpipe=hidden[1]
+        errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
+        context = hidden[2]
+        context = self.hardtanh(context + (2 * self.sigmoid(self.err2c(errpipe.view(1, -1))) - 1))
+        # context = self.hardtanh(context + (2 * self.sigmoid(self.err2c(errpipe.view(1, -1))) - 1) + (
+        #         2 * self.sigmoid(self.c2c(context)) - 1))
+        hidden1 = hidden1 + self.c2r1h(context)
+        return output, [hidden1, errpipe, context]
+
+    def initHidden(self):
+        return [Variable(torch.zeros(1, self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+
 class RNN_PDC_LSTM(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, pipe_size, output_size):
+    def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
         super(RNN_PDC_LSTM, self).__init__()
 
         self.hidden_size = hidden_size
         self.pipe_size = pipe_size
         self.input_size = input_size
+        self.context_size = context_size
         self.lstm = torch.nn.LSTM(input_size, hidden_size)
         self.h2o = torch.nn.Linear(hidden_size, output_size)
-        self.err2c = torch.nn.Linear(input_size*pipe_size ,hidden_size, bias=False)
-        self.c2r1h = torch.nn.Linear(hidden_size, hidden_size)
+        self.err2c = torch.nn.Linear(input_size*pipe_size ,context_size, bias=False)
+        self.c2r1h = torch.nn.Linear(context_size, hidden_size)
+        self.c2c = torch.nn.Linear(context_size, context_size)
         self.softmax = torch.nn.LogSoftmax()
         self.sigmoid = torch.nn.Sigmoid()
         self.hardtanh=torch.nn.Hardtanh()
@@ -409,15 +650,136 @@ class RNN_PDC_LSTM(torch.nn.Module):
         errin = result - torch.exp(output)
         errpipe=hidden[1]
         errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
-        context = self.hardtanh(hidden[2]) #2*self.sigmoid(hidden[2])-1
-        context = context+(2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)
-        hidden1 = hidden1 + context
+        # context = self.hardtanh(hidden[2]) #2*self.sigmoid(hidden[2])-1
+        context=hidden[2]
+        context = self.hardtanh(context+(2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)+(2*self.sigmoid(self.c2c(context))-1))
+        # hidden1 = hidden1 * self.c2r1h(context)
+        hidden1 = hidden1 + self.c2r1h(context)
+        # hidden1 = hidden1
         return output, [(hidden1,c1), errpipe, context]
 
     def initHidden(self):
         return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
                 Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
-                Variable(torch.zeros(1, self.hidden_size), requires_grad=True)]
+                Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+
+class RNN_PDC_LSTMV2(torch.nn.Module):
+    """
+    Use signal * error gate to drive context swtich instead of error itself
+    ### But not working ...
+    """
+    def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+        super(RNN_PDC_LSTMV2, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.pipe_size = pipe_size
+        self.input_size = input_size
+        self.context_size = context_size
+        self.lstm = torch.nn.LSTM(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.err2c = torch.nn.Linear(input_size*pipe_size ,context_size, bias=False)
+        self.c2r1h = torch.nn.Linear(context_size, hidden_size)
+        self.softmax = torch.nn.LogSoftmax()
+        self.sigmoid = torch.nn.Sigmoid()
+        self.hardtanh=torch.nn.Hardtanh()
+
+    def forward(self, input, hidden, result):
+        """
+
+        :param input:
+        :param hidden: [(lstm h0, c0),(errpipe),context]
+        :param result:
+        :return:
+        """
+        hidden0=hidden[0][0].view(1, 1, self.hidden_size)
+        c0 = hidden[0][1].view(1, 1, self.hidden_size)
+        hout, (hidden1,c1) = self.lstm(input.view(1, 1, self.input_size), (hidden0,c0))
+        output = self.h2o(hout.view(self.hidden_size))
+        output = self.softmax(output)
+        errgate = torch.abs(result - torch.exp(output))
+        errin = errgate*result
+        errpipe=hidden[1]
+        errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
+        context = self.hardtanh(hidden[2]) #2*self.sigmoid(hidden[2])-1
+        context = context+(2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)
+        hidden1 = hidden1 * self.c2r1h(context)
+        return output, [(hidden1,c1), errpipe, context]
+
+    def initHidden(self):
+        return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+
+class RNN_PDC_LSTM_L2(torch.nn.Module):
+    """
+    Two level nested PDC
+    """
+    def __init__(self, input_size, hidden_size, pipe_size, context_size,output_size):
+        super(RNN_PDC_LSTM_L2, self).__init__()
+        self.hidden_size = hidden_size
+        self.pipe_size = pipe_size
+        self.input_size = input_size
+        self.context_size = context_size
+        self.pdcl1=RNN_PDC_LSTM(input_size, hidden_size, pipe_size, context_size,output_size)
+        self.pdcl2 = RNN_PDC_LSTM(context_size, hidden_size, pipe_size, context_size, context_size)
+
+    def forward(self, input, hidden, result):
+        # hidden: [(lstm h0, c0),(errpipe),context]
+        output1, hidden1 = self.pdcl1(input, hidden[0], result)
+        output2, hidden2 = self.pdcl2(hidden[0][2], hidden[1],hidden1[2])
+        return output1,[hidden1,hidden2]
+
+    def initHidden(self):
+        hidden1=[(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+        hidden2=[(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
+                Variable(torch.zeros(self.context_size, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+        return [hidden1,hidden2]
+
+
+class RNN_PDC_LSTM_CA(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, pipe_size, context_size,output_size):
+        super(RNN_PDC_LSTM_CA, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.pipe_size = pipe_size
+        self.input_size = input_size
+        self.context_size = context_size
+        self.lstm = torch.nn.LSTM(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.err2c = torch.nn.Linear(input_size*pipe_size ,context_size, bias=False)
+        self.c2r1h = torch.nn.Linear(context_size, hidden_size)
+        self.softmax = torch.nn.LogSoftmax()
+        self.sigmoid = torch.nn.Sigmoid()
+        self.hardtanh=torch.nn.Hardtanh()
+
+    def forward(self, input, hidden, result):
+        """
+
+        :param input:
+        :param hidden: [(lstm h0, c0),(errpipe),context]
+        :param result:
+        :return:
+        """
+        hidden0=hidden[0][0].view(1, 1, self.hidden_size)
+        c0 = hidden[0][1].view(1, 1, self.hidden_size)
+        hout, (hidden1,c1) = self.lstm(input.view(1, 1, self.input_size), (hidden0,c0))
+        output = self.h2o(hout.view(self.hidden_size))
+        output = self.softmax(output)
+        errin = result - torch.exp(output)/torch.max(torch.exp(output))
+        errpipe=hidden[1]
+        errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
+        context = self.hardtanh(hidden[2]) #2*self.sigmoid(hidden[2])-1
+        context = context+(2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)
+        hidden1 = hidden1 * self.c2r1h(context)
+        return output, [(hidden1,c1), errpipe, context]
+
+    def initHidden(self):
+        return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, self.context_size), requires_grad=True)]
 
 class RNN1(torch.nn.Module):
     def __init__(self, input_size,hidden_size, output_size):
@@ -758,13 +1120,26 @@ class PT_RNN_PDC(object):
     """
     def __init__(self):
         self.seqgen = SeqGen()
-        self.seqs = None
+        # self.seqs = None
+        self.ct1=None
+        self.ct2 = None
         self.model = None
+        self.seqpara = None
 
-    def do_eval(self,step,hidden=None,init=0):
+    def do_eval(self,step,hidden=None,init=None):
+
+        length = int(np.ceil(step / self.seqpara[0] / self.seqpara[1]) / 4)
+        print(length, self.seqpara[0], self.seqpara[1])
+        tseqs, tc1, tc2 = self.seqgen.gen_contextseq_h(length, self.seqpara[0], self.seqpara[1], delta=self.seqpara[2])
+        self.seqs = tseqs
+        self.ct1 = tc1
+        self.ct2 = tc2
+
         seqres = []
+        init=self.seqs[0]
         seqres.append(init)
-        xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(init, length=2)).reshape(-1, 2)),
+        lsize = 2
+        xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(init, length=lsize)).reshape(-1, lsize)),
                        requires_grad=False)
         xin = xin.type(torch.FloatTensor)
 
@@ -792,11 +1167,11 @@ class PT_RNN_PDC(object):
         hiddenres = []
         hiddenres.append(hidden)
         for ii in range(step):
-            y = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(self.seqs[ii+1], length=2)).reshape(-1, 2)),
+            y = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(tseqs[ii+1], length=lsize)).reshape(-1, lsize)),
                            requires_grad=False)
             y = y.type(torch.FloatTensor)
             y_pred, hidden = self.model(xin, hidden, y)
-            ynp = y_pred.data.numpy().reshape(2)
+            ynp = y_pred.data.numpy().reshape(lsize)
             rndp = np.random.rand()
             pii = logp(ynp)
             # print(ynp)
@@ -807,27 +1182,42 @@ class PT_RNN_PDC(object):
                 if rndp < 0:
                     dig = ii
                     break
-            xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig, length=2)).reshape(-1, 2)),
+            xin = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(dig, length=lsize)).reshape(-1, lsize)),
                            requires_grad=False)
             xin = xin.type(torch.FloatTensor)
             xin = y
             seqres.append(dig)
+            # seqres.append(np.exp(ynp))
             hiddenres.append(hidden)
 
         return seqres,self.seqs,hiddenres
 
-
-    def run(self,length,period,delta=0.5,learning_rate=1e-2,window=10):
+    def run(self,length,period1,period2,delta=0.5,learning_rate=1e-2,window=10):
         print("Sequence generating...")
-        seqs = self.seqgen.gen_contextseq(length, period, delta=delta)
-        self.seqs = seqs
+        # seqs = self.seqgen.gen_contextseq(length, period, delta=delta)
+        self.seqpara=[period1,period2,delta]
+        seqs, c1, c2 = self.seqgen.gen_contextseq_h(length, period1, period2, delta=delta)
+        # seqs, ct = self.seqgen.gen_contextseq_ABC(length, period1, delta=delta)
+        # seqs = self.seqgen.gen_cellauto(vec,length,period,delta=delta)
+        # self.seqs = seqs
+        # self.ct1 = c1
+        # self.ct2 = c2
         # def __init__(self, input_size, concept_size, hidden_size, output_size):
         print("Learning preparation...")
         # rnn=RNN(2, 5, 2)
 
         # rnn = RNN_PDC3(2, 5, 6, 2)
+        lsize=2
+        # rnn = RNN_PDC_LSTM(lsize, 10, 3, 6, lsize)
 
-        rnn = RNN_PDC_LSTM(2, 10, 6, 2)
+        rnn = RNN_PDC_HTANH(lsize, 10, 3, 6, lsize)
+
+        # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+        # rnn = RNN_PDC_LSTMV2(2, 6, 3, 3, 2)
+
+        #def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+        # lsize=16
+        # rnn = RNN_PDC_LSTM_L2(lsize, 6, 3, 3, lsize)
 
         # rnn = RNN2(2, 10, 10, 2)
 
@@ -848,7 +1238,177 @@ class PT_RNN_PDC(object):
             for ii in range(len(xl)):
                 # loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
                 # loss = loss - (torch.sum(xl[ii] * yl[ii]))
-                loss = loss - (torch.sum(torch.exp(xl[ii]) * yl[ii]))
+                loss = loss - torch.sqrt(torch.sum(torch.exp(xl[ii]) * yl[ii]))
+            return loss #+ 0.00 * l2_reg
+
+        def errcell_loss(errl):
+            loss = 0
+            for ii in range(len(errl)):
+                # loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
+                # loss = loss - (torch.sum(xl[ii] * yl[ii]))
+                loss = loss+torch.sum(errl[ii][:,-1]*errl[ii][:,-1])
+            return loss
+
+
+        optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+        # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+
+        his = 0
+        step=len(seqs)
+        train_data=[]
+        for ii in range(0,step-window,window):
+            outputl=[]
+            yl=[]
+            errl=[]
+            hidden = rnn.initHidden()
+            for nn in range(window):
+                num1=seqs[ii+nn]
+                num2 = seqs[ii+nn+1]
+                np1= np.array(self.seqgen.one_hot(num1,length=lsize))
+                np2 = np.array(self.seqgen.one_hot(num2,length=lsize))
+                x = Variable(torch.from_numpy(np1.reshape(-1, lsize)), requires_grad=True)
+                y = Variable(torch.from_numpy(np2.reshape(-1, lsize)), requires_grad=False)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                output, hidden = rnn(x, hidden, y)
+                outputl.append(output)
+                # hidden: [(lstm h0, c0),(errpipe),context],[(lstm h0, c0),(errpipe),context]
+                # errl.append(hidden[0][1])
+                # errl.append(hidden[1][1])
+                yl.append(y)
+            loss = customized_loss(outputl, yl, rnn)
+            # loss = errcell_loss(errl)
+
+            if int(ii / 5000) != his:
+                print(ii, loss.data[0])
+                his=int(ii / 5000)
+            train_data.append(loss.data[0])
+
+            optimizer.zero_grad()
+
+            # for para in rnn.parameters():
+            #     print(para)
+
+            # Backward pass: compute gradient of the loss with respect to model
+            # parameters
+            loss.backward()
+
+            # Calling the step function on an Optimizer makes an update to its
+            # parameters
+            optimizer.step()
+
+        plt.plot(train_data)
+        plt.show()
+
+        self.model=rnn
+
+    def context_postproc(self,context,conceptN):
+        """
+        Post processing of context for hieracical PDC
+        :param context:
+        :return:
+        """
+        context=np.array(context)
+        assert len(context.shape)==2
+        assert context.shape[0]>context.shape[1]
+        kmeans = KMeans(n_clusters=conceptN, random_state=0).fit(context)
+        self.seqgen.pltpca(context[5000:], cluster=kmeans.labels_[5000:])
+
+
+class PT_RNN_PDC_CA(object):
+    """
+    RNN predictive coding testing for cellular automaton
+    """
+    def __init__(self):
+        self.seqgen = SeqGen()
+        self.seqs = None
+        self.model = None
+        self.context=None
+
+    def do_eval(self,step,init,hidden=None):
+        seqres = []
+        seqres.append(init)
+        size=len(init)
+        xin = Variable(torch.from_numpy(np.array(init).reshape(-1, size)),
+                       requires_grad=False)
+        xin = xin.type(torch.FloatTensor)
+
+        def linp(vec):
+            """
+            Softmax function
+            :param vec:
+            :return:
+            """
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        def logp(vec):
+            """
+            LogSoftmax function
+            :param vec:
+            :return:
+            """
+            vec = np.exp(vec)
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        if type(hidden) == type(None):
+            hidden = self.model.initHidden()
+        hiddenres = []
+        hiddenres.append(hidden)
+        for ii in range(step):
+            y = Variable(torch.from_numpy(np.array(self.seqs[ii+1]).reshape(-1, size)),requires_grad=False)
+            y = y.type(torch.FloatTensor)
+            y_pred, hidden = self.model(xin, hidden, y)
+            ynp = torch.exp(y_pred).data.numpy().reshape(size)
+            ynp=ynp/np.max(ynp)
+            # for ii in range(len(ynp)):
+            #     if ynp[ii]>= 0.5:
+            #         ynp[ii]=1
+            #     else:
+            #         ynp[ii] = 0
+            # xin = Variable(torch.from_numpy(ynp.reshape(-1, size)),
+            #                requires_grad=False)
+            # xin = xin.type(torch.FloatTensor)
+            xin = y
+            seqres.append(ynp)
+            hiddenres.append(hidden)
+
+        return seqres,self.seqs,hiddenres
+
+    def run(self,size,length,period,delta=0.5,learning_rate=1e-2,window=10):
+        print("Sequence generating...")
+        seqs,context = self.seqgen.gen_cellauto(size,length,period,delta=delta)
+        self.seqs = seqs
+        self.context=context
+        # def __init__(self, input_size, concept_size, hidden_size, output_size):
+        print("Learning preparation...")
+        # rnn=RNN(2, 5, 2)
+
+        # rnn = RNN_PDC3(2, 5, 6, 2)
+
+        #def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+        rnn = RNN_PDC_LSTM_CA(size, 16, 3, 2, size)
+
+        # rnn = RNN2(2, 10, 10, 2)
+
+        # rnn = RNNR2(2, 10, 10, 2)
+
+        # rnn = RNNR3(2, 10, 2)
+
+        # rnn = LSTM(16, 16, 16)
+
+        # rnn.zero_grad()
+
+        def customized_loss(xl, yl, model):
+            # print(x,y)
+            l2_reg = Variable(torch.FloatTensor(1), requires_grad=True)
+            for ii,W in enumerate(model.parameters()):
+                l2_reg = l2_reg + W.norm(2)
+            loss=0
+            for ii in range(len(xl)):
+                loss = loss-torch.sum(torch.exp(xl[ii])/torch.exp(xl[ii]).norm(2) * yl[ii]/yl[ii].norm(2))
+                # loss = loss - (torch.sum(xl[ii] * yl[ii]))
+                # loss = loss - (torch.sum(torch.exp(xl[ii]) * yl[ii]))
             return loss #+ 0.00 * l2_reg
 
 
@@ -865,10 +1425,10 @@ class PT_RNN_PDC(object):
             for nn in range(window):
                 num1=seqs[ii+nn]
                 num2 = seqs[ii+nn+1]
-                np1= np.array(self.seqgen.one_hot(num1,length=2))
-                np2 = np.array(self.seqgen.one_hot(num2,length=2))
-                x = Variable(torch.from_numpy(np1.reshape(-1, 2)), requires_grad=True)
-                y = Variable(torch.from_numpy(np2.reshape(-1, 2)), requires_grad=False)
+                np1= np.array(num1)
+                np2 = np.array(num2)
+                x = Variable(torch.from_numpy(np1.reshape(-1, size)), requires_grad=True)
+                y = Variable(torch.from_numpy(np2.reshape(-1, size)), requires_grad=False)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 output, hidden = rnn(x, hidden, y)
                 outputl.append(output)
