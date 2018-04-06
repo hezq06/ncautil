@@ -181,7 +181,7 @@ class NLPutil(object):
         self.plot_txtmat(txtmat)
         return txtmat
 
-    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None,title=None):
+    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None,title=None,save=None):
         data=np.array(data)
         assert len(data.shape) == 2
         fig,ax=plt.subplots()
@@ -209,7 +209,12 @@ class NLPutil(object):
         plt.colorbar(fig)
         if type(title) != type(None):
             plt.title(title)
-        plt.show()
+        if type(save)!=type(None):
+            plt.savefig(save)
+            plt.gcf().clear()
+        else:
+            plt.show()
+
 
     def cal_cosdist(self,v1,v2):
         return np.dot(v1,v2)/np.linalg.norm(v1)/np.linalg.norm(v2)
