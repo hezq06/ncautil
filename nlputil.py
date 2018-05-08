@@ -186,7 +186,7 @@ class NLPutil(object):
         assert len(data.shape) == 2
         fig,ax=plt.subplots()
         img=data[:,start:start+length]
-        fig=ax.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)),np.amax(np.abs(data))))
+        fig=ax.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)),np.amax(np.abs(data))), origin='lower')
         if text!=None:
             st,end=ax.get_xlim()
             ax.xaxis.set_ticks(np.arange(st+0.5,end+0.5,1))

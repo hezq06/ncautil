@@ -24,6 +24,7 @@ import librosa.display
 from ncautil.seqgen import RNN_PDC_LSTM
 from torch.autograd import Variable
 import torch
+import time
 
 __author__ = "Harry He"
 
@@ -202,6 +203,8 @@ class PDC_Audio(object):
         self.mlost = 1.0e99
         self.model = None
 
+        self.ampl=None
+
     def data_sep(self):
         """
         Seperation of data to validation and testing sets
@@ -256,12 +259,13 @@ class PDC_Audio(object):
                     break
                 filepath=path+"/"+file
                 # print("Building "+filepath)
-                databuilt=self.data_build(filepath)
+                databuilt,mel_basis=self.data_build(filepath)
                 keydata[file]=databuilt
                 flist.append(file)
                 keydata["list"] = flist
             data_train[key]=keydata
         self.data_train=data_train
+        self.mel_basis=mel_basis
 
 
     def data_build(self,file):
@@ -274,8 +278,32 @@ class PDC_Audio(object):
         """
         sample_rate, samples = self.adu.load(file)
         log_mel, mel_basis, log_spec = self.adu.mel_specgram(samples, sample_rate, n_mels=self.lsize, nfft=4096)
-        log_mel=log_mel/np.amax(log_mel)
-        return log_mel
+        self.ampl = np.amax(np.abs(log_mel))
+        log_mel=log_mel/np.amax(np.abs(log_mel))
+        return log_mel,mel_basis
+
+    def do_eval(self,step):
+        """
+        Training evaluation
+        :return:
+        """
+        rnn=self.model
+        lsize=self.lsize
+        hidden = rnn.initHidden()
+        x = Variable(torch.zeros(1,lsize), requires_grad=True)
+        y = Variable(torch.zeros(1,lsize), requires_grad=True)
+        outputl=[]
+        outputl.append(x.data.numpy().reshape(-1,))
+        for iis in range(step):
+            x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            output, hidden = rnn(x, hidden, y, cps=0.0)
+            # print(outputl.reshape(1,-1).shape,output.data.numpy().reshape(1,-1).shape)
+            # outputl=np.stack((outputl.reshape(1,-1),output.data.numpy().reshape(1,-1)))
+            outputl.append(output.data.numpy().reshape(-1,))
+            x=output
+            y=output
+        return np.array(outputl)
+
 
     def run_training(self,step,learning_rate=1e-2,save=None):
         """
@@ -283,9 +311,24 @@ class PDC_Audio(object):
         :param learning_rate:
         :return:
         """
+        startt=time.time()
+
+        self.mlost = 1.0e9
         lsize=self.lsize
 
-        rnn = RNN_PDC_LSTM_AU(lsize, 100, 3, 100, lsize)
+        if type(self.model)==type(None):
+            # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+            rnn = RNN_PDC_LSTM_AU(lsize, 25, 3, 25, lsize)
+        else:
+            rnn=self.model
+
+        gpuavail=torch.cuda.is_available()
+        device = torch.device("cuda:0" if gpuavail else "cpu")
+        # If we are on a CUDA machine, then this should print a CUDA device:
+        print(device)
+        if gpuavail:
+            print("GPU avail1")
+            rnn.to(device)
 
         def customized_loss(xl, yl, model):
             # print(x,y)
@@ -306,10 +349,11 @@ class PDC_Audio(object):
 
         for iis in range(step):
 
-            # rkey=self.entry[int(np.random.rand()*len(self.entry))]
+            rkey=self.entry[int(np.random.rand()*len(self.entry))]
             rkey="bed"
             rlist=self.data_train[rkey]["list"]
             rfile=rlist[int(np.random.rand()*len(rlist))]
+            rfile=rlist[0]
             rdata=self.data_train[rkey][rfile]
 
             assert rdata.shape[0]==lsize
@@ -317,13 +361,19 @@ class PDC_Audio(object):
             outputl = []
             yl = []
             hidden = rnn.initHidden()
+            # vec1 = rdata[:, 0]
+            # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
             for iiss in range(rdata.shape[-1]-1):
                 vec1 = rdata[:,iiss]
                 vec2 = rdata[:,iiss + 1]
                 x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
                 y = Variable(torch.from_numpy(vec2.reshape(-1, lsize)).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-                output, hidden = rnn(x, hidden, y)
+                if gpuavail:
+                    print("GPU avail2")
+                    x, y = x.to(device), y.to(device)
+                output, hidden = rnn(x, hidden, y, cps=0.0)
+                # x=output
                 outputl.append(output)
                 yl.append(y)
             loss = customized_loss(outputl, yl, rnn)
@@ -333,8 +383,8 @@ class PDC_Audio(object):
                 his=int(iis / 100)
             train_hist.append(loss.data[0])
 
-            if loss.data[0] < self.mlost:
-                self.mlost = loss.data[0]
+            if loss.data[0]<self.mlost:
+                self.mlost=loss.data[0]
                 self.model = copy.deepcopy(rnn)
 
             optimizer.zero_grad()
@@ -342,6 +392,9 @@ class PDC_Audio(object):
             loss.backward()
 
             optimizer.step()
+
+        endt = time.time()
+        print("Time used in training:", endt - startt)
 
         x = []
         for ii in range(len(train_hist)):
@@ -386,7 +439,7 @@ class RNN_PDC_LSTM_AU(torch.nn.Module):
         c0 = hidden[0][1].view(1, 1, self.hidden_size)
         hout, (hidden1,c1) = self.lstm(input.view(1, 1, self.input_size), (hidden0,c0))
         output = self.h2o(hout.view(self.hidden_size))
-        output = self.sigmoid(output)
+        output = self.tanh(output)
         errin = result - output
         errpipe=hidden[1]
         errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
@@ -396,10 +449,10 @@ class RNN_PDC_LSTM_AU(torch.nn.Module):
         # context = self.tanh(context + (2 * self.sigmoid(self.err2c(errpipe.view(1, -1))) - 1) + (
         #         2 * self.sigmoid(self.c2c(context)) - 1))
         context = self.hardtanh(context + (1.0-gen)*self.tanh(self.err2c(errpipe.view(1, -1))))
-        hidden1 = hidden1 * self.c2r1h(context)
+        # hidden1 = hidden1 * self.c2r1h(context)
         # hidden1 = hidden1 + cps*self.c2r1h(context)
         # hidden1 = hidden1*self.c2r2h(context)+ cps*self.c2r1h(context)
-        # hidden1 = hidden1
+        hidden1 = hidden1
         return output, [(hidden1,c1), errpipe, context]
 
     def initHidden(self):
