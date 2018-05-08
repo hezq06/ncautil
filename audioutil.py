@@ -327,7 +327,6 @@ class PDC_Audio(object):
         # If we are on a CUDA machine, then this should print a CUDA device:
         print(device)
         if gpuavail:
-            print("GPU avail1")
             rnn.to(device)
 
         def customized_loss(xl, yl, model):
@@ -360,7 +359,10 @@ class PDC_Audio(object):
 
             outputl = []
             yl = []
-            hidden = rnn.initHidden()
+            if gpuavail:
+                hidden = rnn.initHidden_cuda()
+            else:
+                hidden = rnn.initHidden()
             # vec1 = rdata[:, 0]
             # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
             for iiss in range(rdata.shape[-1]-1):
@@ -370,7 +372,6 @@ class PDC_Audio(object):
                 y = Variable(torch.from_numpy(vec2.reshape(-1, lsize)).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if gpuavail:
-                    print("GPU avail2")
                     x, y = x.to(device), y.to(device)
                 output, hidden = rnn(x, hidden, y, cps=0.0)
                 # x=output
@@ -459,6 +460,11 @@ class RNN_PDC_LSTM_AU(torch.nn.Module):
         return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
                 Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
                 Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+
+    def initHidden_cuda(self):
+        return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True).cuda(),Variable(torch.zeros(1, self.hidden_size), requires_grad=True).cuda()),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True).cuda(),
+                Variable(torch.zeros(1, self.context_size), requires_grad=True).cuda()]
 
 
 
