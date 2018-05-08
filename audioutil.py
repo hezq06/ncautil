@@ -359,7 +359,10 @@ class PDC_Audio(object):
 
             outputl = []
             yl = []
-            hidden = rnn.initHidden()
+            if gpuavail:
+                hidden = rnn.initHidden_cuda(device)
+            else:
+                hidden = rnn.initHidden()
             # vec1 = rdata[:, 0]
             # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
             for iiss in range(rdata.shape[-1]-1):
@@ -370,10 +373,10 @@ class PDC_Audio(object):
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if gpuavail:
                     x, y = x.to(device), y.to(device)
-                    hidden[0][0]=hidden[0][0].to(device)
-                    hidden[0][1] = hidden[0][1].to(device)
-                    hidden[1] = hidden[1].to(device)
-                    hidden[2] = hidden[2].to(device)
+                #     hidden[0][0]=hidden[0][0].to(device)
+                #     hidden[0][1] = hidden[0][1].to(device)
+                #     hidden[1] = hidden[1].to(device)
+                #     hidden[2] = hidden[2].to(device)
                 output, hidden = rnn(x, hidden, y, cps=0.0)
                 # x=output
                 outputl.append(output)
@@ -461,6 +464,11 @@ class RNN_PDC_LSTM_AU(torch.nn.Module):
         return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
                 Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
                 Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device):
+        return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(1, self.hidden_size), requires_grad=True).to(device)),
+                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True).to(device),
+                Variable(torch.zeros(1, self.context_size), requires_grad=True).to(device)]
 
 
 
