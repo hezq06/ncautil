@@ -334,7 +334,7 @@ class PDC_Audio(object):
             # l2_reg = Variable(torch.FloatTensor(1), requires_grad=True)
             # for ii, W in enumerate(model.parameters()):
             #     l2_reg = l2_reg + W.norm(1)
-            # loss = 0
+            loss = 0
             for ii in range(len(xl)):
                 loss = loss + torch.sqrt(torch.mean((xl[ii]-yl[ii])*(xl[ii]-yl[ii])))
             return loss  # + 0.01 * l2_reg
