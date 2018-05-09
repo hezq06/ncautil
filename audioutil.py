@@ -198,7 +198,7 @@ class PDC_Audio(object):
                     "nine","no","off","on","one","right","seven","sheila","six","stop","three","tree","two",
                     "up","wow","yes","zero"]
 
-        self.lsize=32
+        self.lsize=64
 
         self.mlost = 1.0e99
         self.model = None
@@ -289,9 +289,9 @@ class PDC_Audio(object):
         """
         rnn=self.model
         lsize=self.lsize
-        hidden = rnn.initHidden()
-        x = Variable(torch.zeros(1,lsize), requires_grad=True)
-        y = Variable(torch.zeros(1,lsize), requires_grad=True)
+        hidden = rnn.initHidden(1)
+        x = Variable(torch.zeros(1,1,lsize), requires_grad=True)
+        y = Variable(torch.zeros(1,1,lsize), requires_grad=True)
         outputl=[]
         outputl.append(x.data.numpy().reshape(-1,))
         for iis in range(step):
@@ -305,7 +305,7 @@ class PDC_Audio(object):
         return np.array(outputl)
 
 
-    def run_training(self,step,learning_rate=1e-2,save=None):
+    def run_training(self,step,learning_rate=1e-2,batch=10,save=None):
         """
         Entrance for training
         :param learning_rate:
@@ -318,7 +318,7 @@ class PDC_Audio(object):
 
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
-            rnn = RNN_PDC_LSTM_AU(lsize, 25, 3, 25, lsize)
+            rnn = RNN_PDC_LSTM_AU(lsize, 50, 3, 45, lsize)
         else:
             rnn=self.model
 
@@ -348,37 +348,37 @@ class PDC_Audio(object):
 
         for iis in range(step):
 
-            rkey=self.entry[int(np.random.rand()*len(self.entry))]
-            rkey="bed"
-            rlist=self.data_train[rkey]["list"]
-            rfile=rlist[int(np.random.rand()*len(rlist))]
-            rfile=rlist[0]
-            rdata=self.data_train[rkey][rfile]
+            rdata_b=[]
+            for iib in range(batch):
+                rkey=self.entry[int(np.random.rand()*len(self.entry))]
+                rkey="bed"
+                rlist=self.data_train[rkey]["list"]
+                rfile=rlist[int(np.random.rand()*len(rlist))]
+                rfile=rlist[0]
+                rdata=self.data_train[rkey][rfile]
+                rdata_b.append(rdata)
+            rdata_b=np.array(rdata_b)
 
-            assert rdata.shape[0]==lsize
+            assert rdata_b[0].shape[0]==lsize
 
             outputl = []
             yl = []
             if gpuavail:
-                hidden = rnn.initHidden_cuda(device)
+                hidden = rnn.initHidden_cuda(device,batch)
             else:
-                hidden = rnn.initHidden()
-            # vec1 = rdata[:, 0]
-            # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
-            for iiss in range(rdata.shape[-1]-1):
-                vec1 = rdata[:,iiss]
-                vec2 = rdata[:,iiss + 1]
-                x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
-                y = Variable(torch.from_numpy(vec2.reshape(-1, lsize)).contiguous(), requires_grad=True)
+                hidden = rnn.initHidden(batch)
+            vec1 = rdata_b[:, :, 0]
+            x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+            for iiss in range(rdata_b[0].shape[-1]-1):
+                # vec1 = rdata[:,iiss]
+                vec2 = rdata_b[:,:,iiss + 1]
+                # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
+                y = Variable(torch.from_numpy(vec2.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if gpuavail:
                     x, y = x.to(device), y.to(device)
-                #     hidden[0][0]=hidden[0][0].to(device)
-                #     hidden[0][1] = hidden[0][1].to(device)
-                #     hidden[1] = hidden[1].to(device)
-                #     hidden[2] = hidden[2].to(device)
-                output, hidden = rnn(x, hidden, y, cps=0.0)
-                # x=output
+                output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                x=output
                 outputl.append(output)
                 yl.append(y)
             loss = customized_loss(outputl, yl, rnn)
@@ -432,7 +432,7 @@ class RNN_PDC_LSTM_AU(torch.nn.Module):
         self.hardtanh=torch.nn.Hardtanh()
         self.tanh = torch.nn.Tanh()
 
-    def forward(self, input, hidden, result, cps=1.0, gen=0.0):
+    def forward(self, input, hidden, result, cps=1.0, gen=0.0, batch=1):
         """
 
         :param input:
@@ -440,35 +440,35 @@ class RNN_PDC_LSTM_AU(torch.nn.Module):
         :param result:
         :return:
         """
-        hidden0=hidden[0][0].view(1, 1, self.hidden_size)
-        c0 = hidden[0][1].view(1, 1, self.hidden_size)
-        hout, (hidden1,c1) = self.lstm(input.view(1, 1, self.input_size), (hidden0,c0))
-        output = self.h2o(hout.view(self.hidden_size))
+        hidden0=hidden[0][0].view(1, batch, self.hidden_size)
+        c0 = hidden[0][1].view(1, batch, self.hidden_size)
+        hout, (hidden1,c1) = self.lstm(input.view(1, batch, self.input_size), (hidden0,c0))
+        output = self.h2o(hout.view(batch, self.hidden_size))
         output = self.tanh(output)
         errin = result - output
         errpipe=hidden[1]
-        errpipe=torch.cat((errpipe[:,1:], errin.view(self.input_size,-1)),1)
+        errpipe=torch.cat((errpipe[:,:,1:], errin.view(self.input_size,batch,-1)),2)
         # context = self.hardtanh(hidden[2]) #2*self.sigmoid(hidden[2])-1
         context=hidden[2]
         # context = self.hardtanh(context+(2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)+0.1*(2*self.sigmoid(self.c2c(context))-1))
         # context = self.tanh(context + (2 * self.sigmoid(self.err2c(errpipe.view(1, -1))) - 1) + (
         #         2 * self.sigmoid(self.c2c(context)) - 1))
-        context = self.hardtanh(context + (1.0-gen)*self.tanh(self.err2c(errpipe.view(1, -1))))
+        context = self.hardtanh(context + (1.0-gen)*self.tanh(self.err2c(errpipe.view(1, batch, -1))))
         # hidden1 = hidden1 * self.c2r1h(context)
         # hidden1 = hidden1 + cps*self.c2r1h(context)
         # hidden1 = hidden1*self.c2r2h(context)+ cps*self.c2r1h(context)
         hidden1 = hidden1
         return output, [(hidden1,c1), errpipe, context]
 
-    def initHidden(self):
-        return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True),Variable(torch.zeros(1, self.hidden_size), requires_grad=True)),
-                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True),
-                Variable(torch.zeros(1, self.context_size), requires_grad=True)]
+    def initHidden(self,batch):
+        return [(Variable(torch.zeros(1, batch,self.hidden_size), requires_grad=True),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)),
+                Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, batch, self.context_size), requires_grad=True)]
 
-    def initHidden_cuda(self,device):
-        return [(Variable(torch.zeros(1, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(1, self.hidden_size), requires_grad=True).to(device)),
-                Variable(torch.zeros(self.input_size, self.pipe_size), requires_grad=True).to(device),
-                Variable(torch.zeros(1, self.context_size), requires_grad=True).to(device)]
+    def initHidden_cuda(self,device, batch):
+        return [(Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)),
+                Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True).to(device),
+                Variable(torch.zeros(1, batch, self.context_size), requires_grad=True).to(device)]
 
 
 
