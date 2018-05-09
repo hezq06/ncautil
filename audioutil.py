@@ -382,8 +382,12 @@ class PDC_Audio(object):
                 for iiss in range(seql-1):
                     vec1 = rdata_b[:,:,iiss]
                     vec2 = rdata_b[:,:,iiss + 1]
-                    x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
-                    y = Variable(torch.from_numpy(vec2.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+                    if gpuavail:
+                        x = Variable(vec1.reshape(-1, lsize).contiguous(), requires_grad=True)
+                        y = Variable(vec2.reshape(1, batch, lsize).contiguous(), requires_grad=True)
+                    else:
+                        x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
+                        y = Variable(torch.from_numpy(vec2.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
                     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                     # x=output
