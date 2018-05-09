@@ -305,10 +305,11 @@ class PDC_Audio(object):
         return np.array(outputl)
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=10,save=None):
+    def run_training(self,step,learning_rate=1e-2,batch=10,save=None, seqtrain=False):
         """
         Entrance for training
         :param learning_rate:
+                seqtrain: If whole sequence training is used or not
         :return:
         """
         startt=time.time()
@@ -318,7 +319,8 @@ class PDC_Audio(object):
 
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
-            rnn = RNN_PDC_LSTM_AU(lsize, 50, 3, 45, lsize)
+            # rnn = RNN_PDC_LSTM_AU(lsize, 50, 3, 45, lsize)
+            rnn = LSTM_AU(lsize, 50, lsize)
         else:
             rnn=self.model
 
@@ -361,27 +363,45 @@ class PDC_Audio(object):
 
             assert rdata_b[0].shape[0]==lsize
 
-            outputl = []
-            yl = []
             if gpuavail:
-                hidden = rnn.initHidden_cuda(device,batch)
+                hidden = rnn.initHidden_cuda(device, batch)
             else:
                 hidden = rnn.initHidden(batch)
-            vec1 = rdata_b[:, :, 0]
-            x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
-            for iiss in range(rdata_b[0].shape[-1]-1):
-                # vec1 = rdata[:,iiss]
-                vec2 = rdata_b[:,:,iiss + 1]
-                # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
-                y = Variable(torch.from_numpy(vec2.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+
+            seql=rdata_b[0].shape[-1]
+            if not seqtrain:
+                outputl = []
+                yl = []
+                # One by one training
+                vec1 = rdata_b[:, :, 0]
+                x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+                for iiss in range(seql-1):
+                    # vec1 = rdata[:,iiss]
+                    vec2 = rdata_b[:,:,iiss + 1]
+                    # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
+                    y = Variable(torch.from_numpy(vec2.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+                    x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                    if gpuavail:
+                        x, y = x.to(device), y.to(device)
+                    output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                    x=output
+                    outputl.append(output)
+                    yl.append(y)
+                loss = customized_loss(outputl, yl, rnn)
+
+            else:
+                # LSTM provided whole sequence training
+                vec1 = rdata_b[:, :, 0:seql-1]
+                vec2 = rdata_b[:, :, 1:seql]
+
+                x = Variable(torch.from_numpy(np.transpose(vec1, (2,0,1))).contiguous(), requires_grad=True)
+                y = Variable(torch.from_numpy(np.transpose(vec2, (2,0,1))).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if gpuavail:
                     x, y = x.to(device), y.to(device)
                 output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
-                x=output
-                outputl.append(output)
-                yl.append(y)
-            loss = customized_loss(outputl, yl, rnn)
+                loss = customized_loss(output, y, rnn)
+
 
             if int(iis / 100) != his:
                 print(iis, loss.data[0])
@@ -469,6 +489,43 @@ class RNN_PDC_LSTM_AU(torch.nn.Module):
         return [(Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)),
                 Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True).to(device),
                 Variable(torch.zeros(1, batch, self.context_size), requires_grad=True).to(device)]
+
+class LSTM_AU(torch.nn.Module):
+    """
+    PyTorch LSTM PDC for Audio
+    """
+    def __init__(self, input_size, hidden_size, output_size):
+        super(LSTM_AU, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.lstm = torch.nn.LSTM(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        # self.c2r2h = torch.nn.Linear(context_size, hidden_size)
+        self.sigmoid = torch.nn.Sigmoid()
+        self.hardtanh=torch.nn.Hardtanh()
+        self.tanh = torch.nn.Tanh()
+
+    def forward(self, input, hidden, result, cps=1.0, gen=0.0, batch=1):
+        """
+
+        :param input:
+        :param hidden: [(lstm h0, c0),(errpipe),context]
+        :param result:
+        :return:
+        """
+        hidden0=hidden[0].view(1, batch, self.hidden_size)
+        c0 = hidden[1].view(1, batch, self.hidden_size)
+        hout, (hidden1,c1) = self.lstm(input.view(-1, batch, self.input_size), (hidden0,c0))
+        output = self.h2o(hout.view(-1, batch, self.hidden_size))
+        output = self.tanh(output)
+        return output, (hidden1,c1)
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(1, batch,self.hidden_size), requires_grad=True),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)]
 
 
 
