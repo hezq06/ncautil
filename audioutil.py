@@ -323,6 +323,7 @@ class PDC_Audio(object):
             rnn = LSTM_AU(lsize, 50, lsize)
         else:
             rnn=self.model
+        rnn = LSTM_AU(lsize, 50, lsize)
 
         gpuavail=torch.cuda.is_available()
         device = torch.device("cuda:0" if gpuavail else "cpu")
@@ -370,21 +371,22 @@ class PDC_Audio(object):
 
             seql=rdata_b[0].shape[-1]
             if not seqtrain:
+                if gpuavail:
+                    rdata_b = torch.from_numpy(rdata_b)
+                    rdata_b = rdata_b.to(device)
                 outputl = []
                 yl = []
                 # One by one training
-                vec1 = rdata_b[:, :, 0]
-                x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+                # vec1 = rdata_b[:, :, 0]
+                # x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
                 for iiss in range(seql-1):
-                    # vec1 = rdata[:,iiss]
+                    vec1 = rdata_b[:,:,iiss]
                     vec2 = rdata_b[:,:,iiss + 1]
-                    # x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
+                    x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
                     y = Variable(torch.from_numpy(vec2.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
                     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-                    if gpuavail:
-                        x, y = x.to(device), y.to(device)
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
-                    x=output
+                    # x=output
                     outputl.append(output)
                     yl.append(y)
                 loss = customized_loss(outputl, yl, rnn)
