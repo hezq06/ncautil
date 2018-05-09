@@ -388,7 +388,7 @@ class PDC_Audio(object):
                     else:
                         x = Variable(torch.from_numpy(vec1.reshape(-1, lsize)).contiguous(), requires_grad=True)
                         y = Variable(torch.from_numpy(vec2.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
-                    x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                        x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                     # x=output
                     outputl.append(output)
