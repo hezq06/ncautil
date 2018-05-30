@@ -927,7 +927,7 @@ class PDC_NLP(object):
 
         for iis in range(step):
 
-            rstartv=np.floor(np.random.rand(batch)*(len(self.nlp.sub_corpus)-window))
+            rstartv=np.floor(np.random.rand(batch)*(len(self.nlp.sub_corpus)-window-1))
 
             if gpuavail:
                 hidden = rnn.initHidden_cuda(device, batch)
@@ -935,6 +935,22 @@ class PDC_NLP(object):
                 hidden = rnn.initHidden(batch)
 
             assert databp[0].shape[0]==lsize
+
+            # Generating output label
+            yl = []
+            for iiss in range(window):
+                ylb = []
+                for iib in range(batch):
+                    wrd = self.nlp.sub_corpus[(int(rstartv[iib]) + iiss + 1)]
+                    try:
+                        vec = self.nlp.w2v_dict[wrd]
+                        ydg = self.nlp.word_to_id[wrd]
+                    except:
+                        ydg = self.nlp.word_to_id["UNK"]
+                    ylb.append(ydg)
+                yl.append(np.array(ylb))
+            outlab = Variable(torch.from_numpy(np.array(yl).T))
+            outlab = outlab.type(torch.LongTensor)
 
             if not seqtrain:
                 # step by step training
@@ -944,8 +960,7 @@ class PDC_NLP(object):
                 outputl = None
                 # vec1 = rdata_b[:, :, 0]
                 # x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
-                yl = []
-                for iiss in range(window-1):
+                for iiss in range(window):
                     vec1m=[]
                     vec2m=[]
                     for iib in range(batch):
@@ -969,33 +984,32 @@ class PDC_NLP(object):
                         outputl=output.view(batch,lout,1)
                     else:
                         outputl=torch.cat((outputl.view(batch,lout,-1),output.view(batch,lout,1)),dim=2)
-                    ylb = []
-                    for iib in range(batch):
-                        wrd = self.nlp.sub_corpus[(int(rstartv[iib]) + iiss + 1)]
-                        try:
-                            vec=self.nlp.w2v_dict[wrd]
-                            ydg=self.nlp.word_to_id[wrd]
-                        except:
-                            ydg = self.nlp.word_to_id["UNK"]
-                        ylb.append(ydg)
-                    yl.append(np.array(ylb))
-                outlab = Variable(torch.from_numpy(np.array(yl).T))
-                outlab = outlab.type(torch.LongTensor)
-
+                print(outlab.shape)
                 loss = lossc(outputl, outlab)
 
-            # else:
-            #     # LSTM provided whole sequence training
-            #     vec1 = rdata_b[:, :, 0:seql-1]
-            #     vec2 = rdata_b[:, :, 1:seql]
-            #
-            #     x = Variable(torch.from_numpy(np.transpose(vec1, (2,0,1))).contiguous(), requires_grad=True)
-            #     y = Variable(torch.from_numpy(np.transpose(vec2, (2,0,1))).contiguous(), requires_grad=True)
-            #     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-            #     if gpuavail:
-            #         x, y = x.to(device), y.to(device)
-            #     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
-            #     loss = customized_loss(output, y, rnn)
+            else:
+                # LSTM provided whole sequence training
+                vec1m = []
+                vec2m = []
+                for iib in range(batch):
+                    vec1 = databp[int(rstartv[iib]) + iiss : int(rstartv[iib]) + iiss + window, :]
+                    vec2 = databp[int(rstartv[iib]) + iiss + 1 : int(rstartv[iib]) + iiss + 1 + window, :]
+                    vec1m.append(vec1)
+                    vec2m.append(vec2) # (batch,seq,lsize)
+                vec1m = np.array(vec1m)
+                vec2m = np.array(vec2m)
+                # LSTM order (seql,batch,lsize)
+                x = Variable(torch.from_numpy(np.transpose(vec1m, (1,0,2))).contiguous(), requires_grad=True)
+                y = Variable(torch.from_numpy(np.transpose(vec2m, (1,0,2))).contiguous(), requires_grad=True)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                if gpuavail:
+                    x, y = x.to(device), y.to(device)
+                    outlab=outlab.to(device)
+                output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                output=output.permute(1,2,0)
+                print(output.shape)
+
+                loss = lossc(output, outlab)
 
             if int(iis / 10) != his:
                 print("Perlexity: ",iis, np.exp(loss.data[0]))
@@ -1048,7 +1062,7 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.relu=torch.nn.ReLU()
         self.t0=torch.nn.Parameter(torch.rand(output_size),requires_grad=True)
-        self.softmax = torch.nn.LogSoftmax(dim=1)
+        self.softmax = torch.nn.LogSoftmax(dim=2)
 
         self.cdrop = torch.nn.Dropout(p=0.5)
 
@@ -1063,7 +1077,7 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
         hidden0=hidden[0][0].view(1, batch, self.hidden_size)
         c0 = hidden[0][1].view(1, batch, self.hidden_size)
         hout, (hidden1,c1) = self.lstm(input.view(-1, batch, self.input_size), (hidden0,c0))
-        output = self.h2o(hout.view(batch, self.hidden_size))
+        output = self.h2o(hout.view(-1, batch, self.hidden_size))
         output=self.softmax(output)
         # errin = self.relu(result - output-self.t0)-self.relu(-result + output-self.t0)
         # errin = result - output

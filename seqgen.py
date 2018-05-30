@@ -1898,8 +1898,6 @@ class PT_RNN_PDC(object):
         nlp.plot_txtmat(np.array(seqres).reshape(1,-1))
 
 
-
-
     def do_eval(self,seqs,lsize = 2, hidden=None,init=None, cps=1.0):
 
         seqres = []
