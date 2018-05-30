@@ -998,9 +998,12 @@ class PDC_NLP(object):
                 vec1m = np.array(vec1m)
                 vec2m = np.array(vec2m)
                 # LSTM order (seql,batch,lsize)
-                x = Variable(torch.from_numpy(np.transpose(vec1m, (1,0,2))).contiguous(), requires_grad=True)
-                y = Variable(torch.from_numpy(np.transpose(vec2m, (1,0,2))).contiguous(), requires_grad=True)
-                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                try:
+                    x = Variable(torch.from_numpy(np.transpose(vec1m, (1,0,2))).contiguous(), requires_grad=True)
+                    y = Variable(torch.from_numpy(np.transpose(vec2m, (1,0,2))).contiguous(), requires_grad=True)
+                    x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                except:
+                    print(x)
                 if gpuavail:
                     x, y = x.to(device), y.to(device)
                     outlab=outlab.to(device)
