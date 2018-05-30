@@ -21,10 +21,16 @@ import pickle
 from nltk.corpus import brown,treebank
 from nltk.tokenize import word_tokenize
 from nltk.parse import stanford
+import time, copy
 import gensim
 from ncautil.w2vutil import W2vUtil
 from nltk.tag import StanfordPOSTagger
 from nltk.tokenize import word_tokenize
+
+import torch
+from torch.autograd import Variable
+
+from ncautil.ncalearn import pca_proj
 
 __author__ = "Harry He"
 
@@ -36,6 +42,7 @@ class NLPutil(object):
         self.tagged_sents = None
         self.sub_size = 100000
         self.sub_corpus = None
+        self.sub_mat=None
         self.word_to_id=None
         self.id_to_word=None
         self.word_to_cnt=None
@@ -72,7 +79,7 @@ class NLPutil(object):
 
             self.tagged_sents = treebank.tagged_sents()
         else:
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/'+str(corpus))
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/'+str(corpus))
             f = open(file)
             raw = f.read()
             self.corpus = word_tokenize(raw)
@@ -108,15 +115,16 @@ class NLPutil(object):
         counter = collections.Counter(self.corpus)
         count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
         words, counts = list(zip(*count_pairs))
-        self.word_to_id = dict(zip(words, range(len(words))))
+        self.word_to_id = dict(zip(words, range(1,1+len(words))))
+        self.word_to_id["UNK"] = 0
         self.word_to_cnt = dict(zip(words, counts))
-        bv=self.word_to_cnt[words[0]]
+        bv = self.word_to_cnt[words[0]]
         for k,v in self.word_to_cnt.items():
             self.word_to_cnt[k]=1/(self.word_to_cnt[k]/bv)
         self.id_to_word = {v: k for k, v in self.word_to_id.items()}
         return self.word_to_id, self.id_to_word
 
-    def build_w2v(self,mode="gensim",Nvac=49800):
+    def build_w2v(self,mode="gensim",Nvac=10000):
         """
         Build word to vector lookup table
         :param mode: "pickle"
@@ -124,33 +132,34 @@ class NLPutil(object):
         """
         print("Building word to vector lookup table...")
         if mode=="pickle":
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/w2vtab_opt.pickle')
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/w2vtab_opt.pickle')
             w2vu = W2vUtil()
             w2vtemp = w2vu.flloadw2v(ofile=file)
             try:
-                self.w2v_dict = dict((key.decode("utf-8"), val.astype(float)) for (key, val) in w2vtemp.items())
+                model = dict((key.decode("utf-8"), val.astype(float)) for (key, val) in w2vtemp.items())
             except AttributeError:
-                self.w2v_dict = dict((key, val.astype(float)) for (key, val) in w2vtemp.items())
-        elif mode=="gensim":
+                model = dict((key, val.astype(float)) for (key, val) in w2vtemp.items())
+        elif mode=="gensim": # Google pretrained w2v_tab
             assert type(self.id_to_word)!=type(None)
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/GoogleNews-vectors-negative300.bin')
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/GoogleNews-vectors-negative300.bin')
             model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
-            self.w2v_dict = dict([])
-            skip=[]
-            for ii in range(Nvac):
-                try:
-                    word=self.id_to_word[ii]
-                    vec=model[word]
-                    self.w2v_dict[word]=vec
-                except:
-                    skip.append(word)
-            print("Except list: length "+str(len(skip)))
-            print(skip)
-            return self.w2v_dict
         elif mode=="gensim_raw":
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'data/GoogleNews-vectors-negative300.bin')
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/GoogleNews-vectors-negative300.bin')
             model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
             return model
+        self.w2v_dict = dict([])
+        skip = []
+        for ii in range(Nvac):
+            try:
+                word = self.id_to_word[ii]
+                vec = model[word]
+                self.w2v_dict[word] = vec
+            except:
+                skip.append(word)
+        print("Except list: length " + str(len(skip)))
+        print(skip)
+        self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
+        return self.w2v_dict
 
     def proj_w2v(self,w2v_dict,pM):
         """
@@ -177,16 +186,16 @@ class NLPutil(object):
         for word in text:
             wvec=self.w2v_dict.get(word,unkvec)
             txtmat.append(wvec)
-        txtmat=np.array(txtmat).T
-        self.plot_txtmat(txtmat)
+        txtmat=np.array(txtmat)
+        # self.plot_txtmat(txtmat.T)
         return txtmat
 
-    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None,title=None,save=None):
+    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None,title=None,save=None,origin='lower'):
         data=np.array(data)
         assert len(data.shape) == 2
         fig,ax=plt.subplots()
         img=data[:,start:start+length]
-        fig=ax.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)),np.amax(np.abs(data))), origin='lower')
+        fig=ax.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)),np.amax(np.abs(data))), origin=origin)
         if text!=None:
             st,end=ax.get_xlim()
             ax.xaxis.set_ticks(np.arange(st+0.5,end+0.5,1))
@@ -782,7 +791,303 @@ class SQuADutil(object):
         return res
 
 
+class PDC_NLP(object):
+    """
+    Main class for NLP PDC modeling
+    """
+    def __init__(self,nlp):
+        """
+        PDC NLP
+        """
+        self.nlp=nlp
+        self.mlost = 1.0e99
+        self.model = None
+        self.lsize = 100
 
+        self.lout = None
+        self.pcaPM = None
+
+    def do_eval(self,txtseqs):
+        """
+
+        :param seqs: sequence for evaluation
+        :return:
+        """
+        lsize = self.lsize
+        datab = self.nlp.build_textmat(txtseqs)
+        databp, pm = pca_proj(datab.T, lsize)
+        databp = databp.T
+        databp=np.array(databp)
+        rnn = self.model
+        rnn.eval()
+        print(databp.shape)
+        assert databp.shape[1] == lsize
+        hidden = rnn.initHidden(1)
+        outputl = []
+        hiddenl=[]
+        outputl.append(databp[0, :].reshape(-1, ))
+        hiddenl.append(hidden)
+        for iis in range(len(databp)-1):
+            x = Variable(torch.from_numpy(databp[iis, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
+            y = Variable(torch.from_numpy(databp[iis+1, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
+            x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            output, hidden = rnn(x, hidden, y)
+            # print(outputl.reshape(1,-1).shape,output.data.numpy().reshape(1,-1).shape)
+            # outputl=np.stack((outputl.reshape(1,-1),output.data.numpy().reshape(1,-1)))
+            outputl.append(output.data.numpy().reshape(-1, ))
+            hiddenl.append(hidden)
+        return outputl,hiddenl
+
+    def free_gen(self,step):
+        """
+        Training evaluation
+        :return:
+        """
+        rnn=self.model
+        rnn.eval()
+        lsize=self.lsize
+        hidden = rnn.initHidden(1)
+        x = Variable(torch.zeros(1,1,lsize), requires_grad=True)
+        y = Variable(torch.zeros(1,1,lsize), requires_grad=True)
+        outputl=[]
+
+        def logp(vec):
+            """
+            LogSoftmax function
+            :param vec:
+            :return:
+            """
+            vec = np.exp(vec)
+            dwn = np.sum(vec)
+            return vec / dwn
+
+        for iis in range(step):
+            x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            y_pred, hidden = rnn(x, hidden, y, cps=0.0, gen=1.0)
+            ynp = y_pred.data.numpy().reshape(self.lout)
+            rndp = np.random.rand()
+            pii = logp(ynp).reshape(-1)
+            dig = 0
+            for ii in range(len(pii)):
+                rndp = rndp - pii[ii]
+                if rndp < 0:
+                    dig = ii
+                    break
+            xword=self.nlp.id_to_word[dig]
+            outputl.append(xword)
+            xvec=self.nlp.w2v_dict[xword]
+            xvec=np.matmul(self.pcaPM,xvec)
+            x= Variable(torch.from_numpy(xvec).contiguous(), requires_grad=True)
+            y=x
+        return outputl
+
+
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=100, save=None, seqtrain=False):
+        """
+        Entrance for training
+        :param learning_rate:
+                seqtrain: If whole sequence training is used or not
+        :return:
+        """
+        startt=time.time()
+
+        self.mlost = 1.0e9
+        lsize=self.lsize
+        lout=len(self.nlp.w2v_dict)
+        self.lout=lout
+
+
+        if type(self.model)==type(None):
+            # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+            rnn = RNN_PDC_LSTM_NLP(lsize, 100, 3, 24, lout)
+            # rnn = LSTM_AU(lsize, 12, lsize)
+        else:
+            rnn=self.model
+
+
+        gpuavail=torch.cuda.is_available()
+        device = torch.device("cuda:0" if gpuavail else "cpu")
+        # If we are on a CUDA machine, then this should print a CUDA device:
+        print(device)
+        if gpuavail:
+            rnn.to(device)
+
+        lossc = torch.nn.CrossEntropyLoss()
+
+        optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+        # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+
+        train_hist=[]
+        his = 0
+
+        datab=self.nlp.build_textmat(self.nlp.sub_corpus)
+        databp,pm=pca_proj(datab.T,lsize)
+        databp=databp.T
+        self.pcaPM=pm
+
+        for iis in range(step):
+
+            rstartv=np.floor(np.random.rand(batch)*(len(self.nlp.sub_corpus)-window))
+
+            if gpuavail:
+                hidden = rnn.initHidden_cuda(device, batch)
+            else:
+                hidden = rnn.initHidden(batch)
+
+            assert databp[0].shape[0]==lsize
+
+            if not seqtrain:
+                # step by step training
+                if gpuavail:
+                    databp = torch.from_numpy(databp)
+                    databp = databp.to(device)
+                outputl = None
+                # vec1 = rdata_b[:, :, 0]
+                # x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+                yl = []
+                for iiss in range(window-1):
+                    vec1m=[]
+                    vec2m=[]
+                    for iib in range(batch):
+                        vec1 = databp[(int(rstartv[iib])+iiss),:]
+                        vec2 = databp[(int(rstartv[iib])+iiss + 1), :]
+                        vec1m.append(vec1)
+                        vec2m.append(vec2)
+                    vec1m=np.array(vec1m)
+                    vec2m = np.array(vec2m)
+                    if gpuavail:
+                        # One by one guidance training ####### error can propagate due to hidden state
+                        x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True) #
+                        y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
+                    else:
+                        # One by one guidance training #######
+                        x = Variable(torch.from_numpy(vec1m.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+                        y = Variable(torch.from_numpy(vec2m.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+                        x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                    output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                    if type(outputl)==type(None):
+                        outputl=output.view(batch,lout,1)
+                    else:
+                        outputl=torch.cat((outputl.view(batch,lout,-1),output.view(batch,lout,1)),dim=2)
+                    ylb = []
+                    for iib in range(batch):
+                        wrd = self.nlp.sub_corpus[(int(rstartv[iib]) + iiss + 1)]
+                        try:
+                            vec=self.nlp.w2v_dict[wrd]
+                            ydg=self.nlp.word_to_id[wrd]
+                        except:
+                            ydg = self.nlp.word_to_id["UNK"]
+                        ylb.append(ydg)
+                    yl.append(np.array(ylb))
+                outlab = Variable(torch.from_numpy(np.array(yl).T))
+                outlab = outlab.type(torch.LongTensor)
+
+                loss = lossc(outputl, outlab)
+
+            # else:
+            #     # LSTM provided whole sequence training
+            #     vec1 = rdata_b[:, :, 0:seql-1]
+            #     vec2 = rdata_b[:, :, 1:seql]
+            #
+            #     x = Variable(torch.from_numpy(np.transpose(vec1, (2,0,1))).contiguous(), requires_grad=True)
+            #     y = Variable(torch.from_numpy(np.transpose(vec2, (2,0,1))).contiguous(), requires_grad=True)
+            #     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            #     if gpuavail:
+            #         x, y = x.to(device), y.to(device)
+            #     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+            #     loss = customized_loss(output, y, rnn)
+
+            if int(iis / 10) != his:
+                print("Perlexity: ",iis, np.exp(loss.data[0]))
+                his=int(iis / 10)
+                if loss.data[0] < self.mlost:
+                    self.mlost = loss.data[0]
+                    self.model = copy.deepcopy(rnn)
+
+            train_hist.append(np.exp(loss.data[0]))
+
+            optimizer.zero_grad()
+
+            loss.backward()
+
+            optimizer.step()
+
+        endt = time.time()
+        print("Time used in training:", endt - startt)
+
+        x = []
+        for ii in range(len(train_hist)):
+            x.append([ii, train_hist[ii]])
+        x = np.array(x)
+        plt.plot(x[:, 0], x[:, 1])
+        if type(save) != type(None):
+            plt.savefig(save)
+            plt.gcf().clear()
+        else:
+            plt.show()
+
+class RNN_PDC_LSTM_NLP(torch.nn.Module):
+    """
+    PyTorch LSTM PDC for Audio
+    """
+    def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+        super(RNN_PDC_LSTM_NLP, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.pipe_size = pipe_size
+        self.input_size = input_size
+        self.context_size = context_size
+        self.lstm = torch.nn.LSTM(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.h2o2 = torch.nn.Linear(output_size, output_size)
+        self.err2c = torch.nn.Linear(input_size*pipe_size ,context_size, bias=False)
+        self.c2r1h = torch.nn.Linear(context_size, hidden_size)
+        # self.c2r2h = torch.nn.Linear(context_size, hidden_size)
+        self.sigmoid = torch.nn.Sigmoid()
+        self.hardtanh=torch.nn.Hardtanh()
+        self.tanh = torch.nn.Tanh()
+        self.relu=torch.nn.ReLU()
+        self.t0=torch.nn.Parameter(torch.rand(output_size),requires_grad=True)
+        self.softmax = torch.nn.LogSoftmax(dim=1)
+
+        self.cdrop = torch.nn.Dropout(p=0.5)
+
+    def forward(self, input, hidden, result, cps=1.0, gen=0.0, batch=1):
+        """
+
+        :param input:
+        :param hidden: [(lstm h0, c0),(errpipe),context]
+        :param result:
+        :return:
+        """
+        hidden0=hidden[0][0].view(1, batch, self.hidden_size)
+        c0 = hidden[0][1].view(1, batch, self.hidden_size)
+        hout, (hidden1,c1) = self.lstm(input.view(-1, batch, self.input_size), (hidden0,c0))
+        output = self.h2o(hout.view(batch, self.hidden_size))
+        output=self.softmax(output)
+        # errin = self.relu(result - output-self.t0)-self.relu(-result + output-self.t0)
+        # errin = result - output
+        # errpipe=hidden[1]
+        # errpipe=torch.cat((errpipe[:,:,1:], errin.view(self.input_size,batch,-1)),2)
+        # context = self.hardtanh(hidden[2]) #2*self.sigmoid(hidden[2])-1
+        # context=hidden[2]
+        # context = self.hardtanh(context+(2*self.sigmoid(self.err2c(errpipe.view(1,-1)))-1)+0.1*(2*self.sigmoid(self.c2c(context))-1))
+        # context = self.tanh(context + (2 * self.sigmoid(self.err2c(errpipe.view(1, -1))) - 1) + (
+        #         2 * self.sigmoid(self.c2c(context)) - 1))
+        # context = self.hardtanh(context + (1.0-gen)*self.tanh(self.err2c(errpipe.view(1, batch, -1))))
+        # context = self.cdrop(context) # trial of dropout
+        # c1 = c1 * self.c2r1h(context)
+        return output, [(hidden1,c1), [], []]
+
+    def initHidden(self,batch):
+        return [(Variable(torch.zeros(1, batch,self.hidden_size), requires_grad=True),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)),
+                Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True),
+                Variable(torch.zeros(1, batch, self.context_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device, batch):
+        return [(Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)),
+                Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True).to(device),
+                Variable(torch.zeros(1, batch, self.context_size), requires_grad=True).to(device)]
 
 
 

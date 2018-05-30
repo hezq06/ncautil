@@ -530,7 +530,7 @@ class SeqGen(object):
                 x, y = res.T[i, :]
                 c=cluster[i]
                 # plt.scatter(x, y,c=clist[c],marker='+')
-                plt.plot(x+rnd*random(), y+rnd*random(), str(clist[c])+'+')
+                plt.plot(x+rnd*random(), y+rnd*random(), str(clist[int(c)])+'+')
         # plt.show()
         plt.hist2d(res.T[:,0],res.T[:,1],bins=30)
         plt.colorbar()
@@ -599,7 +599,7 @@ class SeqGen(object):
             clist=["b","g","r","y","c","m"]
             for i in range(len(ebmpick)):
                 x, y = res[i, :]
-                c=cluster[i]
+                c=int(cluster[i])
                 plt.plot(x+rnd*random(), y+rnd*random(), str(clist[c])+'+')
         plt.hist2d(res[:,0],res[:,1],bins=30)
         plt.colorbar()
