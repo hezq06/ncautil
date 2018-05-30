@@ -882,7 +882,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=100, save=None, seqtrain=False):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False):
         """
         Entrance for training
         :param learning_rate:
@@ -1003,7 +1003,7 @@ class PDC_NLP(object):
                     y = Variable(torch.from_numpy(np.transpose(vec2m, (1,0,2))).contiguous(), requires_grad=True)
                     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 except:
-                    print(x.shape)
+                    print(vec1m.shape)
                 if gpuavail:
                     x, y = x.to(device), y.to(device)
                     outlab=outlab.to(device)
