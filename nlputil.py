@@ -984,7 +984,6 @@ class PDC_NLP(object):
                         outputl=output.view(batch,lout,1)
                     else:
                         outputl=torch.cat((outputl.view(batch,lout,-1),output.view(batch,lout,1)),dim=2)
-                print(outlab.shape)
                 loss = lossc(outputl, outlab)
 
             else:
@@ -1007,7 +1006,6 @@ class PDC_NLP(object):
                     outlab=outlab.to(device)
                 output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                 output=output.permute(1,2,0)
-                print(output.shape)
 
                 loss = lossc(output, outlab)
 
