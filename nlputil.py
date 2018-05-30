@@ -1007,7 +1007,10 @@ class PDC_NLP(object):
                 if gpuavail:
                     x, y = x.to(device), y.to(device)
                     outlab=outlab.to(device)
-                output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                try:
+                    output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                except:
+                    print("Inference error, skip.")
                 output=output.permute(1,2,0)
 
                 loss = lossc(output, outlab)
