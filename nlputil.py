@@ -1003,7 +1003,7 @@ class PDC_NLP(object):
                     y = Variable(torch.from_numpy(np.transpose(vec2m, (1,0,2))).contiguous(), requires_grad=True)
                     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 except:
-                    print(x)
+                    print(x.shape)
                 if gpuavail:
                     x, y = x.to(device), y.to(device)
                     outlab=outlab.to(device)
