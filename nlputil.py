@@ -929,6 +929,10 @@ class PDC_NLP(object):
         databp,pm=pca_proj(datab.T,lsize)
         databp=databp.T
         self.pcaPM=pm
+        assert databp[0].shape[0] == lsize
+        databp = torch.from_numpy(databp)
+        if gpuavail:
+            databp = databp.to(device)
 
         for iis in range(step):
 
@@ -938,8 +942,6 @@ class PDC_NLP(object):
                 hidden = rnn.initHidden_cuda(device, batch)
             else:
                 hidden = rnn.initHidden(batch)
-
-            assert databp[0].shape[0]==lsize
 
             # Generating output label
             yl = []
@@ -959,31 +961,25 @@ class PDC_NLP(object):
 
             if not seqtrain:
                 # step by step training
-                if gpuavail:
-                    databp = torch.from_numpy(databp)
-                    databp = databp.to(device)
                 outputl = None
                 # vec1 = rdata_b[:, :, 0]
                 # x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
                 for iiss in range(window):
-                    vec1m=[]
-                    vec2m=[]
+                    vec1m=None
+                    vec2m=None
                     for iib in range(batch):
                         vec1 = databp[(int(rstartv[iib])+iiss),:]
                         vec2 = databp[(int(rstartv[iib])+iiss + 1), :]
-                        vec1m.append(vec1)
-                        vec2m.append(vec2)
-                    vec1m=np.array(vec1m)
-                    vec2m = np.array(vec2m)
-                    if gpuavail:
-                        # One by one guidance training ####### error can propagate due to hidden state
-                        x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True) #
-                        y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
-                    else:
-                        # One by one guidance training #######
-                        x = Variable(torch.from_numpy(vec1m.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
-                        y = Variable(torch.from_numpy(vec2m.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
-                        x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                        if type(vec1m) == type(None):
+                            vec1m = vec1.view(1, -1)
+                            vec2m = vec2.view(1, -1)
+                        else:
+                            vec1m = torch.cat((vec1m, vec1.view(1,-1)), dim=1)
+                            vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=1)
+                    # One by one guidance training ####### error can propagate due to hidden state
+                    x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True) #
+                    y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
+                    x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                     if type(outputl)==type(None):
                         outputl=output.view(batch,lout,1)
