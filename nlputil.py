@@ -1016,6 +1016,7 @@ class PDC_NLP(object):
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                 except:
                     print("Inference error, skip.")
+                    continue
                 output=output.permute(1,2,0)
 
                 loss = lossc(output, outlab)
