@@ -980,6 +980,9 @@ class PDC_NLP(object):
                     x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True) #
                     y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
                     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                    if gpuavail:
+                        outlab = outlab.to(device)
+                        x, y = x.to(device), y.to(device)
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                     if type(outputl)==type(None):
                         outputl=output.view(batch,lout,1)
@@ -1006,8 +1009,8 @@ class PDC_NLP(object):
                 except:
                     print(vec1m.shape)
                 if gpuavail:
+                    outlab = outlab.to(device)
                     x, y = x.to(device), y.to(device)
-                    outlab=outlab.to(device)
                 try:
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                 except:
