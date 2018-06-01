@@ -844,8 +844,13 @@ class PDC_NLP(object):
         :return:
         """
         rnn=self.model
+        gpuavail = torch.cuda.is_available()
+        if gpuavail:
+            device = torch.device("cpu")
+            rnn.to(device)
         rnn.eval()
         lsize=self.lsize
+
         hidden = rnn.initHidden(1)
         x = Variable(torch.zeros(1,1,lsize), requires_grad=True)
         y = Variable(torch.zeros(1,1,lsize), requires_grad=True)
