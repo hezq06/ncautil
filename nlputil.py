@@ -999,7 +999,8 @@ class PDC_NLP(object):
                         vec1 = databp[int(rstartv[iib]) : int(rstartv[iib]) + window, :]
                         vec2 = databp[int(rstartv[iib]) + 1 : int(rstartv[iib]) + 1 + window, :]
                     except:
-                        print(vec1.shape)
+                        print(databp.shape)
+                        print(int(rstartv[iib]),int(rstartv[iib]) + window)
                         vec1 = databp[int(rstartv[iib]): int(rstartv[iib]) + window, :]
                         vec2 = databp[int(rstartv[iib]) + 1: int(rstartv[iib]) + 1 + window, :]
                     # (batch,seq,lsize)
@@ -1028,7 +1029,7 @@ class PDC_NLP(object):
                     self.mlost = loss.data[0]
                     self.model = copy.deepcopy(rnn)
 
-            train_hist.append(np.exp(loss.data[0]))
+            train_hist.append(np.exp(loss.item()))
 
             optimizer.zero_grad()
 
