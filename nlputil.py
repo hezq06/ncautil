@@ -1007,20 +1007,13 @@ class PDC_NLP(object):
                         vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
                         vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
                 # LSTM order (seql,batch,lsize)
-                try:
                     x = Variable(torch.from_numpy(np.transpose(vec1m, (1,0,2))).contiguous(), requires_grad=True)
                     y = Variable(torch.from_numpy(np.transpose(vec2m, (1,0,2))).contiguous(), requires_grad=True)
                     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-                except:
-                    print(vec1m.shape)
                 if gpuavail:
                     outlab = outlab.to(device)
                     x, y = x.to(device), y.to(device)
-                try:
                     output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
-                except:
-                    print("Inference error, skip.")
-                    continue
                 output=output.permute(1,2,0)
 
                 loss = lossc(output, outlab)
