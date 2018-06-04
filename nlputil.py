@@ -992,15 +992,18 @@ class PDC_NLP(object):
 
             else:
                 # LSTM provided whole sequence training
-                vec1m = []
-                vec2m = []
+                vec1m = None
+                vec2m = None
                 for iib in range(batch):
                     vec1 = databp[int(rstartv[iib]) + iiss : int(rstartv[iib]) + iiss + window, :]
                     vec2 = databp[int(rstartv[iib]) + iiss + 1 : int(rstartv[iib]) + iiss + 1 + window, :]
-                    vec1m.append(vec1)
-                    vec2m.append(vec2) # (batch,seq,lsize)
-                vec1m = np.array(vec1m)
-                vec2m = np.array(vec2m)
+                    # (batch,seq,lsize)
+                    if type(vec1m) == type(None):
+                        vec1m = vec1.view(1, -1)
+                        vec2m = vec2.view(1, -1)
+                    else:
+                        vec1m = torch.cat((vec1m, vec1.view(1, -1)), dim=1)
+                        vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=1)
                 # LSTM order (seql,batch,lsize)
                 try:
                     x = Variable(torch.from_numpy(np.transpose(vec1m, (1,0,2))).contiguous(), requires_grad=True)
