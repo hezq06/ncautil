@@ -1017,10 +1017,10 @@ class PDC_NLP(object):
                 loss = lossc(output, outlab)
 
             if int(iis / 10) != his:
-                print("Perlexity: ",iis, np.exp(loss.data[0]))
+                print("Perlexity: ",iis, np.exp(loss.item()))
                 his=int(iis / 10)
-                if loss.data[0] < self.mlost:
-                    self.mlost = loss.data[0]
+                if loss.item() < self.mlost:
+                    self.mlost = loss.item()
                     self.model = copy.deepcopy(rnn)
 
             train_hist.append(np.exp(loss.item()))
