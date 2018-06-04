@@ -995,14 +995,8 @@ class PDC_NLP(object):
                 vec1m = None
                 vec2m = None
                 for iib in range(batch):
-                    try:
-                        vec1 = databp[int(rstartv[iib]) : int(rstartv[iib]) + window, :]
-                        vec2 = databp[int(rstartv[iib]) + 1 : int(rstartv[iib]) + 1 + window, :]
-                    except:
-                        print(databp.shape)
-                        print(int(rstartv[iib]),int(rstartv[iib]) + window)
-                        vec1 = databp[int(rstartv[iib]): int(rstartv[iib]) + window, :]
-                        vec2 = databp[int(rstartv[iib]) + 1: int(rstartv[iib]) + 1 + window, :]
+                    vec1 = databp[int(rstartv[iib]) : int(rstartv[iib]) + window, :]
+                    vec2 = databp[int(rstartv[iib]) + 1 : int(rstartv[iib]) + 1 + window, :]
                     # (batch,seq,lsize)
                     if type(vec1m) == type(None):
                         vec1m = vec1.view(1, window, -1)
