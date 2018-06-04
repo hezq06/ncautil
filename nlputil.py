@@ -936,7 +936,7 @@ class PDC_NLP(object):
 
         for iis in range(step):
 
-            rstartv=np.floor(np.random.rand(batch)*(len(self.nlp.sub_corpus)))-window-1
+            rstartv=np.floor(np.random.rand(batch)*(len(self.nlp.sub_corpus))-window-1)
 
             if gpuavail:
                 hidden = rnn.initHidden_cuda(device, batch)
