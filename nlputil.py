@@ -937,8 +937,6 @@ class PDC_NLP(object):
         for iis in range(step):
 
             rstartv=np.floor(np.random.rand(batch)*(len(self.nlp.sub_corpus)))-window-1
-            print(len(self.nlp.sub_corpus))
-            print(databp.shape)
 
             if gpuavail:
                 hidden = rnn.initHidden_cuda(device, batch)
@@ -997,21 +995,15 @@ class PDC_NLP(object):
                 vec1m = None
                 vec2m = None
                 for iib in range(batch):
-                    vec1 = databp[int(rstartv[iib]) + iiss : int(rstartv[iib]) + iiss + window, :]
-                    vec2 = databp[int(rstartv[iib]) + iiss + 1 : int(rstartv[iib]) + iiss + 1 + window, :]
+                    vec1 = databp[int(rstartv[iib]) : int(rstartv[iib]) + window, :]
+                    vec2 = databp[int(rstartv[iib]) + 1 : int(rstartv[iib]) + 1 + window, :]
                     # (batch,seq,lsize)
                     if type(vec1m) == type(None):
                         vec1m = vec1.view(1, window, -1)
                         vec2m = vec2.view(1, window, -1)
                     else:
-                        try:
-                            vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
-                            vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
-                        except:
-                            print(vec1.shape)
-                            print(window)
-                            vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
-                            vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
+                        vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
+                        vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
                 # LSTM order (seql,batch,lsize)
                     x = Variable(vec1m.permute(1,0,2), requires_grad=True)
                     y = Variable(vec2m.permute(1,0,2), requires_grad=True)
