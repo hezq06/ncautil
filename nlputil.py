@@ -1007,8 +1007,8 @@ class PDC_NLP(object):
                         vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
                         vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
                 # LSTM order (seql,batch,lsize)
-                    x = Variable(torch.from_numpy(np.transpose(vec1m, (1,0,2))).contiguous(), requires_grad=True)
-                    y = Variable(torch.from_numpy(np.transpose(vec2m, (1,0,2))).contiguous(), requires_grad=True)
+                    x = Variable(vec1m.permute(1,0,2), requires_grad=True)
+                    y = Variable(vec2m.permute(1,0,2), requires_grad=True)
                     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if gpuavail:
                     outlab = outlab.to(device)
