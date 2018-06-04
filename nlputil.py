@@ -998,6 +998,8 @@ class PDC_NLP(object):
                     vec1 = databp[int(rstartv[iib]) + iiss : int(rstartv[iib]) + iiss + window, :]
                     vec2 = databp[int(rstartv[iib]) + iiss + 1 : int(rstartv[iib]) + iiss + 1 + window, :]
                     # (batch,seq,lsize)
+                    print(vec1.shape)
+                    print(window)
                     if type(vec1m) == type(None):
                         vec1m = vec1.view(1, window, -1)
                         vec2m = vec2.view(1, window, -1)
