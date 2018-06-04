@@ -974,8 +974,8 @@ class PDC_NLP(object):
                             vec1m = vec1.view(1, -1)
                             vec2m = vec2.view(1, -1)
                         else:
-                            vec1m = torch.cat((vec1m, vec1.view(1,-1)), dim=1)
-                            vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=1)
+                            vec1m = torch.cat((vec1m, vec1.view(1,-1)), dim=0)
+                            vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=0)
                     # One by one guidance training ####### error can propagate due to hidden state
                     x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True) #
                     y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
@@ -999,11 +999,11 @@ class PDC_NLP(object):
                     vec2 = databp[int(rstartv[iib]) + iiss + 1 : int(rstartv[iib]) + iiss + 1 + window, :]
                     # (batch,seq,lsize)
                     if type(vec1m) == type(None):
-                        vec1m = vec1.view(1, -1)
-                        vec2m = vec2.view(1, -1)
+                        vec1m = vec1.view(1, window, -1)
+                        vec2m = vec2.view(1, window, -1)
                     else:
-                        vec1m = torch.cat((vec1m, vec1.view(1, -1)), dim=1)
-                        vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=1)
+                        vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
+                        vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
                 # LSTM order (seql,batch,lsize)
                 try:
                     x = Variable(torch.from_numpy(np.transpose(vec1m, (1,0,2))).contiguous(), requires_grad=True)
