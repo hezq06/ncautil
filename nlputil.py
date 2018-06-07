@@ -14,6 +14,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+from matplotlib import cm
 from collections import OrderedDict
 import nltk
 nltk.internals.config_java(options='-Xmx2048m')
@@ -223,6 +224,36 @@ class NLPutil(object):
             plt.gcf().clear()
         else:
             plt.show()
+
+    def plot_textshade(self,text,data,start=0,length=100,cper_line=100,gamma=0.3):
+        data = np.array(data)
+        assert len(data.shape) == 1
+        # assert len(data) == len(text)
+        datap = data[start:start + length]
+        textp = text[start:start + length]
+        shift=0
+        ccnt=0
+        cmax=np.max(datap)
+        cmin = np.min(datap)
+
+        for iiw in range(len(textp)):
+            wrdp=textp[iiw]
+            clp=datap[iiw]
+            cpck=cm.seismic(int((clp-cmin)/(cmax-cmin)*256))
+            nc=len(wrdp)+2
+            plt.text(1/cper_line*ccnt, 1.0-shift*0.1, wrdp, size=10,
+                     ha="left", va="center",
+                     bbox=dict(ec=(1., 1., 1.),
+                               fc=(cpck[0],cpck[1],cpck[2],gamma),
+                               )
+                     )
+            ccnt=ccnt+nc
+            if ccnt>cper_line:
+                ccnt=0
+                shift=shift+1
+        plt.draw()
+        plt.axis('off')
+        plt.show()
 
 
     def cal_cosdist(self,v1,v2):
@@ -815,28 +846,58 @@ class PDC_NLP(object):
         """
         lsize = self.lsize
         datab = self.nlp.build_textmat(txtseqs)
-        databp, pm = pca_proj(datab.T, lsize)
+        databp = np.matmul(self.pcaPM,datab.T)
         databp = databp.T
         databp=np.array(databp)
         rnn = self.model
+        gpuavail = torch.cuda.is_available()
+        if gpuavail:
+            device = torch.device("cpu")
+            rnn.to(device)
         rnn.eval()
         print(databp.shape)
         assert databp.shape[1] == lsize
         hidden = rnn.initHidden(1)
         outputl = []
         hiddenl=[]
-        outputl.append(databp[0, :].reshape(-1, ))
-        hiddenl.append(hidden)
+
         for iis in range(len(databp)-1):
             x = Variable(torch.from_numpy(databp[iis, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             y = Variable(torch.from_numpy(databp[iis+1, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
             output, hidden = rnn(x, hidden, y)
+            # if type(outputl) == type(None):
+            #     outputl = output.view(1, -1)
+            # else:
+            #     outputl = torch.cat((outputl, output.view(1, -1)), dim=0)
             # print(outputl.reshape(1,-1).shape,output.data.numpy().reshape(1,-1).shape)
             # outputl=np.stack((outputl.reshape(1,-1),output.data.numpy().reshape(1,-1)))
-            outputl.append(output.data.numpy().reshape(-1, ))
+            outputl.append(output.view(-1).data.numpy())
             hiddenl.append(hidden)
-        return outputl,hiddenl
+
+        outputl=np.array(outputl)
+        outputl=Variable(torch.from_numpy(outputl).contiguous())
+        outputl=outputl.permute((1,0))
+        print(outputl.shape)
+        # Generating output label
+        yl = []
+        for iiss in range(len(txtseqs)-1):
+            ylb = []
+            wrd = txtseqs[iiss+1]
+            try:
+                vec = self.nlp.w2v_dict[wrd]
+                ydg = self.nlp.word_to_id[wrd]
+            except:
+                ydg = self.nlp.word_to_id["UNK"]
+            ylb.append(ydg)
+            yl.append(np.array(ylb))
+        outlab = Variable(torch.from_numpy(np.array(yl).T))
+        outlab = outlab.type(torch.LongTensor)
+        lossc = torch.nn.CrossEntropyLoss()
+        #(minibatch, C, d1, d2, ..., dK)
+        loss = lossc(outputl.view(1,-1,len(databp)-1), outlab)
+        print("Evaluation Perplexity: ",np.exp(loss.item()))
+        return outputl,hiddenl,outlab.view(-1)
 
     def free_gen(self,step):
         """
@@ -904,10 +965,11 @@ class PDC_NLP(object):
 
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
-            rnn = RNN_PDC_LSTM_NLP(lsize, 100, 3, 24, lout)
+            rnn = RNN_PDC_LSTM_NLP(lsize, 75, 3, 24, lout)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
+        rnn.train()
 
 
         gpuavail=torch.cuda.is_available()
@@ -1011,7 +1073,7 @@ class PDC_NLP(object):
                 if gpuavail:
                     outlab = outlab.to(device)
                     x, y = x.to(device), y.to(device)
-                    output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                 output=output.permute(1,2,0)
 
                 loss = lossc(output, outlab)
@@ -1049,14 +1111,16 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
     """
     PyTorch LSTM PDC for Audio
     """
-    def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
+    def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size,num_layers=1):
         super(RNN_PDC_LSTM_NLP, self).__init__()
+
+        self.num_layers=num_layers
 
         self.hidden_size = hidden_size
         self.pipe_size = pipe_size
         self.input_size = input_size
         self.context_size = context_size
-        self.lstm = torch.nn.LSTM(input_size, hidden_size)
+        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers = self.num_layers)
         self.h2o = torch.nn.Linear(hidden_size, output_size)
         self.h2o2 = torch.nn.Linear(output_size, output_size)
         self.err2c = torch.nn.Linear(input_size*pipe_size ,context_size, bias=False)
@@ -1079,8 +1143,8 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
         :param result:
         :return:
         """
-        hidden0=hidden[0][0].view(1, batch, self.hidden_size)
-        c0 = hidden[0][1].view(1, batch, self.hidden_size)
+        hidden0=hidden[0][0].view(self.num_layers, batch, self.hidden_size)
+        c0 = hidden[0][1].view(self.num_layers, batch, self.hidden_size)
         hout, (hidden1,c1) = self.lstm(input.view(-1, batch, self.input_size), (hidden0,c0))
         output = self.h2o(hout.view(-1, batch, self.hidden_size))
         output=self.softmax(output)
@@ -1099,14 +1163,14 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
         return output, [(hidden1,c1), [], []]
 
     def initHidden(self,batch):
-        return [(Variable(torch.zeros(1, batch,self.hidden_size), requires_grad=True),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)),
+        return [(Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)),
                 Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True),
-                Variable(torch.zeros(1, batch, self.context_size), requires_grad=True)]
+                Variable(torch.zeros(self.num_layers, batch, self.context_size), requires_grad=True)]
 
     def initHidden_cuda(self,device, batch):
-        return [(Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)),
+        return [(Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)),
                 Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True).to(device),
-                Variable(torch.zeros(1, batch, self.context_size), requires_grad=True).to(device)]
+                Variable(torch.zeros(self.num_layers, batch, self.context_size), requires_grad=True).to(device)]
 
 
 

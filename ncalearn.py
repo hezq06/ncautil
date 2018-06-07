@@ -225,11 +225,35 @@ def pl_cov(data):
     assert len(data.shape) == 2
     assert data.shape[1] >= data.shape[0]
     N = data.shape[1]
-    Cov = np.abs(data).dot(np.abs(data).T) / N
-    plt.imshow(Cov, cmap='hot')
+    for ii in range(data.shape[1]):
+        data[:,ii]=data[:,ii]-np.mean(data[:,ii])
+    Cov = data.dot((data).T) / N
+    plt.imshow(Cov, cmap='seismic',clim=(-np.amax(np.abs(Cov)),np.amax(np.abs(Cov))))
     plt.xlabel("Data 1")
     plt.ylabel("Data 1")
     plt.title("cov(|D1|,|D1|)")
+    plt.colorbar()
+    plt.show()
+
+def pl_corr(data):
+    """
+    Plot correlation
+    :param data: data matrix
+    :return:
+    """
+    data = np.array(data)
+    assert len(data.shape) == 2
+    assert data.shape[1] >= data.shape[0]
+    N = data.shape[1]
+    for ii in range(data.shape[1]):
+        data[:, ii] = data[:, ii] - np.mean(data[:, ii])
+    Cov = data.dot((data).T) / N
+    d=np.diag(1/np.sqrt(np.diag(Cov)))
+    Corr=d.dot(Cov).dot(d)
+    plt.imshow(Corr, cmap='seismic', clim=(-np.amax(np.abs(Corr)), np.amax(np.abs(Corr))))
+    plt.xlabel("Data 1")
+    plt.ylabel("Data 1")
+    plt.title("Corr(|D1|,|D1|)")
     plt.colorbar()
     plt.show()
 
@@ -248,7 +272,7 @@ def pl_mucov(data1,data2):
     assert data2.shape[1] >= data2.shape[0]
     assert data1.shape==data2.shape
     D=data1.shape[0]
-    plt.imshow(np.cov(np.abs(data1), np.abs(data2))[0:D, D:2 * D], cmap='hot')
+    plt.imshow(np.cov(np.abs(data1), np.abs(data2))[0:D, D:2 * D], cmap='seismic')
     plt.xlabel("Data 1")
     plt.ylabel("Data 2")
     plt.title("cov(|D1|,|D2|)")
@@ -259,7 +283,7 @@ def plot_mat(data,start=0,range=1000):
     data=np.array(data)
     assert len(data.shape) == 2
     img=data[:,start:start+range]
-    plt.imshow(img, cmap='hot')
+    plt.imshow(img, cmap='seismic')
     plt.colorbar()
     plt.show()
 
