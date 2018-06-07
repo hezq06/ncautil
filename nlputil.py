@@ -948,7 +948,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU"):
         """
         Entrance for training
         :param learning_rate:
@@ -965,7 +965,10 @@ class PDC_NLP(object):
 
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
-            rnn = RNN_PDC_LSTM_NLP(lsize, 75, 3, 24, lout)
+            if mode=="LSTM":
+                rnn = RNN_PDC_LSTM_NLP(lsize, 75, 3, 24, lout)
+            elif mode=="GRU":
+                rnn = GRU_Cell_Zoneout(lsize, 75, lout, zoneout_rate=0.2)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
@@ -1045,7 +1048,10 @@ class PDC_NLP(object):
                     if gpuavail:
                         outlab = outlab.to(device)
                         x, y = x.to(device), y.to(device)
-                    output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                    if mode == "LSTM":
+                        output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                    elif mode=="GRU":
+                        output, hidden = rnn(x, hidden)
                     if type(outputl)==type(None):
                         outputl=output.view(batch,lout,1)
                     else:
@@ -1106,6 +1112,7 @@ class PDC_NLP(object):
             plt.gcf().clear()
         else:
             plt.show()
+
 
 class RNN_PDC_LSTM_NLP(torch.nn.Module):
     """
@@ -1172,7 +1179,52 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
                 Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True).to(device),
                 Variable(torch.zeros(self.num_layers, batch, self.context_size), requires_grad=True).to(device)]
 
+class GRU_Cell_Zoneout(torch.nn.Module):
+    """
+    PyTorch LSTM PDC for Audio
+    """
+    def __init__(self, input_size, hidden_size, output_size, zoneout_rate=0.2):
+        super(GRU_Cell_Zoneout, self).__init__()
 
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+
+        self.Wir = torch.nn.Linear(input_size, hidden_size)
+        self.Whr = torch.nn.Linear(hidden_size, hidden_size)
+        self.Wiz = torch.nn.Linear(input_size, hidden_size)
+        self.Whz = torch.nn.Linear(hidden_size, hidden_size)
+        self.Win = torch.nn.Linear(input_size, hidden_size)
+        self.Whn = torch.nn.Linear(hidden_size, hidden_size)
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=2)
+
+    def forward(self, input, hidden):
+        """
+
+        :param input: input
+        :param hidden: hidden
+        :param result:
+        :return:
+        """
+        rt=self.sigmoid(self.Wir(input)+self.Whr(hidden))
+        zt=self.sigmoid(self.Wiz(input)+self.Whz(hidden))
+        nt=self.tanh(self.Win(input)+rt*self.Whn(hidden))
+        ht=(1-zt)*nt+zt*hidden
+
+        output = self.h2o(ht)
+        output = self.softmax(output)
+
+        return output, ht
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
 
 
 
