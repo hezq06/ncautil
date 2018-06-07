@@ -837,6 +837,7 @@ class PDC_NLP(object):
 
         self.lout = None
         self.pcaPM = None
+        self.mode = None
 
     def do_eval(self,txtseqs):
         """
@@ -929,7 +930,10 @@ class PDC_NLP(object):
 
         for iis in range(step):
             x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-            y_pred, hidden = rnn(x, hidden, y, cps=0.0, gen=1.0)
+            if self.mode=="LSTM":
+                y_pred, hidden = rnn(x, hidden, y, cps=0.0, gen=1.0)
+            elif self.mode=="GRU":
+                y_pred, hidden = rnn(x, hidden)
             ynp = y_pred.data.numpy().reshape(self.lout)
             rndp = np.random.rand()
             pii = logp(ynp).reshape(-1)
@@ -961,6 +965,7 @@ class PDC_NLP(object):
         lsize=self.lsize
         lout=len(self.nlp.w2v_dict)
         self.lout=lout
+        self.mode=mode
 
 
         if type(self.model)==type(None):
