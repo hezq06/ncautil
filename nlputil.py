@@ -866,7 +866,10 @@ class PDC_NLP(object):
             x = Variable(torch.from_numpy(databp[iis, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             y = Variable(torch.from_numpy(databp[iis+1, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-            output, hidden = rnn(x, hidden, y)
+            if self.mode=="LSTN":
+                output, hidden = rnn(x, hidden, y)
+            elif self.mode=="GRU":
+                output, hidden = rnn(x, hidden)
             # if type(outputl) == type(None):
             #     outputl = output.view(1, -1)
             # else:
