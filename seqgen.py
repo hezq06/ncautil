@@ -15,7 +15,9 @@ from random import random
 
 from ncautil.tfnlp import TFNet
 from ncautil.ncalearn import pca_proj
-from ncautil.nlputil import NLPutil
+from ncautil.nlputil import NLPutil,GRU_Cell_Zoneout
+
+
 import tensorflow as tf
 import torch
 import copy
@@ -1829,7 +1831,7 @@ class PT_RNN_PDC(object):
         self.ct2 = None
         self.model = None
         self.seqpara = None
-        self.mlost = 1.0e99
+        self.mlost = 1.0e9
 
     def ctrl_gen(self,length, ctxmat,labels=None, pick=0,lsize = 2, init=0,n_clusters=3):
         """
@@ -1930,12 +1932,16 @@ class PT_RNN_PDC(object):
             hidden = self.model.initHidden()
         hiddenres = []
         hiddenres.append(hidden)
+
+        rnn=self.model
+        rnn.eval()
+
         for ii_s in range(len(seqs)-1):
             # print(ii,len(seqs)-1)
             y = Variable(torch.from_numpy(np.array(self.seqgen.one_hot(seqs[ii_s+1], length=lsize)).reshape(-1, lsize)),
                            requires_grad=False)
             y = y.type(torch.FloatTensor)
-            y_pred, hidden = self.model(xin, hidden, y, cps=cps)
+            y_pred, hidden = rnn(xin, hidden)
             ynp = y_pred.data.numpy().reshape(lsize)
             rndp = np.random.rand()
             pii = logp(ynp)
@@ -1957,13 +1963,15 @@ class PT_RNN_PDC(object):
 
         return seqres,hiddenres
 
-    def run(self,seqs,lsize=2,learning_rate=1e-2,window=10,save=None,guide=0.0, cps=1.0):
+    def run(self,seqs,lsize=2,learning_rate=1e-2,window=10,save=None,guide=1.0, cps=1.0):
         # self.mlost = 1.0e99
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
-            rnn = RNN_PDC_LSTM(lsize, 30, 3, 30, lsize)
+            # rnn = RNN_PDC_LSTM(lsize, 30, 3, 30, lsize)
+            rnn = GRU_Cell_Zoneout(lsize,10,lsize,zoneout_rate=0.2)
         else:
             rnn=self.model
+        rnn.train()
 
         def customized_loss(xl, yl, model):
             # print(x,y)
@@ -2011,7 +2019,8 @@ class PT_RNN_PDC(object):
                 x= (1.0-guide)*torch.exp(output).type(torch.FloatTensor)+(guide*x).type(torch.FloatTensor)
                 y = Variable(torch.from_numpy(np2.reshape(-1, lsize)), requires_grad=False)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-                output, hidden = rnn(x, hidden, y, cps=cps)
+                # output, hidden = rnn(x, hidden, y, cps=cps)
+                output, hidden = rnn(x, hidden)
                 outputl.append(output)
                 # hidden: [(lstm h0, c0),(errpipe),context],[(lstm h0, c0),(errpipe),context]
                 # errl.append(hidden[0][1])
@@ -2021,12 +2030,12 @@ class PT_RNN_PDC(object):
             # loss = errcell_loss(errl)
 
             if int(ii / 5000) != his:
-                print(ii, loss.data[0])
+                print(ii, loss.item())
                 his=int(ii / 5000)
-            train_data.append(loss.data[0])
+            train_data.append(loss.item())
 
-            if loss.data[0]<self.mlost:
-                self.mlost=loss.data[0]
+            if loss.item()<self.mlost:
+                self.mlost=loss.item()
                 self.model = copy.deepcopy(rnn)
 
             optimizer.zero_grad()

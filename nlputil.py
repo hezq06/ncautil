@@ -1196,6 +1196,7 @@ class GRU_Cell_Zoneout(torch.nn.Module):
 
         self.hidden_size = hidden_size
         self.input_size = input_size
+        self.zoneout_rate=zoneout_rate
 
         self.Wir = torch.nn.Linear(input_size, hidden_size)
         self.Whr = torch.nn.Linear(hidden_size, hidden_size)
@@ -1208,7 +1209,7 @@ class GRU_Cell_Zoneout(torch.nn.Module):
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
-        self.softmax = torch.nn.LogSoftmax(dim=2)
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
 
     def forward(self, input, hidden):
         """
@@ -1221,17 +1222,23 @@ class GRU_Cell_Zoneout(torch.nn.Module):
         rt=self.sigmoid(self.Wir(input)+self.Whr(hidden))
         zt=self.sigmoid(self.Wiz(input)+self.Whz(hidden))
         nt=self.tanh(self.Win(input)+rt*self.Whn(hidden))
-        ht=(1-zt)*nt+zt*hidden
-
+        if self.training:
+            mask=(np.sign(np.random.random(list(zt.shape))-self.zoneout_rate)+1)/2
+            mask = Variable(torch.from_numpy(mask))
+            mask = mask.type(torch.FloatTensor)
+            zt=1-(1-zt)*mask
+            ht=(1-zt)*nt+zt*hidden
+        else:
+            ht = (1 - zt) * nt + zt * hidden
         output = self.h2o(ht)
         output = self.softmax(output)
 
         return output, ht
 
-    def initHidden(self,batch):
+    def initHidden(self, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
 
-    def initHidden_cuda(self, device, batch):
+    def initHidden_cuda(self, device, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
 
 
