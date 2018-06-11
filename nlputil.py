@@ -821,6 +821,47 @@ class SQuADutil(object):
         res=self.pos.tag(sent)
         return res
 
+class Sememe_NLP(object):
+    """
+    Unsupervised learning of word sememe
+    """
+    def __init__(self,nlp):
+        """
+        PDC NLP
+        """
+        self.nlp=nlp
+        self.mlost = 1.0e9
+        self.model = None
+        self.lsize = 10
+
+    def do_eval(self,txtseqs):
+        pass
+
+    def free_gen(self,step):
+        pass
+
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110):
+        """
+        Entrance for sememe training
+        :param step:
+        :param learning_rate:
+        :param batch:
+        :param window:
+        :return:
+        """
+        startt = time.time()
+        self.mlost = 1.0e9
+        lsize = self.lsize
+
+        if type(self.model)==type(None):
+            rnn = GRU_Cell_Zoneout(lsize, 75, lout, zoneout_rate=0.2)
+            # rnn = LSTM_AU(lsize, 12, lsize)
+        else:
+            rnn=self.model
+        rnn.train()
+
+
+
 
 class PDC_NLP(object):
     """
@@ -831,7 +872,7 @@ class PDC_NLP(object):
         PDC NLP
         """
         self.nlp=nlp
-        self.mlost = 1.0e99
+        self.mlost = 1.0e9
         self.model = None
         self.lsize = 100
 
@@ -866,7 +907,7 @@ class PDC_NLP(object):
             x = Variable(torch.from_numpy(databp[iis, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             y = Variable(torch.from_numpy(databp[iis+1, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-            if self.mode=="LSTN":
+            if self.mode=="LSTM":
                 output, hidden = rnn(x, hidden, y)
             elif self.mode=="GRU":
                 output, hidden = rnn(x, hidden)
@@ -960,6 +1001,7 @@ class PDC_NLP(object):
         Entrance for training
         :param learning_rate:
                 seqtrain: If whole sequence training is used or not
+        Assert tensorshape interface: [batch,x,y,z,lsize]
         :return:
         """
         startt=time.time()
@@ -1186,6 +1228,25 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
         return [(Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)),
                 Variable(torch.zeros(self.input_size, batch, self.pipe_size), requires_grad=True).to(device),
                 Variable(torch.zeros(self.num_layers, batch, self.context_size), requires_grad=True).to(device)]
+
+class GRU_Sememe(torch.nn.Module):
+    """
+    Pytorch module for Sememe learning
+    """
+    def __init__(self, vac_size, sememe_size, hidden_size):
+        """
+        Init
+        :param vac_size: vacubulary size
+        :param sememe_size: number of sememe
+        :param hidden_size: GRU hidden
+        """
+        self.sememe_size = sememe_size
+        self.hidden_size = hidden_size
+        self.vac_size = vac_size
+
+        self.Wsem = torch.nn.Linear(vac_size, sememe_size)
+
+
 
 class GRU_Cell_Zoneout(torch.nn.Module):
     """
