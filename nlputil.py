@@ -950,12 +950,12 @@ class PDC_NLP(object):
             outputl.append(xword)
             xvec=self.nlp.w2v_dict[xword]
             xvec=np.matmul(self.pcaPM,xvec)
-            x= Variable(torch.from_numpy(xvec).contiguous(), requires_grad=True)
+            x= Variable(torch.from_numpy(xvec.reshape((1,1,lsize))).contiguous(), requires_grad=True)
             y=x
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU"):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", zoneout_rate=0.0):
         """
         Entrance for training
         :param learning_rate:
@@ -974,9 +974,10 @@ class PDC_NLP(object):
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
             if mode=="LSTM":
-                rnn = RNN_PDC_LSTM_NLP(lsize, 75, 3, 24, lout)
+                rnn = RNN_PDC_LSTM_NLP(lsize, 100, 3, 24, lout)
             elif mode=="GRU":
-                rnn = GRU_Cell_Zoneout(lsize, 75, lout, zoneout_rate=0.2)
+                # rnn = GRU_Cell_Zoneout(lsize, 100, lout, zoneout_rate=zoneout_rate)
+                rnn=GRU_NLP(lsize, 100, lout, num_layers=2)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
@@ -1087,7 +1088,8 @@ class PDC_NLP(object):
                 if gpuavail:
                     outlab = outlab.to(device)
                     x, y = x.to(device), y.to(device)
-                output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                # output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+                output, hidden = rnn(x, hidden, batch=batch)
                 output=output.permute(1,2,0)
 
                 loss = lossc(output, outlab)
@@ -1226,6 +1228,9 @@ class GRU_Cell_Zoneout(torch.nn.Module):
             mask=(np.sign(np.random.random(list(zt.shape))-self.zoneout_rate)+1)/2
             mask = Variable(torch.from_numpy(mask))
             mask = mask.type(torch.FloatTensor)
+            if torch.cuda.is_available():
+                device = torch.device("cuda:0")
+                mask=mask.to(device)
             zt=1-(1-zt)*mask
             ht=(1-zt)*nt+zt*hidden
         else:
@@ -1240,6 +1245,43 @@ class GRU_Cell_Zoneout(torch.nn.Module):
 
     def initHidden_cuda(self, device, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
+
+class GRU_NLP(torch.nn.Module):
+    """
+    PyTorch LSTM PDC for Audio
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+        super(GRU_NLP, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def forward(self, input, hidden, batch=1):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        hout, hn = self.gru(input.view(-1, batch, self.input_size),hidden)
+        output = self.h2o(hout.view(-1, batch, self.hidden_size))
+        output = self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
 
 
 
