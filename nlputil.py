@@ -833,6 +833,7 @@ class Sememe_NLP(object):
         self.mlost = 1.0e9
         self.model = None
         self.lsize = 10
+        self.nvac=5000
 
     def do_eval(self,txtseqs):
         pass
@@ -840,7 +841,7 @@ class Sememe_NLP(object):
     def free_gen(self,step):
         pass
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None):
         """
         Entrance for sememe training
         :param step:
@@ -853,14 +854,128 @@ class Sememe_NLP(object):
         self.mlost = 1.0e9
         lsize = self.lsize
 
+        vac_size = self.nvac
+
         if type(self.model)==type(None):
-            rnn = GRU_Cell_Zoneout(lsize, 75, lout, zoneout_rate=0.2)
-            # rnn = LSTM_AU(lsize, 12, lsize)
+            # def __init__(self, vac_size, sememe_size, hidden_size, num_layers=1):
+            rnn = GRU_Sememe(vac_size, lsize, 20, num_layers=1)
         else:
             rnn=self.model
         rnn.train()
 
+        gpuavail = torch.cuda.is_available()
+        device = torch.device("cuda:0" if gpuavail else "cpu")
+        # If we are on a CUDA machine, then this should print a CUDA device:
+        print(device)
+        if gpuavail:
+            rnn.to(device)
 
+        # lossc=torch.nn.KLDivLoss()
+
+        # def custom_KLDivLoss(x,y):
+        #     return 0
+
+        def customized_loss(xl, yl, model=None):
+            # print(x,y)
+            # l2_reg = Variable(torch.FloatTensor(1), requires_grad=True)
+            # for ii,W in enumerate(model.parameters()):
+            #     l2_reg = l2_reg + W.norm(1)
+            loss=0
+            for ii in range(len(xl)):
+                # loss = loss-torch.sqrt((torch.sum(torch.exp(xl[ii]) * yl[ii])))
+                # loss = loss - (torch.sum(xl[ii] * yl[ii]))
+                loss = loss + torch.sqrt(torch.sum((xl[ii] - yl[ii])*(xl[ii] - yl[ii])))
+            return loss #+ 0.01 * l2_reg
+
+        optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+
+        train_hist = []
+        his = 0
+
+        def get_onehottext(textseq,start,word_to_id,window=window):
+            """
+            Get one hot rep starting from start with length window from textseq using word_to_id
+            :param textseq:
+            :param start:
+            :param window:
+            :return: shape [window,vac_size]
+            """
+            res=[]
+            for iiw in range(window):
+                wrd=textseq[start+iiw]
+                wid=word_to_id.get(wrd,word_to_id["UNK"])
+                item=np.zeros(vac_size)
+                if wid<vac_size:
+                    item[wid] = 1
+                else:
+                    item[word_to_id["UNK"]]=1
+                res.append(item)
+            pres = torch.from_numpy(np.array(res))
+            return pres
+
+
+        for iis in range(step):
+
+            if gpuavail:
+                hidden = rnn.initHidden_cuda(device, batch)
+            else:
+                hidden = rnn.initHidden(batch)
+
+            rstartv=np.floor(np.random.rand(batch)*(len(self.nlp.sub_corpus)-window-1))
+
+            # GRU provided whole sequence training
+            vec1m = None
+            vec2m = None
+            for iib in range(batch):
+                vec1 = get_onehottext(self.nlp.sub_corpus,int(rstartv[iib]),self.nlp.word_to_id)
+                vec2 = get_onehottext(self.nlp.sub_corpus, int(rstartv[iib])+1, self.nlp.word_to_id)
+                # (batch,seq,lsize)
+                if type(vec1m) == type(None):
+                    vec1m = vec1.view(1, window, -1)
+                    vec2m = vec2.view(1, window, -1)
+                else:
+                    vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
+                    vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
+            # GRU order (seql,batch,lsize)
+                x = Variable(vec1m.permute(1,0,2), requires_grad=True)
+                y = Variable(vec2m.permute(1,0,2), requires_grad=True)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            if gpuavail:
+                x, y = x.to(device), y.to(device)
+            # output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
+            output, hidden = rnn(x, hidden, batch=batch)
+            target=rnn.calsememe(y)
+
+            loss = customized_loss(output, target)
+
+            if int(iis / 10) != his:
+                print("MSE Err: ",iis, loss.item())
+                his=int(iis / 10)
+                if loss.item() < self.mlost:
+                    self.mlost = loss.item()
+                    self.model = copy.deepcopy(rnn)
+
+            train_hist.append(loss.item())
+
+            optimizer.zero_grad()
+
+            loss.backward()
+
+            optimizer.step()
+
+        endt = time.time()
+        print("Time used in training:", endt - startt)
+
+        x = []
+        for ii in range(len(train_hist)):
+            x.append([ii, train_hist[ii]])
+        x = np.array(x)
+        plt.plot(x[:, 0], x[:, 1])
+        if type(save) != type(None):
+            plt.savefig(save)
+            plt.gcf().clear()
+        else:
+            plt.show()
 
 
 class PDC_NLP(object):
@@ -1065,11 +1180,7 @@ class PDC_NLP(object):
                 ylb = []
                 for iib in range(batch):
                     wrd = self.nlp.sub_corpus[(int(rstartv[iib]) + iiss + 1)]
-                    try:
-                        vec = self.nlp.w2v_dict[wrd]
-                        ydg = self.nlp.word_to_id[wrd]
-                    except:
-                        ydg = self.nlp.word_to_id["UNK"]
+                    ydg=self.nlp.word_to_id.get(wrd,self.nlp.word_to_id["UNK"])
                     ylb.append(ydg)
                 yl.append(np.array(ylb))
             outlab = Variable(torch.from_numpy(np.array(yl).T))
@@ -1235,18 +1346,57 @@ class GRU_Sememe(torch.nn.Module):
     """
     Pytorch module for Sememe learning
     """
-    def __init__(self, vac_size, sememe_size, hidden_size):
+    def __init__(self, vac_size, sememe_size, hidden_size, num_layers=1):
         """
         Init
         :param vac_size: vacubulary size
         :param sememe_size: number of sememe
         :param hidden_size: GRU hidden
         """
+        super(GRU_Sememe, self).__init__()
+
         self.sememe_size = sememe_size
         self.hidden_size = hidden_size
         self.vac_size = vac_size
+        self.num_layers=num_layers
 
         self.Wsem = torch.nn.Linear(vac_size, sememe_size)
+
+        self.gru = torch.nn.GRU(sememe_size, hidden_size, num_layers=num_layers)
+        self.h2o = torch.nn.Linear(hidden_size, sememe_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+
+    def forward(self, input, hidden, batch=1):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        sememe = self.Wsem(input)
+        sememe=self.sigmoid(sememe)
+        hout, hn = self.gru(sememe.view(-1, batch, self.sememe_size),hidden)
+        output = self.h2o(hout.view(-1, batch, self.hidden_size))
+        output = self.sigmoid(output)
+        return output,hn
+
+    def calsememe(self, input):
+        """
+        Calculate sememe embeding sharing Wsem
+        :param input:
+        :return:
+        """
+        sememe = self.Wsem(input)
+        sememe = self.sigmoid(sememe)
+        return sememe
+
+    def initHidden(self,batch=1):
+        return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch=1):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
 
 
 
