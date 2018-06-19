@@ -287,5 +287,53 @@ def plot_mat(data,start=0,range=1000):
     plt.colorbar()
     plt.show()
 
+def cal_pdist(data):
+    """
+    Cal probabilistic distribution distance of data
+    :param data:
+    :return:
+    """
+    data = np.array(data)
+    data = data / np.sum(data)
+    assert len(data.shape) == 1
+    orin=np.ones(len(data))/len(data)
+    dist=np.sum(np.abs(data-orin))*np.sum(np.abs(data-orin))/2
+    return dist
 
-# def ppca(data)
+def cal_entropy(data):
+    """
+    Cal entropy of a vector
+    :param data:
+    :return:
+    """
+    data=np.array(data)
+    data=data/np.sum(data)
+    assert len(data.shape) == 1
+    ent=-np.sum(data*np.log(data))
+    return ent
+
+def cal_kldiv(p,q):
+    """
+    Cal KL divergence of p over q
+    :param data:
+    :return:
+    """
+    p = np.array(p)
+    q = np.array(q)
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    assert len(q.shape) == 1
+    assert len(p.shape) == 1
+    assert p.shape[0] == q.shape[0]
+    print(p,q)
+    kld=np.sum(p*np.log(p/q))
+    return kld
+
+def genDist(N):
+    """
+    Generate 1D distribution vector of N entry, sum(V)=1
+    :param N:
+    :return:
+    """
+    vec=np.random.random(N)
+    return vec/np.sum(vec)

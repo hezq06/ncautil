@@ -31,7 +31,7 @@ from nltk.tokenize import word_tokenize
 import torch
 from torch.autograd import Variable
 
-from ncautil.ncalearn import pca_proj
+from ncautil.ncalearn import pca_proj,cal_entropy
 
 __author__ = "Harry He"
 
@@ -106,14 +106,18 @@ class NLPutil(object):
             string=string+self.sub_corpus[start+ii] +" "
         print(string)
 
-    def build_vocab(self):
+    def build_vocab(self,corpus=None):
         """
         Building vocabulary
         Referencing part of code from: Basic word2vec example tensorflow, reader.py
         :return:
         """
+        if type(corpus)==type(None):
+            corpus=self.corpus
+        else:
+            self.corpus=corpus
         print("Building vocabulary...")
-        counter = collections.Counter(self.corpus)
+        counter = collections.Counter(corpus)
         count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
         words, counts = list(zip(*count_pairs))
         self.word_to_id = dict(zip(words, range(1,1+len(words))))
@@ -123,6 +127,7 @@ class NLPutil(object):
         for k,v in self.word_to_cnt.items():
             self.word_to_cnt[k]=1/(self.word_to_cnt[k]/bv)
         self.id_to_word = {v: k for k, v in self.word_to_id.items()}
+        print(self.id_to_word)
         return self.word_to_id, self.id_to_word
 
     def build_w2v(self,mode="gensim",Nvac=10000):
@@ -132,34 +137,43 @@ class NLPutil(object):
         :return:
         """
         print("Building word to vector lookup table...")
-        if mode=="pickle":
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/w2vtab_opt.pickle')
-            w2vu = W2vUtil()
-            w2vtemp = w2vu.flloadw2v(ofile=file)
-            try:
-                model = dict((key.decode("utf-8"), val.astype(float)) for (key, val) in w2vtemp.items())
-            except AttributeError:
-                model = dict((key, val.astype(float)) for (key, val) in w2vtemp.items())
-        elif mode=="gensim": # Google pretrained w2v_tab
-            assert type(self.id_to_word)!=type(None)
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/GoogleNews-vectors-negative300.bin')
-            model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
-        elif mode=="gensim_raw":
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/GoogleNews-vectors-negative300.bin')
-            model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
-            return model
-        self.w2v_dict = dict([])
-        skip = []
-        for ii in range(Nvac):
-            try:
-                word = self.id_to_word[ii]
-                vec = model[word]
-                self.w2v_dict[word] = vec
-            except:
-                skip.append(word)
-        print("Except list: length " + str(len(skip)))
-        print(skip)
-        self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
+        if mode != "onehot":
+            if mode=="pickle":
+                file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/w2vtab_opt.pickle')
+                w2vu = W2vUtil()
+                w2vtemp = w2vu.flloadw2v(ofile=file)
+                try:
+                    model = dict((key.decode("utf-8"), val.astype(float)) for (key, val) in w2vtemp.items())
+                except AttributeError:
+                    model = dict((key, val.astype(float)) for (key, val) in w2vtemp.items())
+            elif mode=="gensim": # Google pretrained w2v_tab
+                assert type(self.id_to_word)!=type(None)
+                file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/GoogleNews-vectors-negative300.bin')
+                model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
+            elif mode=="gensim_raw":
+                file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/GoogleNews-vectors-negative300.bin')
+                model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
+                return model
+            self.w2v_dict = dict([])
+            skip = []
+            for ii in range(Nvac):
+                try:
+                    word = self.id_to_word[ii]
+                    vec = model[word]
+                    self.w2v_dict[word] = vec
+                except:
+                    skip.append(word)
+            print("Except list: length " + str(len(skip)))
+            print(skip)
+            self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
+        else:
+            if len(self.id_to_word)>200:
+                raise Exception("Too much words for onehot representation.")
+            self.w2v_dict=dict([])
+            for ii in range(len(self.id_to_word)):
+                vec=np.zeros(len(self.id_to_word))
+                vec[ii]=1.0
+                self.w2v_dict[self.id_to_word[ii]]=vec
         return self.w2v_dict
 
     def proj_w2v(self,w2v_dict,pM):
@@ -989,11 +1003,66 @@ class PDC_NLP(object):
         self.nlp=nlp
         self.mlost = 1.0e9
         self.model = None
-        self.lsize = 100
+        self.lsize = None
 
         self.lout = None
         self.pcaPM = None
         self.mode = None
+
+    def do_eval_baseline(self,txtseqs,mode="random"):
+        """
+        Calculate some simple baseline
+        :param txtseqs:
+        :param mode:
+        :return:
+        """
+
+        datab = self.nlp.build_textmat(txtseqs)
+        databp = np.matmul(self.pcaPM, datab.T)
+        databp = databp.T
+        databp = np.array(databp)
+
+        probs=np.zeros(self.lsize)
+        for iic in range(self.lsize):
+            try:
+                probs[iic]=1/self.nlp.word_to_cnt[self.nlp.id_to_word[iic]]
+            except:
+                probs[iic] = 1e-9
+        probs=probs/np.sum(probs)
+
+        outputl = []
+        for iis in range(len(databp) - 1):
+            if mode=="random":
+                output=np.log(np.ones(self.lsize)/self.lsize)
+                outputl.append(output)
+            elif mode=="prior":
+                output=np.log(probs)
+                outputl.append(output)
+        print("Prediction Entropy:",cal_entropy(np.exp(output)))
+
+        outputl=torch.from_numpy(np.array(outputl))
+        outputl=outputl.type(torch.FloatTensor)
+        outputl=outputl.t()
+        print(outputl.shape)
+
+        # Generating output label
+        yl = []
+        for iiss in range(len(txtseqs) - 1):
+            ylb = []
+            wrd = txtseqs[iiss + 1]
+            try:
+                vec = self.nlp.w2v_dict[wrd]
+                ydg = self.nlp.word_to_id[wrd]
+            except:
+                ydg = self.nlp.word_to_id["UNK"]
+            ylb.append(ydg)
+            yl.append(np.array(ylb))
+        outlab = Variable(torch.from_numpy(np.array(yl).T))
+        outlab = outlab.type(torch.LongTensor)
+        lossc = torch.nn.CrossEntropyLoss()
+        # (minibatch, C, d1, d2, ..., dK)
+        loss = lossc(outputl.view(1, -1, len(databp) - 1), outlab)
+        print("Evaluation Perplexity: ", np.exp(loss.item()))
 
     def do_eval(self,txtseqs):
         """
@@ -1111,7 +1180,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", zoneout_rate=0.0):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", zoneout_rate=0.0 ,pcalsize=0):
         """
         Entrance for training
         :param learning_rate:
@@ -1122,6 +1191,10 @@ class PDC_NLP(object):
         startt=time.time()
 
         self.mlost = 1.0e9
+        if pcalsize>0:
+            self.lsize=pcalsize
+        else:
+            self.lsize=len(self.nlp.w2v_dict[self.nlp.id_to_word[0]])
         lsize=self.lsize
         lout=len(self.nlp.w2v_dict)
         self.lout=lout
@@ -1134,7 +1207,7 @@ class PDC_NLP(object):
                 rnn = RNN_PDC_LSTM_NLP(lsize, 100, 3, 24, lout)
             elif mode=="GRU":
                 # rnn = GRU_Cell_Zoneout(lsize, 100, lout, zoneout_rate=zoneout_rate)
-                rnn=GRU_NLP(lsize, 100, lout, num_layers=2)
+                rnn=GRU_NLP(lsize, 30, lout, num_layers=1)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
@@ -1157,9 +1230,13 @@ class PDC_NLP(object):
         his = 0
 
         datab=self.nlp.build_textmat(self.nlp.sub_corpus)
-        databp,pm=pca_proj(datab.T,lsize)
-        databp=databp.T
-        self.pcaPM=pm
+        if pcalsize>0:
+            databp,pm=pca_proj(datab.T,lsize)
+            databp=databp.T
+            self.pcaPM=pm
+        else:
+            self.pcaPM=np.eye(self.lsize)
+            databp=datab
         assert databp[0].shape[0] == lsize
         databp = torch.from_numpy(databp)
         if gpuavail:
