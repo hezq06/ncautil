@@ -249,6 +249,9 @@ class NLPutil(object):
         ccnt=0
         cmax=np.max(datap)
         cmin = np.min(datap)
+        # cmin = -cmax
+        cmax=1.0
+        cmin=0.0
 
         for iiw in range(len(textp)):
             wrdp=textp[iiw]
@@ -1009,6 +1012,8 @@ class PDC_NLP(object):
         self.pcaPM = None
         self.mode = None
 
+        self.prior= None
+
     def do_eval_baseline(self,txtseqs,mode="random"):
         """
         Calculate some simple baseline
@@ -1200,14 +1205,27 @@ class PDC_NLP(object):
         self.lout=lout
         self.mode=mode
 
+        ### Calculate prior vector
+        probs = np.zeros(self.lsize)
+        for iic in range(self.lsize):
+            try:
+                probs[iic] = 1 / self.nlp.word_to_cnt[self.nlp.id_to_word[iic]]
+            except:
+                probs[iic] = 1e-9
+        probs = probs / np.sum(probs)
+        plogits=np.log(probs)
+        # self.prior=plogits
+        self.prior = np.zeros(lout)
+
 
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
             if mode=="LSTM":
                 rnn = RNN_PDC_LSTM_NLP(lsize, 100, 3, 24, lout)
             elif mode=="GRU":
-                # rnn = GRU_Cell_Zoneout(lsize, 100, lout, zoneout_rate=zoneout_rate)
-                rnn=GRU_NLP(lsize, 30, lout, num_layers=1)
+                # rnn = GRU_Cell_Zoneout(lsize, 30, lout, zoneout_rate=0.2)
+                # rnn=GRU_NLP(lsize, 30, lout, num_layers=1)
+                rnn = GRU_KNW_L(lsize, 1, lout ,prior_vec=self.prior)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
@@ -1222,6 +1240,27 @@ class PDC_NLP(object):
             rnn.to(device)
 
         lossc = torch.nn.CrossEntropyLoss()
+
+        def custom_KNWLoss(outputl, outlab, model, cstep):
+            loss1 = lossc(outputl, outlab)
+            logith2o = model.h2o.weight.view(-1)#+model.h2o.bias.view(-1)
+            pih2o=torch.exp(logith2o)/torch.sum(torch.exp(logith2o))
+            lossh2o = -torch.sum(pih2o*torch.log(pih2o))
+
+            # # logitz=model.Wiz.weight.view(-1)
+            # logitz = model.Wiz.view(-1)
+            # piz = torch.exp(logitz) / torch.sum(torch.exp(logitz))
+            # lossz= -torch.sum(piz * torch.log(piz))
+            #
+            # # logitn = model.Win.weight.view(-1)
+            # logitn = model.Win.view(-1)
+            # pin = torch.exp(logitn) / torch.sum(torch.exp(logitn))
+            # lossn = -torch.sum(pin * torch.log(pin))
+
+            l1_reg = Variable(torch.FloatTensor(1), requires_grad=True)
+            l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
+
+            return loss1+0.1*lossh2o*cstep/step+0.01*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
         # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
@@ -1295,7 +1334,8 @@ class PDC_NLP(object):
                         outputl=output.view(batch,lout,1)
                     else:
                         outputl=torch.cat((outputl.view(batch,lout,-1),output.view(batch,lout,1)),dim=2)
-                loss = lossc(outputl, outlab)
+                # loss = lossc(outputl, outlab)
+                loss=custom_KNWLoss(outputl, outlab, rnn, iis)
 
             else:
                 # LSTM provided whole sequence training
@@ -1501,7 +1541,7 @@ class GRU_Cell_Zoneout(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-    def forward(self, input, hidden):
+    def forward(self, input, hidden, batch=None):
         """
 
         :param input: input
@@ -1536,7 +1576,7 @@ class GRU_Cell_Zoneout(torch.nn.Module):
 
 class GRU_NLP(torch.nn.Module):
     """
-    PyTorch LSTM PDC for Audio
+    PyTorch GRU for NLP
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1):
         super(GRU_NLP, self).__init__()
@@ -1570,10 +1610,248 @@ class GRU_NLP(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
 
+# class GRU_KNW_P(torch.nn.Module):
+#     """
+#     PyTorch GRU
+#     """
+#     def __init__(self, input_size, hidden_size, output_size, prior_vec,batch=20,seq=110,num_layers=1):
+#         super(GRU_KNW_P, self).__init__()
+#
+#         self.hidden_size = hidden_size
+#         self.input_size = input_size
+#         self.output_size = output_size
+#         self.num_layers = num_layers
+#         self.prior_vec = np.array(prior_vec)
+#         self.batch=batch
+#         self.seq=seq
+#         assert len(prior_vec) == output_size
+#
+#         self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers)
+#         self.knowledge = torch.Parameter(torch.from_numpy(np.zeros(hidden_size,output_size)),requires_grad=True)
+#
+#         tprior=torch.from_numpy(np.array(prior_vec))
+#         batchcnt=np.ones(batch)
+#         seqcnt=np.ones(seq)
+#         batchext=torch.matmul(seqcnt.view(-1,1),tprior.view(1,-1))
+#         self.prior=torch.matmul(batchcnt.view(-1,1),batchext.view(seq,1,output_size))
+#
+#         self.sigmoid = torch.nn.Sigmoid()
+#         self.tanh = torch.nn.Tanh()
+#         self.softmax = torch.nn.LogSoftmax(dim=-1)
+#
+#     def forward(self, input, hidden):
+#         """
+#         Forward
+#         :param input:
+#         :param hidden:
+#         :return:
+#         """
+#         hout, hn = self.gru(input.view(-1, self.batch, self.input_size),hidden)
+#         thetak=(hout+1)/2 # [seq,batch,hidden]
+#         self.knowledge=self.knowledge-torch.matmul(torch.mean(self.knowledge,dim=-1, keepdim=True),torch.ones((1,self.output_size)))
+#         # [hidden,output]
+#         gatedk=torch.matmul(thetak,self.knowledge) # [seq,batch,output]
+#         # self.prior [seq,batch,output]
+#         output = (self.htanh(self.prior+gatedk)+1)/2
+#         output=output/torch.matmul(torch.sum(output,dim=-1, keepdim=True),torch.ones((1,self.output_size)))
+#         return torch.log(output)
+#
+#     def initHidden(self,batch):
+#         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)
+#
+#     def initHidden_cuda(self,device, batch):
+#         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
 
 
+class GRU_KNW_L(torch.nn.Module):
+    """
+    PyTorch GRU adjuested for Logit based knowledge learning
+    """
+    def __init__(self, input_size, hidden_size, output_size,prior_vec=None):
+        """
+
+        :param input_size:
+        :param hidden_size:
+        :param output_size:
+        :param prior_vec: logit of prior knowledge
+        """
+        super(GRU_KNW_L, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+
+        self.Wir = torch.nn.Linear(input_size, hidden_size)
+        self.Whr = torch.nn.Linear(hidden_size, hidden_size)
+        self.Wiz = torch.nn.Linear(input_size, hidden_size)
+        self.Whz = torch.nn.Linear(hidden_size, hidden_size)
+        self.Win = torch.nn.Linear(input_size, hidden_size)
+        self.Whn = torch.nn.Linear(hidden_size, hidden_size)
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size,bias=True)
+
+        # self.Wshare = torch.nn.Parameter(torch.rand(input_size, hidden_size), requires_grad=True)
+        # self.Wshare_bz = torch.nn.Parameter(torch.rand(hidden_size), requires_grad=True)
+        # self.Wshare_bn = torch.nn.Parameter(torch.rand(hidden_size), requires_grad=True)
+        # self.Wshare_bo = torch.nn.Parameter(torch.rand(output_size), requires_grad=True)
+
+        if type(prior_vec)!=type(None):
+            self.prior_vec=torch.from_numpy(np.array(prior_vec))
+            self.prior_vec = self.prior_vec.type(torch.FloatTensor)
+        else:
+            self.prior_vec = torch.zeros(output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def forward(self, input, hidden,batch=None):
+        """
+
+        :param input: input
+        :param hidden: hidden
+        :param result:
+        :return:
+        """
+        # rt=self.sigmoid(self.Wir(input)+self.Whr(hidden))
+        zt=self.sigmoid(self.Wiz(input)+self.Whz(hidden))
+        # nt=self.sigmoid(self.Win(input)+rt*self.Whn(hidden))
+        nt = self.sigmoid(self.Win(input) +  self.Whn(hidden))
+        ht = (1 - zt) * nt + zt * hidden
+        output = self.h2o(ht)+self.prior_vec
+        output = self.softmax(output)
+        # zt = self.sigmoid(torch.matmul(input,self.Wshare)+ self.Wshare_bz + self.Whz(hidden))
+        # nt = self.sigmoid(torch.matmul(input,self.Wshare)+ self.Wshare_bn + self.Whn(hidden))
+        # ht = (1 - zt) * nt + zt * hidden
+        # output = torch.matmul(ht,self.Wshare.t()) + self.Wshare_bo + self.prior_vec
+        # output = self.softmax(output)
+        return output, ht
+
+    def knw_distill(self,knw_t,theta_t,id_to_word):
+        """
+        Distilling knowledge from result
+        :param knw_t: significant threshold for knowledge
+        :param theta_t: significant threshold for sigmoid
+        :param id_to_word: id to word dictionary
+        :return:
+        """
+        try:
+            knw_b = self.h2o.bias.data.numpy()
+        except:
+            knw_b = 0
+        knw_w = self.h2o.weight.view(-1).data.numpy()
+        knw_on=knw_b+knw_w
+        logitM=np.max(knw_on)
+        nM=np.argmax(knw_on)
+        knw_on[nM]=np.min(knw_on)
+        logitM2 = np.max(knw_on)
+        resknw_N=None
+        if logitM-logitM2>knw_t:
+            print("Expert for "+str(id_to_word[nM])+" detected!")
+            resknw_N=nM
+        else:
+            print("Knowledge not found!")
+            return False
+
+        ## Para hidden for sigmoid
+        thz_w=self.Whz.weight.item()
+        thz_b=self.Whz.bias.item()
+        thn_w = self.Whn.weight.item()
+        thn_b = self.Whn.bias.item()
+
+        ## Para input for sigmoid
+        tiz_w = self.Wiz.weight.view(-1).data.numpy()
+        tiz_b = self.Wiz.bias.data.numpy()
+        tin_w = self.Win.weight.view(-1).data.numpy()
+        tin_b = self.Win.bias.data.numpy()
+        ## Assume ht-1==0
+        # Z
+        posi_z_t=[]
+        posi_z_tvec=thz_b+tiz_b+tiz_w-theta_t
+        for iin in range(len(posi_z_tvec)):
+            if posi_z_tvec[iin]>0:
+                posi_z_t.append(iin)
+        print("ht-1==0: Posi Z found:",posi_z_t)
+        neg_z_t = []
+        neg_z_tvec = thz_b + tiz_b + tiz_w + theta_t
+        for iin in range(len(neg_z_tvec)):
+            if neg_z_tvec[iin] < 0:
+                neg_z_t.append(iin)
+        print("ht-1==0: Neg Z found:", neg_z_t)
+        # N
+        posi_n_t = []
+        posi_n_tvec = thn_b + tin_b + tin_w - theta_t
+        for iin in range(len(posi_n_tvec)):
+            if posi_n_tvec[iin] > 0:
+                posi_n_t.append(iin)
+        print("ht-1==0: Posi N found:", posi_n_t)
+        neg_n_t = []
+        neg_n_tvec = thn_b + tin_b + tin_w + theta_t
+        for iin in range(len(neg_n_tvec)):
+            if neg_n_tvec[iin] < 0:
+                neg_n_t.append(iin)
+        print("ht-1==0: Neg N found:", neg_n_t)
+        return True
+
+    def initHidden(self, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
+
+class GRU_KNW_CL(torch.nn.Module):
+    """
+    PyTorch GRU adjuested for Clean Logit based knowledge learning
+    """
+    def __init__(self, input_size, hidden_size, output_size,prior_vec=None):
+        """
+
+        :param input_size:
+        :param hidden_size:
+        :param output_size:
+        :param prior_vec: logit of prior knowledge
+        """
+        super(GRU_KNW_CL, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+
+        self.Wiz = torch.nn.Parameter(torch.rand(input_size, hidden_size), requires_grad=True)
+        self.Win = torch.nn.Parameter(torch.rand(input_size, hidden_size), requires_grad=True)
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size,bias=True)
 
 
+        if type(prior_vec)!=type(None):
+            self.prior_vec=torch.from_numpy(np.array(prior_vec))
+            self.prior_vec = self.prior_vec.type(torch.FloatTensor)
+        else:
+            self.prior_vec = torch.zeros(output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.Lsoftmax = torch.nn.LogSoftmax(dim=-1)
+        self.softmax = torch.nn.Softmax(dim=0)
+
+    def forward(self, input, hidden,batch=None):
+        """
+
+        :param input: input
+        :param hidden: hidden
+        :param result:
+        :return:
+        """
+        zt = torch.matmul(input,self.softmax(self.Wiz))
+        nt = torch.matmul(input,self.softmax(self.Win))
+        ht = (1 - zt) * nt + zt * hidden
+        output = self.h2o(ht)+self.prior_vec
+        output = self.Lsoftmax(output)
+        return output, ht
+
+    def initHidden(self, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
 
 
 
