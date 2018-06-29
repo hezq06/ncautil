@@ -31,7 +31,7 @@ from nltk.tokenize import word_tokenize
 import torch
 from torch.autograd import Variable
 
-from ncautil.ncalearn import pca_proj,cal_entropy
+from ncautil.ncalearn import pca_proj,cal_entropy,cal_kldiv
 
 __author__ = "Harry He"
 
@@ -1260,7 +1260,7 @@ class PDC_NLP(object):
             l1_reg = Variable(torch.FloatTensor(1), requires_grad=True)
             l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
 
-            return loss1+0.1*lossh2o*cstep/step+0.01*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
+            return loss1+0.3*lossh2o*cstep/step+0.01*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
         # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
@@ -1790,7 +1790,7 @@ class GRU_KNW_L(torch.nn.Module):
             if neg_n_tvec[iin] < 0:
                 neg_n_t.append(iin)
         print("ht-1==0: Neg N found:", neg_n_t)
-        return True
+        return [resknw_N,posi_z_t,neg_z_t,posi_n_t,neg_n_t]
 
     def initHidden(self, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
@@ -1852,6 +1852,160 @@ class GRU_KNW_CL(torch.nn.Module):
 
     def initHidden_cuda(self, device, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
+
+class KNW_OBJ(object):
+    """
+    Real working object for knowledge
+    """
+    def __init__(self):
+        self.id_to_word=None
+        self.prior=None
+        self.knw_list=[]
+        self.knw_list_fingerp=[]
+        self.knw_gate_index = []
+
+    def insert(self,knw_ls):
+        """
+        Insert knowledge
+        :return:
+        """
+        expertInd, posiZ, negZ, posiN, negN = knw_ls
+        ### Z0 N0 style knowledge
+        if len(negN)>0:
+            for item in negN:
+                if item in negZ:
+                    # if item then next not expertInd style knowledge
+                    knw_fingerp="IITNN"+"-"+str(item)+"-"+str(expertInd)
+                    if knw_fingerp not in self.knw_list_fingerp:
+                        knw_item=dict([])
+                        knw_item["style"]="IITNN" # if item then next not
+                        knw_item["description"]="If "+str(self.id_to_word[item])+" then next not "+str(self.id_to_word[expertInd])
+                        knw_item["data"]=[item,expertInd]
+                        knw_item["knw_fingerp"]="IITNN"+str(item)+str(expertInd)
+                        self.knw_list.append(knw_item)
+                        self.knw_list_fingerp.append(knw_item["knw_fingerp"])
+        ### Z0 N1 style knowledge
+        if len(posiN)>0:
+            for item in posiN:
+                if item in negZ:
+                    # if item then next is expertInd style knowledge
+                    knw_fingerp = "IITNI" + str(item) + str(expertInd)
+                    if knw_fingerp not in self.knw_list_fingerp:
+                        knw_item = dict([])
+                        knw_item["style"] = "IITNI"  # if item then next not
+                        knw_item["description"] = "If " + str(self.id_to_word[item]) + " then next is " + str(
+                            self.id_to_word[expertInd])
+                        knw_item["data"] = [item, expertInd]
+                        knw_item["knw_fingerp"] = "IITNI" + str(item) + str(expertInd)
+                        self.knw_list.append(knw_item)
+                        self.knw_list_fingerp.append(knw_item["knw_fingerp"])
+    def print(self):
+        for ii in range(len(self.knw_list)):
+            print(self.knw_list_fingerp[ii]+" : "+self.knw_list[ii]["description"])
+
+    def update(self):
+        """
+        Updating its knowledge database
+        :return:
+        """
+        for iik in range(len(self.knw_list)):
+            knw_item=self.knw_list[iik]
+            knw_item["knw_fingerp"] = knw_item["style"]+"-"+str(knw_item["data"][0])+"-"+str(knw_item["data"][1])
+            self.knw_list_fingerp[iik] = knw_item["knw_fingerp"]
+
+    def eval(self,dataset):
+        """
+        Knowledge evaluation on dataset
+        :return:
+        """
+        def cal_knwU(style,data):
+            """
+            Calculate knowledge utility
+            :param switch:
+            :return:
+            """
+            Ntot = len(self.id_to_word)
+            KnwU=None
+            if style=="IITNN":
+                tmp=self.prior.copy()
+                tmp[data[1]]=0
+                KnwU=cal_kldiv(tmp,self.prior)*(self.prior[data[0]]/np.sum(self.prior))
+            elif style=="IITNI":
+                tmp = np.zeros(Ntot)
+                tmp[data[1]] = 1
+                KnwU = cal_kldiv(tmp, self.prior) * (self.prior[data[0]] / np.sum(self.prior))
+            return KnwU
+        ### Calculate utility of each piece of language
+        for ii in range(len(self.knw_list)):
+            knw_item=self.knw_list[ii]
+            knwU=knw_item.get("knw_utility",None)
+            if type(knwU)==type(None):
+                knwU=cal_knwU(knw_item["style"],knw_item["data"])
+                self.knw_list[ii]["knw_utility"]=knwU
+                print(self.knw_list[ii]["description"],knwU)
+        ### Build knowledge gate index
+        for iin
+
+
+    def forward(self):
+        """
+        Forwarding and calculate logit with knowledge
+        :return:
+        """
+        pass
+
+
+class KNW_WRAP(object):
+    """
+    Wrapper for learned knowledge databasing
+    """
+    def __init__(self):
+        """
+        Initialization
+        """
+        self.knw_obj=KNW_OBJ()
+
+    def insert(self,knw_ls):
+        """
+        Insert knowledge
+        :return:
+        """
+        self.knw_obj.insert(knw_ls)
+
+    def update(self):
+        self.knw_obj.update()
+
+    def print(self):
+        self.knw_obj.print()
+
+    def eval(self,dataset):
+        self.knw_obj.eval(dataset)
+
+    def forward(self):
+        """
+        Forwarding and calculate logit with knowledge
+        :return:
+        """
+        pass
+
+    def save(self,name):
+        """
+        Saving database into file
+        :param name:
+        :return:
+        """
+        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
+        pickle.dump(self.knw_obj, open(file, "wb"))
+
+
+    def load(self,name):
+        """
+        load name knowledge base
+        :param name:
+        :return:
+        """
+        file = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
+        self.knw_obj = pickle.load(open(file, "rb"))
 
 
 

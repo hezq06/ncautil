@@ -306,9 +306,10 @@ def cal_entropy(data):
     :param data:
     :return:
     """
-    data=np.array(data)
+    data=np.array(data)+1e-9
     data=data/np.sum(data)
     assert len(data.shape) == 1
+    assert np.min(data)>0
     ent=-np.sum(data*np.log(data))
     return ent
 
@@ -318,14 +319,15 @@ def cal_kldiv(p,q):
     :param data:
     :return:
     """
-    p = np.array(p)
-    q = np.array(q)
+    p = np.array(p)+1e-9
+    q = np.array(q)+1e-9
     p = p / np.sum(p)
     q = q / np.sum(q)
     assert len(q.shape) == 1
     assert len(p.shape) == 1
     assert p.shape[0] == q.shape[0]
-    print(p,q)
+    assert np.min(p)>0
+    assert np.min(q)>0
     kld=np.sum(p*np.log(p/q))
     return kld
 
