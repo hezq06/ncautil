@@ -27,6 +27,7 @@ import gensim
 from ncautil.w2vutil import W2vUtil
 from nltk.tag import StanfordPOSTagger
 from nltk.tokenize import word_tokenize
+from scipy.optimize import minimize
 
 import torch
 from torch.autograd import Variable
@@ -1185,7 +1186,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", zoneout_rate=0.0 ,pcalsize=0):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", zoneout_rate=0.0 ,pcalsize=0, knw_org=None):
         """
         Entrance for training
         :param learning_rate:
@@ -1214,7 +1215,7 @@ class PDC_NLP(object):
                 probs[iic] = 1e-9
         probs = probs / np.sum(probs)
         plogits=np.log(probs)
-        # self.prior=plogits
+        self.prior=plogits
         self.prior = np.zeros(lout)
 
 
@@ -1952,7 +1953,7 @@ class KNW_ORG(object):
         :return:
         """
         ind=self.knw_list_fingerp.index(fingerp)
-        return self.knw_list[ind]
+        return self.knw_list[ind],ind
 
     def insert(self,knw_ls):
         """
@@ -1989,7 +1990,7 @@ class KNW_ORG(object):
     def print(self):
         print("No. of knowledge: ",len(self.knw_list))
         for ii in range(len(self.knw_list)):
-            print(self.knw_list_fingerp[ii]+" : "+self.knw_list[ii].description, self.knw_list[ii].knw_utility, self.knw_list[ii].eval_cnt)
+            print(self.knw_list_fingerp[ii]+" : "+self.knw_list[ii].description, self.knw_list[ii].knw_utility, self.knw_list[ii].eval_cnt, self.knw_list[ii].logith)
 
     def update(self):
         """
@@ -2017,7 +2018,7 @@ class KNW_ORG(object):
             x = word_to_id[dataset[nn]]
             y = word_to_id[dataset[nn+1]]
             for knwid in self.knw_gate_index[x]:
-                knwobj=self.get(knwid)
+                knwobj,_=self.get(knwid)
                 if type(knwobj.eval_cnt)==type(None):
                     knwobj.eval_cnt=[0,0] # [tot, right]
                 mask=knwobj.knw_outmask
@@ -2047,6 +2048,7 @@ class KNW_ORG(object):
             perpls.append(perp)
         avperp=np.mean(np.array(perpls))
         print("Calculated knowledge perplexity:",np.exp(avperp))
+        return avperp
 
 
     def forward(self,inputd):
@@ -2061,6 +2063,80 @@ class KNW_ORG(object):
             plogits=plogits+knwobj.knw_outmask*knwobj.logith
         postr=np.exp(plogits)/np.sum(np.exp(plogits))
         return postr
+
+    def optimize_logith(self,dataset):
+        """
+        Optimize logith using scipy optimizor
+        :param dataset:
+        :return:
+        """
+        word_to_id = {v: k for k, v in self.id_to_word.items()}
+        print("Knowledge optimizing ...")
+
+        def eval(para,dataset):
+            perpls = []
+            for nn in range(len(dataset) - 1):
+                x = word_to_id[dataset[nn]]
+                y = word_to_id[dataset[nn + 1]]
+                plogits = np.log(self.prior)
+                for knwid in self.knw_gate_index[x]:
+                    knwobj,ind = self.get(knwid)
+                    plogits = plogits + knwobj.knw_outmask * para[ind]
+                postr = np.exp(plogits) / np.sum(np.exp(plogits))
+                yvec = np.zeros(self.lsize)
+                yvec[y] = 1
+                perp = cal_kldiv(yvec, postr)
+                perpls.append(perp)
+            avperp = np.mean(np.array(perpls))
+            print("Calculated knowledge perplexity:", np.exp(avperp))
+            return avperp
+
+        x=np.ones(len(self.knw_list))
+        res=minimize(eval, x ,dataset, method='SLSQP')
+        print(res)
+        for iit in range(len(res.x)):
+            self.knw_list[iit].logith=res.x[iit]
+
+    def optimize_logith_batch(self,dataset,bper=0.02,step=100):
+        """
+        Use mini batched version to do knowledge optimizing
+        :param dataset:
+        :param bper:
+        :return:
+        """
+        word_to_id = {v: k for k, v in self.id_to_word.items()}
+        print("Knowledge mini-batched optimizing ...")
+
+        def eval(para,dataset):
+            perpls = []
+            for nn in range(len(dataset) - 1):
+                x = word_to_id[dataset[nn]]
+                y = word_to_id[dataset[nn + 1]]
+                plogits = np.log(self.prior)
+                for knwid in self.knw_gate_index[x]:
+                    knwobj,ind = self.get(knwid)
+                    plogits = plogits + knwobj.knw_outmask * para[ind]
+                postr = np.exp(plogits) / np.sum(np.exp(plogits))
+                yvec = np.zeros(self.lsize)
+                yvec[y] = 1
+                perp = cal_kldiv(yvec, postr)
+                perpls.append(perp)
+            avperp = np.mean(np.array(perpls))
+            return avperp
+
+        x = np.ones(len(self.knw_list))
+        for iis in range(step):
+            startp=np.random.rand()*(1-bper)*len(dataset)
+            mbdataset=dataset[int(startp):int(startp+bper*len(dataset))]
+            res = minimize(eval, x, mbdataset, method='SLSQP',options={"maxiter":3})
+            avperp=eval(res.x,mbdataset)
+            print("Step "+str(iis)+", calculated perplexity:", np.exp(avperp))
+            x=res.x
+        avperp = eval(x, dataset)
+        print("Final evaluation, calculated perplexity:", np.exp(avperp))
+        print(res)
+        # for iit in range(len(res.x)):
+        #     self.knw_list[iit].logith = res.x[iit]
 
     def save(self,name="knwlist.pickle"):
         """
