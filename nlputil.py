@@ -1855,14 +1855,104 @@ class GRU_KNW_CL(torch.nn.Module):
 
 class KNW_OBJ(object):
     """
-    Real working object for knowledge
+    A piece of knowledge
     """
-    def __init__(self):
-        self.id_to_word=None
-        self.prior=None
-        self.knw_list=[]
-        self.knw_list_fingerp=[]
-        self.knw_gate_index = []
+    def __init__(self,id_to_word,prior):
+        self.id_to_word=id_to_word
+        self.prior=prior
+        self.lsize=len(id_to_word)
+        self.style=None
+        self.description=None
+        self.data=None
+        self.knw_fingerp=None
+        self.knw_utility=None
+        self.knw_outmask = None
+        self.logith = 1.0 # Confidence of this knowledge
+        self.eval_cnt=None # event cnt of this knowledge [total correct]
+
+    def create(self,style,data):
+        item=data[0]
+        expertInd=data[1]
+        if style=="IITNN":
+            self.style = "IITNN"  # if item then next not
+            self.description = "If " + str(self.id_to_word[item]) + " then next not " + str(self.id_to_word[expertInd])
+            self.data = data
+            self.knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
+            self.knw_utility = self.cal_knwU(self.style,self.data)
+            tmp=np.ones(self.lsize)
+            tmp[expertInd]=0
+            self.knw_outmask=tmp
+        elif style=="IITNI":
+            self.style = "IITNI"  # if item then next is
+            self.description = "If " + str(self.id_to_word[item]) + " then next is " + str(self.id_to_word[expertInd])
+            self.data = data
+            self.knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
+            self.knw_utility = self.cal_knwU(self.style, self.data)
+            tmp = np.zeros(self.lsize)
+            tmp[expertInd] = 1
+            self.knw_outmask = tmp
+
+    def cal_knwU(self, style, data):
+        """
+        Calculate knowledge utility
+        :param switch:
+        :return:
+        """
+        Ntot = self.lsize
+        KnwU = None
+        if style == "IITNN":
+            tmp = self.prior.copy()
+            tmp[data[1]] = 0
+            KnwU = cal_kldiv(tmp, self.prior) * (self.prior[data[0]] / np.sum(self.prior))
+        elif style == "IITNI":
+            tmp = np.zeros(Ntot)
+            tmp[data[1]] = 1
+            KnwU = cal_kldiv(tmp, self.prior) * (self.prior[data[0]] / np.sum(self.prior))
+        return KnwU
+
+
+class KNW_ORG(object):
+    """
+    Knowledge organizor
+    """
+    def __init__(self,id_to_word,prior):
+        self.id_to_word=id_to_word
+        self.prior=prior
+        self.lsize=len(id_to_word)
+        self.knw_list=None
+        self.knw_list_fingerp=None
+        self.knw_gate_index = None # if index happens than list of knowledge activated
+
+    def test(self,dataset):
+        # Generating output label
+        word_to_id = {v: k for k, v in self.id_to_word.items()}
+        yl = []
+        xl = []
+        kl=[]
+        for iiss in range(len(dataset) - 1):
+            xl.append(np.log(self.prior))
+            wrd=word_to_id[dataset[iiss+1]]
+            yl.append(wrd)
+            yvec=np.zeros(self.lsize)
+            yvec[wrd]=1
+            kld=cal_kldiv(yvec,self.prior)
+            kl.append(kld)
+        outlab = torch.from_numpy(np.array(yl))
+        lossc = torch.nn.CrossEntropyLoss()
+        # (minibatch, C, d1, d2, ..., dK)
+        xlt=torch.from_numpy(np.array(xl).T)
+        loss = lossc(xlt.view(1, -1, len(dataset) - 1), outlab.view(1,-1))
+        pkl=np.exp(np.mean(np.array(kl)))
+        print("Evaluation Perplexity: ", np.exp(loss.item()),"  v.s.  ", pkl)
+
+    def get(self,fingerp):
+        """
+        Get knw obj by fingerp
+        :param fingerp:
+        :return:
+        """
+        ind=self.knw_list_fingerp.index(fingerp)
+        return self.knw_list[ind]
 
     def insert(self,knw_ls):
         """
@@ -1875,138 +1965,131 @@ class KNW_OBJ(object):
             for item in negN:
                 if item in negZ:
                     # if item then next not expertInd style knowledge
-                    knw_fingerp="IITNN"+"-"+str(item)+"-"+str(expertInd)
+                    knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
                     if knw_fingerp not in self.knw_list_fingerp:
-                        knw_item=dict([])
-                        knw_item["style"]="IITNN" # if item then next not
-                        knw_item["description"]="If "+str(self.id_to_word[item])+" then next not "+str(self.id_to_word[expertInd])
-                        knw_item["data"]=[item,expertInd]
-                        knw_item["knw_fingerp"]="IITNN"+str(item)+str(expertInd)
+                        knw_item=KNW_OBJ(self.id_to_word,self.prior)
+                        knw_item.create("IITNN",[item,expertInd])
                         self.knw_list.append(knw_item)
-                        self.knw_list_fingerp.append(knw_item["knw_fingerp"])
+                        self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                        self.knw_gate_index[item].append(knw_item.knw_fingerp)
         ### Z0 N1 style knowledge
         if len(posiN)>0:
             for item in posiN:
                 if item in negZ:
                     # if item then next is expertInd style knowledge
-                    knw_fingerp = "IITNI" + str(item) + str(expertInd)
+                    knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
                     if knw_fingerp not in self.knw_list_fingerp:
-                        knw_item = dict([])
-                        knw_item["style"] = "IITNI"  # if item then next not
-                        knw_item["description"] = "If " + str(self.id_to_word[item]) + " then next is " + str(
-                            self.id_to_word[expertInd])
-                        knw_item["data"] = [item, expertInd]
-                        knw_item["knw_fingerp"] = "IITNI" + str(item) + str(expertInd)
+                        knw_item = KNW_OBJ(self.id_to_word,self.prior)
+                        knw_item.create("IITNI", [item, expertInd])
                         self.knw_list.append(knw_item)
-                        self.knw_list_fingerp.append(knw_item["knw_fingerp"])
+                        self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                        self.knw_gate_index[item].append(knw_item.knw_fingerp)
+        print(len(self.knw_list))
+
     def print(self):
+        print("No. of knowledge: ",len(self.knw_list))
         for ii in range(len(self.knw_list)):
-            print(self.knw_list_fingerp[ii]+" : "+self.knw_list[ii]["description"])
+            print(self.knw_list_fingerp[ii]+" : "+self.knw_list[ii].description, self.knw_list[ii].knw_utility, self.knw_list[ii].eval_cnt)
 
     def update(self):
         """
         Updating its knowledge database
         :return:
         """
+        knw_list_new=[]
         for iik in range(len(self.knw_list)):
-            knw_item=self.knw_list[iik]
-            knw_item["knw_fingerp"] = knw_item["style"]+"-"+str(knw_item["data"][0])+"-"+str(knw_item["data"][1])
-            self.knw_list_fingerp[iik] = knw_item["knw_fingerp"]
+            knw_item = KNW_OBJ(self.id_to_word,self.prior)
+            knw_old=self.knw_list[iik]
+            knw_item.create(knw_old["style"],knw_old["data"])
+            knw_list_new.append(knw_item)
+            self.knw_list_fingerp[iik] = knw_item.knw_fingerp
+        self.knw_list=knw_list_new
 
-    def eval(self,dataset):
+    def eval_rate(self,dataset):
         """
-        Knowledge evaluation on dataset
+        Knowledge evaluation on dataset, correct rate
+        :param dataset:
         :return:
         """
-        def cal_knwU(style,data):
-            """
-            Calculate knowledge utility
-            :param switch:
-            :return:
-            """
-            Ntot = len(self.id_to_word)
-            KnwU=None
-            if style=="IITNN":
-                tmp=self.prior.copy()
-                tmp[data[1]]=0
-                KnwU=cal_kldiv(tmp,self.prior)*(self.prior[data[0]]/np.sum(self.prior))
-            elif style=="IITNI":
-                tmp = np.zeros(Ntot)
-                tmp[data[1]] = 1
-                KnwU = cal_kldiv(tmp, self.prior) * (self.prior[data[0]] / np.sum(self.prior))
-            return KnwU
-        ### Calculate utility of each piece of language
-        for ii in range(len(self.knw_list)):
-            knw_item=self.knw_list[ii]
-            knwU=knw_item.get("knw_utility",None)
-            if type(knwU)==type(None):
-                knwU=cal_knwU(knw_item["style"],knw_item["data"])
-                self.knw_list[ii]["knw_utility"]=knwU
-                print(self.knw_list[ii]["description"],knwU)
-        ### Build knowledge gate index
-        for iin
+        word_to_id =  {v: k for k, v in self.id_to_word.items()}
+        print("Knowledge evaluating ...")
+        for nn in range(len(dataset)-1):
+            x = word_to_id[dataset[nn]]
+            y = word_to_id[dataset[nn+1]]
+            for knwid in self.knw_gate_index[x]:
+                knwobj=self.get(knwid)
+                if type(knwobj.eval_cnt)==type(None):
+                    knwobj.eval_cnt=[0,0] # [tot, right]
+                mask=knwobj.knw_outmask
+                predvec=np.zeros(self.lsize)
+                predvec[y]=1
+                mres=np.max(mask*predvec)
+                knwobj.eval_cnt[0] = knwobj.eval_cnt[0] + 1
+                if mres>0: # Compatible
+                    knwobj.eval_cnt[1]=knwobj.eval_cnt[1]+1
+
+    def eval_perplexity(self,dataset):
+        """
+        Knowledge evaluation on dataset, perplexity
+        :param dataset:
+        :return:
+        """
+        word_to_id = {v: k for k, v in self.id_to_word.items()}
+        print("Knowledge evaluating ...")
+        perpls=[]
+        for nn in range(len(dataset)-1):
+            x = word_to_id[dataset[nn]]
+            y = word_to_id[dataset[nn+1]]
+            prd = self.forward(x)
+            yvec=np.zeros(self.lsize)
+            yvec[y]=1
+            perp=cal_kldiv(yvec,prd)
+            perpls.append(perp)
+        avperp=np.mean(np.array(perpls))
+        print("Calculated knowledge perplexity:",np.exp(avperp))
 
 
-    def forward(self):
+    def forward(self,inputd):
         """
         Forwarding and calculate logit with knowledge
+        :param logith: logit threshold for hard knowledge
         :return:
         """
-        pass
+        plogits = np.log(self.prior)
+        for knwid in self.knw_gate_index[inputd]:
+            knwobj = self.get(knwid)
+            plogits=plogits+knwobj.knw_outmask*knwobj.logith
+        postr=np.exp(plogits)/np.sum(np.exp(plogits))
+        return postr
 
-
-class KNW_WRAP(object):
-    """
-    Wrapper for learned knowledge databasing
-    """
-    def __init__(self):
+    def save(self,name="knwlist.pickle"):
         """
-        Initialization
-        """
-        self.knw_obj=KNW_OBJ()
-
-    def insert(self,knw_ls):
-        """
-        Insert knowledge
-        :return:
-        """
-        self.knw_obj.insert(knw_ls)
-
-    def update(self):
-        self.knw_obj.update()
-
-    def print(self):
-        self.knw_obj.print()
-
-    def eval(self,dataset):
-        self.knw_obj.eval(dataset)
-
-    def forward(self):
-        """
-        Forwarding and calculate logit with knowledge
-        :return:
-        """
-        pass
-
-    def save(self,name):
-        """
-        Saving database into file
+        Saving key knowledge to a list
         :param name:
         :return:
         """
+        knw_list_save = []
+        print(len(self.knw_list))
+        for knwobj in self.knw_list:
+            knw_list_save.append([knwobj.style,knwobj.data])
         file = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
-        pickle.dump(self.knw_obj, open(file, "wb"))
+        print(file)
+        pickle.dump(knw_list_save, open(file, "wb"))
+        print("Knowledge data list saved.")
 
-
-    def load(self,name):
-        """
-        load name knowledge base
-        :param name:
-        :return:
-        """
+    def load(self,name="knwlist.pickle"):
         file = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
-        self.knw_obj = pickle.load(open(file, "rb"))
-
+        print(file)
+        knw_list = pickle.load(open(file, "rb"))
+        self.knw_list = []
+        self.knw_list_fingerp = []
+        self.knw_gate_index = [[] for ii in range(self.lsize)]
+        for knwl in knw_list:
+            knw_item = KNW_OBJ(self.id_to_word,self.prior)
+            knw_item.create(knwl[0],knwl[1])
+            self.knw_list.append(knw_item)
+            self.knw_list_fingerp.append(knw_item.knw_fingerp)
+            self.knw_gate_index[knwl[1][0]].append(knw_item.knw_fingerp)
 
 
 
