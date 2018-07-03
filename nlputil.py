@@ -1927,23 +1927,22 @@ class KNW_ORG(object):
     """
     Knowledge organizor
     """
-    def __init__(self,id_to_word,prior):
-        self.id_to_word=id_to_word
+    def __init__(self,nlp,prior):
+        self.nlp=nlp
         self.prior=prior
-        self.lsize=len(id_to_word)
+        self.lsize=len(nlp.id_to_word)
         self.knw_list=None
         self.knw_list_fingerp=None
         self.knw_gate_index = None # if index happens than list of knowledge activated
 
-    def test(self,dataset):
+    def test(self):
         # Generating output label
-        word_to_id = {v: k for k, v in self.id_to_word.items()}
         yl = []
         xl = []
         kl=[]
-        for iiss in range(len(dataset) - 1):
+        for iiss in range(len(self.nlp.sub_corpus) - 1):
             xl.append(np.log(self.prior))
-            wrd=word_to_id[dataset[iiss+1]]
+            wrd=self.nlp.word_to_id[self.nlp.sub_corpus[iiss+1]]
             yl.append(wrd)
             yvec=np.zeros(self.lsize)
             yvec[wrd]=1
@@ -1953,7 +1952,7 @@ class KNW_ORG(object):
         lossc = torch.nn.CrossEntropyLoss()
         # (minibatch, C, d1, d2, ..., dK)
         xlt=torch.from_numpy(np.array(xl).T)
-        loss = lossc(xlt.view(1, -1, len(dataset) - 1), outlab.view(1,-1))
+        loss = lossc(xlt.view(1, -1, len(self.nlp.sub_corpus) - 1), outlab.view(1,-1))
         pkl=np.exp(np.mean(np.array(kl)))
         print("Evaluation Perplexity: ", np.exp(loss.item()),"  v.s.  ", pkl)
 
@@ -1979,7 +1978,7 @@ class KNW_ORG(object):
                     # if item then next not expertInd style knowledge
                     knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
                     if knw_fingerp not in self.knw_list_fingerp:
-                        knw_item=KNW_OBJ(self.id_to_word,self.prior)
+                        knw_item=KNW_OBJ(self.nlp.id_to_word,self.prior)
                         knw_item.create("IITNN",[item,expertInd])
                         self.knw_list.append(knw_item)
                         self.knw_list_fingerp.append(knw_item.knw_fingerp)
@@ -1991,7 +1990,7 @@ class KNW_ORG(object):
                     # if item then next is expertInd style knowledge
                     knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
                     if knw_fingerp not in self.knw_list_fingerp:
-                        knw_item = KNW_OBJ(self.id_to_word,self.prior)
+                        knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
                         knw_item.create("IITNI", [item, expertInd])
                         self.knw_list.append(knw_item)
                         self.knw_list_fingerp.append(knw_item.knw_fingerp)
@@ -2010,24 +2009,24 @@ class KNW_ORG(object):
         """
         knw_list_new=[]
         for iik in range(len(self.knw_list)):
-            knw_item = KNW_OBJ(self.id_to_word,self.prior)
+            knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
             knw_old=self.knw_list[iik]
             knw_item.create(knw_old["style"],knw_old["data"])
             knw_list_new.append(knw_item)
             self.knw_list_fingerp[iik] = knw_item.knw_fingerp
         self.knw_list=knw_list_new
 
-    def eval_rate(self,dataset):
+    def eval_rate(self):
         """
         Knowledge evaluation on dataset, correct rate
         :param dataset:
         :return:
         """
-        word_to_id =  {v: k for k, v in self.id_to_word.items()}
+        word_to_id =  {v: k for k, v in self.nlp.id_to_word.items()}
         print("Knowledge evaluating ...")
-        for nn in range(len(dataset)-1):
-            x = word_to_id[dataset[nn]]
-            y = word_to_id[dataset[nn+1]]
+        for nn in range(len(self.nlp.sub_corpus)-1):
+            x = word_to_id[self.nlp.sub_corpus[nn]]
+            y = word_to_id[self.nlp.sub_corpus[nn+1]]
             for knwid in self.knw_gate_index[x]:
                 knwobj,_=self.get(knwid)
                 if type(knwobj.eval_cnt)==type(None):
@@ -2054,18 +2053,18 @@ class KNW_ORG(object):
                 self.knw_list[knwii].logith=data[knwii]
         self.print()
 
-    def eval_perplexity(self,dataset):
+    def eval_perplexity(self):
         """
         Knowledge evaluation on dataset, perplexity
         :param dataset:
         :return:
         """
-        word_to_id = {v: k for k, v in self.id_to_word.items()}
+        word_to_id = {v: k for k, v in self.nlp.id_to_word.items()}
         print("Knowledge evaluating ...")
         perpls=[]
-        for nn in range(len(dataset)-1):
-            x = word_to_id[dataset[nn]]
-            y = word_to_id[dataset[nn+1]]
+        for nn in range(len(self.nlp.sub_corpus)-1):
+            x = word_to_id[self.nlp.sub_corpus[nn]]
+            y = word_to_id[self.nlp.sub_corpus[nn+1]]
             prd = self.forward_s(x)
             yvec=np.zeros(self.lsize)
             yvec[y]=1
@@ -2110,20 +2109,19 @@ class KNW_ORG(object):
             postr[0,batchii,:]=np.exp(clogits)/np.sum(np.exp(clogits))
         return postr
 
-    def optimize_logith(self,dataset):
+    def optimize_logith(self):
         """
         Optimize logith using scipy optimizor
         :param dataset:
         :return:
         """
-        word_to_id = {v: k for k, v in self.id_to_word.items()}
         print("Knowledge optimizing ...")
 
         def eval(para,dataset):
             perpls = []
             for nn in range(len(dataset) - 1):
-                x = word_to_id[dataset[nn]]
-                y = word_to_id[dataset[nn + 1]]
+                x = self.nlp.word_to_id[dataset[nn]]
+                y = self.nlp.word_to_id[dataset[nn + 1]]
                 plogits = np.log(self.prior)
                 for knwid in self.knw_gate_index[x]:
                     knwobj,ind = self.get(knwid)
@@ -2138,26 +2136,25 @@ class KNW_ORG(object):
             return avperp
 
         x=np.ones(len(self.knw_list))
-        res=minimize(eval, x ,dataset, method='SLSQP')
+        res=minimize(eval, x ,self.nlp.sub_corpus, method='SLSQP')
         print(res)
         for iit in range(len(res.x)):
             self.knw_list[iit].logith=res.x[iit]
 
-    def optimize_logith_batch(self,dataset,bper=0.02,step=100):
+    def optimize_logith_batch(self,bper=0.02,step=100):
         """
         Use mini batched version to do knowledge optimizing
         :param dataset:
         :param bper:
         :return:
         """
-        word_to_id = {v: k for k, v in self.id_to_word.items()}
         print("Knowledge mini-batched optimizing ...")
 
         def eval(para,dataset):
             perpls = []
             for nn in range(len(dataset) - 1):
-                x = word_to_id[dataset[nn]]
-                y = word_to_id[dataset[nn + 1]]
+                x = self.nlp.word_to_id[dataset[nn]]
+                y = self.nlp.word_to_id[dataset[nn + 1]]
                 plogits = np.log(self.prior)
                 for knwid in self.knw_gate_index[x]:
                     knwobj,ind = self.get(knwid)
@@ -2172,17 +2169,117 @@ class KNW_ORG(object):
 
         x = np.ones(len(self.knw_list))
         for iis in range(step):
-            startp=np.random.rand()*(1-bper)*len(dataset)
-            mbdataset=dataset[int(startp):int(startp+bper*len(dataset))]
+            startp=np.random.rand()*(1-bper)*len(self.nlp.sub_corpus)
+            mbdataset=self.nlp.sub_corpus[int(startp):int(startp+bper*len(self.nlp.sub_corpus))]
             res = minimize(eval, x, mbdataset, method='SLSQP',options={"maxiter":3})
             avperp=eval(res.x,mbdataset)
             print("Step "+str(iis)+", calculated perplexity:", np.exp(avperp))
             x=res.x
-        avperp = eval(x, dataset)
+        avperp = eval(x, self.nlp.sub_corpus)
         print("Final evaluation, calculated perplexity:", np.exp(avperp))
         print(res)
-        # for iit in range(len(res.x)):
-        #     self.knw_list[iit].logith = res.x[iit]
+        for iit in range(len(res.x)):
+            self.knw_list[iit].logith = res.x[iit]
+
+    def optimize_logith_torch(self,step,learning_rate=1e-2,batch=20, window=110):
+        """
+        Use pytorch batched version to do knowledge optimizing
+        :param dataset:
+        :param bper:
+        :param step:
+        :return:
+        """
+        print("Knowledge para pytorch optimizing ...")
+
+        plogits = np.log(self.prior)
+        plogits = torch.from_numpy(plogits)
+        plogits = plogits.type(torch.FloatTensor)
+        datap = self.nlp.build_textmat(self.nlp.sub_corpus)
+        assert datap[0].shape[0] == self.lsize
+        databp = torch.from_numpy(datap)
+
+        rnn=KNW_CELL(self.lsize,self.knw_list,self.knw_gate_index,self.knw_list_fingerp)
+        lossc = torch.nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+
+        train_hist = []
+        his = 0
+
+        for iis in range(step):
+            rstartv = np.floor(np.random.rand(batch) * (len(self.nlp.sub_corpus) - window - 1))
+            # Generating output label
+            yl = []
+            for iiss in range(window):
+                ylb = []
+                for iib in range(batch):
+                    wrd = self.nlp.sub_corpus[(int(rstartv[iib]) + iiss + 1)]
+                    ydg = self.nlp.word_to_id.get(wrd, self.nlp.word_to_id["UNK"])
+                    ylb.append(ydg)
+                yl.append(np.array(ylb))
+            outlab = Variable(torch.from_numpy(np.array(yl).T))
+            outlab = outlab.type(torch.LongTensor)
+
+
+            outputl = None
+
+            for iiss in range(window):
+                vec1m = None
+                vec2m = None
+                for iib in range(batch):
+                    vec1 = databp[(int(rstartv[iib]) + iiss), :]
+                    vec2 = databp[(int(rstartv[iib]) + iiss + 1), :]
+                    if type(vec1m) == type(None):
+                        vec1m = vec1.view(1, -1)
+                        vec2m = vec2.view(1, -1)
+                    else:
+                        vec1m = torch.cat((vec1m, vec1.view(1, -1)), dim=0)
+                        vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=0)
+                # One by one guidance training
+                x = Variable(vec1m.reshape(1, batch, self.lsize).contiguous(), requires_grad=True)  #
+                y = Variable(vec2m.reshape(1, batch, self.lsize).contiguous(), requires_grad=True)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                output = rnn(x,plogits)
+                if type(outputl) == type(None):
+                    outputl = output.view(batch, self.lsize, 1)
+                else:
+                    outputl = torch.cat((outputl.view(batch, self.lsize, -1), output.view(batch, self.lsize, 1)), dim=2)
+            loss = lossc(outputl, outlab)
+
+            if int(iis / 100) != his:
+                print("Perlexity: ",iis, np.exp(loss.item()))
+                his=int(iis / 100)
+
+            train_hist.append(np.exp(loss.item()))
+
+            optimizer.zero_grad()
+
+            loss.backward()
+
+            optimizer.step()
+
+        def eval(para,dataset):
+            perpls = []
+            for nn in range(len(dataset) - 1):
+                x = self.nlp.word_to_id[dataset[nn]]
+                y = self.nlp.word_to_id[dataset[nn + 1]]
+                plogits = np.log(self.prior)
+                for knwid in self.knw_gate_index[x]:
+                    knwobj,ind = self.get(knwid)
+                    plogits = plogits + knwobj.knw_outmask * para[ind]
+                postr = np.exp(plogits) / np.sum(np.exp(plogits))
+                yvec = np.zeros(self.lsize)
+                yvec[y] = 1
+                perp = cal_kldiv(yvec, postr)
+                perpls.append(perp)
+            avperp = np.mean(np.array(perpls))
+            return avperp
+
+        res=rnn.knw_para.data.numpy()
+        avperp = eval(res, self.nlp.sub_corpus)
+        print("Final evaluation, calculated perplexity:", np.exp(avperp))
+        for iit in range(len(res)):
+            self.knw_list[iit].logith = res[iit]
+
 
     def save(self,name="knwlist.pickle"):
         """
@@ -2213,7 +2310,7 @@ class KNW_ORG(object):
         self.knw_list_fingerp = []
         self.knw_gate_index = [[] for ii in range(self.lsize)]
         for knwd in knw_list:
-            knw_item = KNW_OBJ(self.id_to_word,self.prior)
+            knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
             knw_item.create(knwd["style"],knwd["data"])
             knw_item.knw_outmask=knwd["knw_outmask"]
             knw_item.logith = knwd["logith"]
@@ -2222,8 +2319,44 @@ class KNW_ORG(object):
             self.knw_list_fingerp.append(knw_item.knw_fingerp)
             self.knw_gate_index[knwd["data"][0]].append(knw_item.knw_fingerp)
 
+class KNW_CELL(torch.nn.Module):
+    """
+    PyTorch knowledge cell
+    """
+    def __init__(self, lsize, knw_list, knw_gate_index,knw_list_fingerp):
+        super(KNW_CELL, self).__init__()
+        knw_size = len(knw_list)
+        self.knw_para = torch.nn.Parameter(torch.ones(knw_size), requires_grad=True)
+        # knowledge mask mat (knw_size,lsize)
+        knw_maskmat=np.ones((knw_size,lsize))
+        # knowledge act mat (lsize,knw_size)
+        knw_actmat = np.zeros((lsize,knw_size))
+        for iik in range(knw_size):
+            knw_maskmat[iik,:]=knw_list[iik].knw_outmask
+            for iia in range(len(knw_gate_index[iik])):
+                ida=knw_list_fingerp.index(knw_gate_index[iik][iia])
+                knw_actmat[iik,ida] = 1
 
+        self.knw_maskmat=torch.from_numpy(knw_maskmat)
+        self.knw_maskmat=self.knw_maskmat.type(torch.FloatTensor)
 
+        self.knw_actmat = torch.from_numpy(knw_actmat)
+        self.knw_actmat = self.knw_actmat.type(torch.FloatTensor)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def forward(self, input,plogits):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        knw_act=torch.matmul(input,self.knw_actmat)
+        scaled_act=knw_act*self.knw_para
+        knw_vec=torch.matmul(scaled_act,self.knw_maskmat)+plogits
+        output=self.softmax(knw_vec)
+        return output
 
 
 
