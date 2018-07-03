@@ -1186,7 +1186,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", zoneout_rate=0.0 ,pcalsize=0, knw_org=None):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save="lost.png", seqtrain=False, mode="GRU", pcalsize=0, knw_org=None):
         """
         Entrance for training
         :param learning_rate:
@@ -1194,6 +1194,8 @@ class PDC_NLP(object):
         Assert tensorshape interface: [batch,x,y,z,lsize]
         :return:
         """
+        prtstep=int(step/10)
+
         startt=time.time()
 
         self.mlost = 1.0e9
@@ -1330,7 +1332,13 @@ class PDC_NLP(object):
                     if mode == "LSTM":
                         output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
                     elif mode=="GRU":
-                        output, hidden = rnn(x, hidden)
+                        if knw_org is None:
+                            output, hidden = rnn(x, hidden)
+                        else:
+                            add_vec=knw_org.forward_m(x.data.numpy())
+                            add_tvec=torch.from_numpy(add_vec)
+                            add_tvec=add_tvec.type(torch.FloatTensor)
+                            output, hidden = rnn(x, hidden, add_prior=add_tvec)
                     if type(outputl)==type(None):
                         outputl=output.view(batch,lout,1)
                     else:
@@ -1365,9 +1373,9 @@ class PDC_NLP(object):
 
                 loss = lossc(output, outlab)
 
-            if int(iis / 10) != his:
+            if int(iis / prtstep) != his:
                 print("Perlexity: ",iis, np.exp(loss.item()))
-                his=int(iis / 10)
+                his=int(iis / prtstep)
                 if loss.item() < self.mlost:
                     self.mlost = loss.item()
                     self.model = copy.deepcopy(rnn)
@@ -1705,7 +1713,7 @@ class GRU_KNW_L(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-    def forward(self, input, hidden,batch=None):
+    def forward(self, input, hidden, batch=None, add_prior=None):
         """
 
         :param input: input
@@ -1718,7 +1726,10 @@ class GRU_KNW_L(torch.nn.Module):
         # nt=self.sigmoid(self.Win(input)+rt*self.Whn(hidden))
         nt = self.sigmoid(self.Win(input) +  self.Whn(hidden))
         ht = (1 - zt) * nt + zt * hidden
-        output = self.h2o(ht)+self.prior_vec
+        if add_prior is None:
+            output = self.h2o(ht)+self.prior_vec
+        else:
+            output = self.h2o(ht) + self.prior_vec + add_prior
         output = self.softmax(output)
         # zt = self.sigmoid(torch.matmul(input,self.Wshare)+ self.Wshare_bz + self.Whz(hidden))
         # nt = self.sigmoid(torch.matmul(input,self.Wshare)+ self.Wshare_bn + self.Whn(hidden))
@@ -2029,6 +2040,20 @@ class KNW_ORG(object):
                 if mres>0: # Compatible
                     knwobj.eval_cnt[1]=knwobj.eval_cnt[1]+1
 
+    def assign(self,data,switch="logith"):
+        """
+        Assign a data to knowledge property
+        :param data:
+        :param switch:
+        :return:
+        """
+        assert len(data)==len(self.knw_list)
+        print(data)
+        for knwii in range(len(self.knw_list)):
+            if switch=="logith":
+                self.knw_list[knwii].logith=data[knwii]
+        self.print()
+
     def eval_perplexity(self,dataset):
         """
         Knowledge evaluation on dataset, perplexity
@@ -2041,7 +2066,7 @@ class KNW_ORG(object):
         for nn in range(len(dataset)-1):
             x = word_to_id[dataset[nn]]
             y = word_to_id[dataset[nn+1]]
-            prd = self.forward(x)
+            prd = self.forward_s(x)
             yvec=np.zeros(self.lsize)
             yvec[y]=1
             perp=cal_kldiv(yvec,prd)
@@ -2051,17 +2076,38 @@ class KNW_ORG(object):
         return avperp
 
 
-    def forward(self,inputd):
+    def forward_s(self,inputd):
         """
-        Forwarding and calculate logit with knowledge
+        Forwarding and calculate logit with knowledge, inputd is a digit
         :param logith: logit threshold for hard knowledge
         :return:
         """
         plogits = np.log(self.prior)
         for knwid in self.knw_gate_index[inputd]:
-            knwobj = self.get(knwid)
+            knwobj, _ = self.get(knwid)
             plogits=plogits+knwobj.knw_outmask*knwobj.logith
         postr=np.exp(plogits)/np.sum(np.exp(plogits))
+        return postr
+
+    def forward_m(self,inputm):
+        """
+        Forwarding and calculate logit with knowledge
+        assert shape(1,batch,lsize)
+        :param logith: logit threshold for hard knowledge
+        :return:
+        """
+        assert inputm.shape[0] == 1
+        assert inputm.shape[2] == self.lsize
+        assert len(inputm.shape) == 3
+        plogits = np.log(self.prior)
+        postr=np.zeros(inputm.shape)
+        for batchii in range(inputm.shape[1]):
+            inputd=list(inputm[0,batchii,:]).index(1)
+            clogits = plogits
+            for knwid in self.knw_gate_index[inputd]:
+                knwobj,_ = self.get(knwid)
+                clogits=clogits+knwobj.knw_outmask*knwobj.logith
+            postr[0,batchii,:]=np.exp(clogits)/np.sum(np.exp(clogits))
         return postr
 
     def optimize_logith(self,dataset):
@@ -2145,9 +2191,15 @@ class KNW_ORG(object):
         :return:
         """
         knw_list_save = []
-        print(len(self.knw_list))
+        print("No. of knowledge to be saved: ",len(self.knw_list))
         for knwobj in self.knw_list:
-            knw_list_save.append([knwobj.style,knwobj.data])
+            knw_dict=dict([])
+            knw_dict["style"]= knwobj.style
+            knw_dict["data"] = knwobj.data
+            knw_dict["knw_outmask"] = knwobj.knw_outmask
+            knw_dict["logith"] = knwobj.logith
+            knw_dict["eval_cnt"] = knwobj.eval_cnt
+            knw_list_save.append(knw_dict)
         file = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
         print(file)
         pickle.dump(knw_list_save, open(file, "wb"))
@@ -2160,12 +2212,15 @@ class KNW_ORG(object):
         self.knw_list = []
         self.knw_list_fingerp = []
         self.knw_gate_index = [[] for ii in range(self.lsize)]
-        for knwl in knw_list:
+        for knwd in knw_list:
             knw_item = KNW_OBJ(self.id_to_word,self.prior)
-            knw_item.create(knwl[0],knwl[1])
+            knw_item.create(knwd["style"],knwd["data"])
+            knw_item.knw_outmask=knwd["knw_outmask"]
+            knw_item.logith = knwd["logith"]
+            knw_item.eval_cnt = knwd["eval_cnt"]
             self.knw_list.append(knw_item)
             self.knw_list_fingerp.append(knw_item.knw_fingerp)
-            self.knw_gate_index[knwl[1][0]].append(knw_item.knw_fingerp)
+            self.knw_gate_index[knwd["data"][0]].append(knw_item.knw_fingerp)
 
 
 
