@@ -1218,7 +1218,7 @@ class PDC_NLP(object):
         probs = probs / np.sum(probs)
         plogits=np.log(probs)
         self.prior=plogits
-        # self.prior = np.zeros(lout)
+        self.prior = np.zeros(lout)
 
 
         if type(self.model)==type(None):
@@ -1228,7 +1228,7 @@ class PDC_NLP(object):
             elif mode=="GRU":
                 # rnn = GRU_Cell_Zoneout(lsize, 30, lout, zoneout_rate=0.2)
                 # rnn=GRU_NLP(lsize, 30, lout, num_layers=1)
-                rnn = GRU_KNW_L(lsize, 1, lout ,prior_vec=self.prior)
+                rnn = GRU_KNW_L(lsize, 10, lout ,prior_vec=self.prior)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
@@ -1746,63 +1746,68 @@ class GRU_KNW_L(torch.nn.Module):
         :param id_to_word: id to word dictionary
         :return:
         """
+        resKNWls=[]
         try:
             knw_b = self.h2o.bias.data.numpy()
         except:
             knw_b = 0
-        knw_w = self.h2o.weight.view(-1).data.numpy()
-        knw_on=knw_b+knw_w
-        logitM=np.max(knw_on)
-        nM=np.argmax(knw_on)
-        knw_on[nM]=np.min(knw_on)
-        logitM2 = np.max(knw_on)
-        resknw_N=None
-        if logitM-logitM2>knw_t:
-            print("Expert for "+str(id_to_word[nM])+" detected!")
-            resknw_N=nM
-        else:
-            print("Knowledge not found!")
-            return False
+        Nknw=self.h2o.weight.shape[1]
+        for iik in range(Nknw):
+            knw_w = self.h2o.weight.data.numpy()[:,iik]
+            knw_on=knw_b+knw_w
+            logitM=np.max(knw_on)
+            nM=np.argmax(knw_on)
+            knw_on[nM]=np.min(knw_on)
+            logitM2 = np.max(knw_on)
+            resknw_N=None
+            if logitM-logitM2>knw_t:
+                print("Expert for "+str(id_to_word[nM])+" detected!")
+                resknw_N=nM
+            else:
+                print("Knowledge not found!")
+                continue
 
-        ## Para hidden for sigmoid
-        thz_w=self.Whz.weight.item()
-        thz_b=self.Whz.bias.item()
-        thn_w = self.Whn.weight.item()
-        thn_b = self.Whn.bias.item()
+            ## Para hidden for sigmoid
+            thz_w=self.Whz.weight.data.numpy()[:,iik]
+            thz_b=self.Whz.bias.data.numpy()
+            thn_w = self.Whn.weight.data.numpy()[:,iik]
+            thn_b = self.Whn.bias.data.numpy()
 
-        ## Para input for sigmoid
-        tiz_w = self.Wiz.weight.view(-1).data.numpy()
-        tiz_b = self.Wiz.bias.data.numpy()
-        tin_w = self.Win.weight.view(-1).data.numpy()
-        tin_b = self.Win.bias.data.numpy()
-        ## Assume ht-1==0
-        # Z
-        posi_z_t=[]
-        posi_z_tvec=thz_b+tiz_b+tiz_w-theta_t
-        for iin in range(len(posi_z_tvec)):
-            if posi_z_tvec[iin]>0:
-                posi_z_t.append(iin)
-        print("ht-1==0: Posi Z found:",posi_z_t)
-        neg_z_t = []
-        neg_z_tvec = thz_b + tiz_b + tiz_w + theta_t
-        for iin in range(len(neg_z_tvec)):
-            if neg_z_tvec[iin] < 0:
-                neg_z_t.append(iin)
-        print("ht-1==0: Neg Z found:", neg_z_t)
-        # N
-        posi_n_t = []
-        posi_n_tvec = thn_b + tin_b + tin_w - theta_t
-        for iin in range(len(posi_n_tvec)):
-            if posi_n_tvec[iin] > 0:
-                posi_n_t.append(iin)
-        print("ht-1==0: Posi N found:", posi_n_t)
-        neg_n_t = []
-        neg_n_tvec = thn_b + tin_b + tin_w + theta_t
-        for iin in range(len(neg_n_tvec)):
-            if neg_n_tvec[iin] < 0:
-                neg_n_t.append(iin)
-        print("ht-1==0: Neg N found:", neg_n_t)
-        return [resknw_N,posi_z_t,neg_z_t,posi_n_t,neg_n_t]
+            ## Para input for sigmoid
+            tiz_w = self.Wiz.weight.data.numpy()[:,iik]
+            tiz_b = self.Wiz.bias.data.numpy()
+            tin_w = self.Win.weight.data.numpy()[:,iik]
+            tin_b = self.Win.bias.data.numpy()
+            ## Assume ht-1==0
+            # Z
+            posi_z_t=[]
+            posi_z_tvec=thz_b+tiz_b+tiz_w-theta_t
+            for iin in range(len(posi_z_tvec)):
+                if posi_z_tvec[iin]>0:
+                    posi_z_t.append(iin)
+            print("ht-1==0: Posi Z found:",posi_z_t)
+            neg_z_t = []
+            neg_z_tvec = thz_b + tiz_b + tiz_w + theta_t
+            for iin in range(len(neg_z_tvec)):
+                if neg_z_tvec[iin] < 0:
+                    neg_z_t.append(iin)
+            print("ht-1==0: Neg Z found:", neg_z_t)
+            # N
+            posi_n_t = []
+            posi_n_tvec = thn_b + tin_b + tin_w - theta_t
+            for iin in range(len(posi_n_tvec)):
+                if posi_n_tvec[iin] > 0:
+                    posi_n_t.append(iin)
+            print("ht-1==0: Posi N found:", posi_n_t)
+            neg_n_t = []
+            neg_n_tvec = thn_b + tin_b + tin_w + theta_t
+            for iin in range(len(neg_n_tvec)):
+                if neg_n_tvec[iin] < 0:
+                    neg_n_t.append(iin)
+            print("ht-1==0: Neg N found:", neg_n_t)
+            resKNWls.append([resknw_N,posi_z_t,neg_z_t,posi_n_t,neg_n_t])
+
+        return resKNWls
 
     def initHidden(self, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
@@ -1970,31 +1975,32 @@ class KNW_ORG(object):
         Insert knowledge
         :return:
         """
-        expertInd, posiZ, negZ, posiN, negN = knw_ls
-        ### Z0 N0 style knowledge
-        if len(negN)>0:
-            for item in negN:
-                if item in negZ:
-                    # if item then next not expertInd style knowledge
-                    knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
-                    if knw_fingerp not in self.knw_list_fingerp:
-                        knw_item=KNW_OBJ(self.nlp.id_to_word,self.prior)
-                        knw_item.create("IITNN",[item,expertInd])
-                        self.knw_list.append(knw_item)
-                        self.knw_list_fingerp.append(knw_item.knw_fingerp)
-                        self.knw_gate_index[item].append(knw_item.knw_fingerp)
-        ### Z0 N1 style knowledge
-        if len(posiN)>0:
-            for item in posiN:
-                if item in negZ:
-                    # if item then next is expertInd style knowledge
-                    knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
-                    if knw_fingerp not in self.knw_list_fingerp:
-                        knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
-                        knw_item.create("IITNI", [item, expertInd])
-                        self.knw_list.append(knw_item)
-                        self.knw_list_fingerp.append(knw_item.knw_fingerp)
-                        self.knw_gate_index[item].append(knw_item.knw_fingerp)
+        for knw in knw_ls:
+            expertInd, posiZ, negZ, posiN, negN = knw
+            ### Z0 N0 style knowledge
+            if len(negN)>0:
+                for item in negN:
+                    if item in negZ:
+                        # if item then next not expertInd style knowledge
+                        knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
+                        if knw_fingerp not in self.knw_list_fingerp:
+                            knw_item=KNW_OBJ(self.nlp.id_to_word,self.prior)
+                            knw_item.create("IITNN",[item,expertInd])
+                            self.knw_list.append(knw_item)
+                            self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                            self.knw_gate_index[item].append(knw_item.knw_fingerp)
+            ### Z0 N1 style knowledge
+            if len(posiN)>0:
+                for item in posiN:
+                    if item in negZ:
+                        # if item then next is expertInd style knowledge
+                        knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
+                        if knw_fingerp not in self.knw_list_fingerp:
+                            knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
+                            knw_item.create("IITNI", [item, expertInd])
+                            self.knw_list.append(knw_item)
+                            self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                            self.knw_gate_index[item].append(knw_item.knw_fingerp)
         print(len(self.knw_list))
 
     def clean(self):
@@ -2002,7 +2008,7 @@ class KNW_ORG(object):
         Clean up knowledge base
         :return:
         """
-        evalhith=0.01 # Criteria 1: two low hit rate
+        evalhith=1e-4 # Criteria 1: two low hit rate
         deletels=[]
         for item in self.knw_list:
             if item.eval_cnt[1]<evalhith*item.eval_cnt[0]:
