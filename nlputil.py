@@ -1218,7 +1218,7 @@ class PDC_NLP(object):
         probs = probs / np.sum(probs)
         plogits=np.log(probs)
         self.prior=plogits
-        self.prior = np.zeros(lout)
+        # self.prior = np.zeros(lout)
 
 
         if type(self.model)==type(None):
@@ -1997,6 +1997,24 @@ class KNW_ORG(object):
                         self.knw_gate_index[item].append(knw_item.knw_fingerp)
         print(len(self.knw_list))
 
+    def remove(self,knw_fingerp):
+        """
+        Delete a certain knowledge
+        :param knw_fingerp: knowledge finger print.
+        :return:
+        """
+        if knw_fingerp not in self.knw_list_fingerp:
+            print("Knowledge not found.")
+        else:
+            ind=self.knw_list_fingerp.index(knw_fingerp)
+            del self.knw_list[ind]
+            del self.knw_list_fingerp[ind]
+        self.knw_gate_index = [[] for ii in range(self.lsize)]
+        for knwitem in self.knw_list:
+            self.knw_gate_index[knwitem.data[0]].append(knwitem.knw_fingerp)
+        self.print()
+
+
     def print(self):
         print("No. of knowledge: ",len(self.knw_list))
         for ii in range(len(self.knw_list)):
@@ -2007,14 +2025,8 @@ class KNW_ORG(object):
         Updating its knowledge database
         :return:
         """
-        knw_list_new=[]
-        for iik in range(len(self.knw_list)):
-            knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
-            knw_old=self.knw_list[iik]
-            knw_item.create(knw_old["style"],knw_old["data"])
-            knw_list_new.append(knw_item)
-            self.knw_list_fingerp[iik] = knw_item.knw_fingerp
-        self.knw_list=knw_list_new
+
+
 
     def eval_rate(self):
         """
@@ -2333,9 +2345,10 @@ class KNW_CELL(torch.nn.Module):
         knw_actmat = np.zeros((lsize,knw_size))
         for iik in range(knw_size):
             knw_maskmat[iik,:]=knw_list[iik].knw_outmask
-            for iia in range(len(knw_gate_index[iik])):
-                ida=knw_list_fingerp.index(knw_gate_index[iik][iia])
-                knw_actmat[iik,ida] = 1
+        for iil in range(lsize):
+            for iia in range(len(knw_gate_index[iil])):
+                ida=knw_list_fingerp.index(knw_gate_index[iil][iia])
+                knw_actmat[iil,ida] = 1
 
         self.knw_maskmat=torch.from_numpy(knw_maskmat)
         self.knw_maskmat=self.knw_maskmat.type(torch.FloatTensor)
