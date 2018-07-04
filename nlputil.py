@@ -1263,7 +1263,7 @@ class PDC_NLP(object):
             l1_reg = Variable(torch.FloatTensor(1), requires_grad=True)
             l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
 
-            return loss1+0.3*lossh2o*cstep/step+0.01*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
+            return loss1+0.2*lossh2o*cstep/step+0.005*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
         # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
@@ -1997,6 +1997,20 @@ class KNW_ORG(object):
                         self.knw_gate_index[item].append(knw_item.knw_fingerp)
         print(len(self.knw_list))
 
+    def clean(self):
+        """
+        Clean up knowledge base
+        :return:
+        """
+        evalhith=0.01 # Criteria 1: two low hit rate
+        deletels=[]
+        for item in self.knw_list:
+            if item.eval_cnt[1]<evalhith*item.eval_cnt[0]:
+                deletels.append(item.knw_fingerp)
+        for dstr in deletels:
+            self.remove(dstr)
+        self.print()
+
     def remove(self,knw_fingerp):
         """
         Delete a certain knowledge
@@ -2012,8 +2026,6 @@ class KNW_ORG(object):
         self.knw_gate_index = [[] for ii in range(self.lsize)]
         for knwitem in self.knw_list:
             self.knw_gate_index[knwitem.data[0]].append(knwitem.knw_fingerp)
-        self.print()
-
 
     def print(self):
         print("No. of knowledge: ",len(self.knw_list))
