@@ -38,6 +38,35 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_longtermdep(self,length,onehot=False):
+        """
+        Artifitial long term dependency seq
+        [A1 B3 C2 A23 B23 C13 ...]
+        [A1: 0, A2: 1, A3: 2, B1: 3, B2: 4, B3: 5, C1: 6, C2: 7, C3: 8]
+        :param length:
+        :return:
+        """
+        sq1 = int(3 * np.random.rand())
+        sq2 = int(3 * np.random.rand()) + 3
+        sq3 = int(3 * np.random.rand()) + 6
+        reseq=[sq1,sq2,sq3]
+        for iil in range(length):
+            cA=[0,1,2]
+            cA.remove(reseq[-3])
+            aA=cA[int(2*np.random.rand())]
+            cB = [3, 4, 5]
+            cB.remove(reseq[-2])
+            aB = cB[int(2 * np.random.rand())]
+            cC = [6, 7, 8]
+            cC.remove(reseq[-1])
+            aC = cC[int(2 * np.random.rand())]
+            reseq=reseq+[aA,aB,aC]
+        if onehot:
+            reseq=self.one_hot(reseq,length=9)
+            reseq = np.array(reseq)
+        return reseq
+
+
     def gen_cellauto(self,size,length,period,delta=0.5):
         """
         Generation of cellular automaton

@@ -53,7 +53,7 @@ class NLPutil(object):
         self.labels=None
         self.synmat=SyntaxMat()
 
-    def get_data(self,corpus,type=0):
+    def get_data(self,corpus,type=0,data=None):
         """
         Get corpus data
         :param corpus: "brown","ptb"
@@ -78,8 +78,10 @@ class NLPutil(object):
             counter = collections.Counter(lablist)
             count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
             self.labels, _ = list(zip(*count_pairs))
-
             self.tagged_sents = treebank.tagged_sents()
+        elif corpus=="selfgen" and data is not None:
+            self.corpus=data
+            self.sub_corpus=data
         else:
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/'+str(corpus))
             f = open(file)
@@ -198,7 +200,7 @@ class NLPutil(object):
         """
         print("Building sequecing vector of text...")
         txtmat = []
-        unkvec=self.w2v_dict["UNK"]
+        unkvec=self.w2v_dict.get("UNK",None)
         for word in text:
             wvec=self.w2v_dict.get(word,unkvec)
             txtmat.append(wvec)
@@ -258,7 +260,7 @@ class NLPutil(object):
             wrdp=textp[iiw]
             clp=datap[iiw]
             cpck=cm.seismic(int((clp-cmin)/(cmax-cmin)*256))
-            nc=len(wrdp)+2
+            nc=len(str(wrdp))+2
             plt.text(1/cper_line*ccnt, 1.0-shift*0.1, wrdp, size=10,
                      ha="left", va="center",
                      bbox=dict(ec=(1., 1., 1.),
@@ -1070,7 +1072,7 @@ class PDC_NLP(object):
         loss = lossc(outputl.view(1, -1, len(databp) - 1), outlab)
         print("Evaluation Perplexity: ", np.exp(loss.item()))
 
-    def do_eval(self,txtseqs):
+    def do_eval(self,txtseqs,knw=None):
         """
 
         :param seqs: sequence for evaluation
@@ -1186,7 +1188,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save="lost.png", seqtrain=False, mode="GRU", pcalsize=0, knw_org=None):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", pcalsize=0, knw_org=None):
         """
         Entrance for training
         :param learning_rate:
@@ -1228,7 +1230,7 @@ class PDC_NLP(object):
             elif mode=="GRU":
                 # rnn = GRU_Cell_Zoneout(lsize, 30, lout, zoneout_rate=0.2)
                 # rnn=GRU_NLP(lsize, 30, lout, num_layers=1)
-                rnn = GRU_KNW_L(lsize, 10, lout ,prior_vec=self.prior)
+                rnn = GRU_KNW_L(lsize, 1, lout ,prior_vec=self.prior)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
@@ -1246,9 +1248,9 @@ class PDC_NLP(object):
 
         def custom_KNWLoss(outputl, outlab, model, cstep):
             loss1 = lossc(outputl, outlab)
-            logith2o = model.h2o.weight.view(-1)#+model.h2o.bias.view(-1)
-            pih2o=torch.exp(logith2o)/torch.sum(torch.exp(logith2o))
-            lossh2o = -torch.sum(pih2o*torch.log(pih2o))
+            logith2o = model.h2o.weight#+model.h2o.bias.view(-1) size(47,cell)
+            pih2o=torch.exp(logith2o)/torch.sum(torch.exp(logith2o),dim=0)
+            lossh2o = -torch.mean(torch.sum(pih2o*torch.log(pih2o),dim=0))
 
             # # logitz=model.Wiz.weight.view(-1)
             # logitz = model.Wiz.view(-1)
@@ -1261,9 +1263,10 @@ class PDC_NLP(object):
             # lossn = -torch.sum(pin * torch.log(pin))
 
             l1_reg = Variable(torch.FloatTensor(1), requires_grad=True)
-            l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
+            # l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
+            l1_reg = l1_reg + model.Wiz.weight.norm(1) + model.Win.weight.norm(1)
 
-            return loss1+0.2*lossh2o*cstep/step+0.005*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
+            return loss1 +0.03*lossh2o*cstep/step+0.001*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
         # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
@@ -1299,7 +1302,7 @@ class PDC_NLP(object):
                 ylb = []
                 for iib in range(batch):
                     wrd = self.nlp.sub_corpus[(int(rstartv[iib]) + iiss + 1)]
-                    ydg=self.nlp.word_to_id.get(wrd,self.nlp.word_to_id["UNK"])
+                    ydg=self.nlp.word_to_id.get(wrd,self.nlp.word_to_id.get("UNK",None))
                     ylb.append(ydg)
                 yl.append(np.array(ylb))
             outlab = Variable(torch.from_numpy(np.array(yl).T))
@@ -1741,7 +1744,7 @@ class GRU_KNW_L(torch.nn.Module):
     def knw_distill(self,knw_t,theta_t,id_to_word):
         """
         Distilling knowledge from result
-        :param knw_t: significant threshold for knowledge
+        :param knw_t: significant threshold for knowledge, [th,win] selected group has window win and diff th
         :param theta_t: significant threshold for sigmoid
         :param id_to_word: id to word dictionary
         :return:
@@ -1751,33 +1754,56 @@ class GRU_KNW_L(torch.nn.Module):
             knw_b = self.h2o.bias.data.numpy()
         except:
             knw_b = 0
-        Nknw=self.h2o.weight.shape[1]
-        for iik in range(Nknw):
-            knw_w = self.h2o.weight.data.numpy()[:,iik]
+        Nknw=self.h2o.weight.shape[1] #size(47,cell) for input, size(cell,cell) for hidden
+        for iic in range(Nknw):
+            # Getting out first order knowledge
+            knw_w = self.h2o.weight.data.numpy()[:,iic]
             knw_on=knw_b+knw_w
-            logitM=np.max(knw_on)
-            nM=np.argmax(knw_on)
-            knw_on[nM]=np.min(knw_on)
-            logitM2 = np.max(knw_on)
-            resknw_N=None
-            if logitM-logitM2>knw_t:
-                print("Expert for "+str(id_to_word[nM])+" detected!")
-                resknw_N=nM
-            else:
+            # logitM=np.max(knw_on)
+            # nM=np.argmax(knw_on)
+            # knw_on[nM]=np.min(knw_on)
+            # logitM2 = np.max(knw_on)
+            # resknw_N=None
+            # if logitM-logitM2>knw_t:
+            #     print("Expert for "+str(id_to_word[nM])+" detected!")
+            #     resknw_N=nM
+            # else:
+            #     print("Knowledge not found!")
+            #     continue
+            knw_on_zip=list(zip(knw_on,range(len(knw_on))))
+            knw_on_zip.sort(key=lambda x: x[0],reverse=True)
+            maxv=knw_on_zip[0][0]
+            maxvw=maxv-knw_t[1]
+            maxvt=maxv-knw_t[0]
+            resknw_N=[]
+            kstr=""
+            found=False
+            for iip in range(len(knw_on_zip)-1):
+                if knw_on_zip[iip][0]>maxvw and knw_on_zip[iip+1][0]<maxvt:
+                    for iik in range(iip+1):
+                        kid=knw_on_zip[iik][1]
+                        resknw_N.append(kid)
+                        kstr=kstr+str(id_to_word[kid])+", "
+                    print("Expert for " + kstr + " detected!")
+                    found=True
+                    break
+            if not found:
                 print("Knowledge not found!")
                 continue
 
             ## Para hidden for sigmoid
-            thz_w=self.Whz.weight.data.numpy()[:,iik]
-            thz_b=self.Whz.bias.data.numpy()
-            thn_w = self.Whn.weight.data.numpy()[:,iik]
-            thn_b = self.Whn.bias.data.numpy()
+            thz_w=self.Whz.weight.data.numpy()[iic,iic]
+            thz_b=self.Whz.bias.data.numpy()[iic]
+            thn_w = self.Whn.weight.data.numpy()[iic,iic]
+            thn_b = self.Whn.bias.data.numpy()[iic]
 
             ## Para input for sigmoid
-            tiz_w = self.Wiz.weight.data.numpy()[:,iik]
-            tiz_b = self.Wiz.bias.data.numpy()
-            tin_w = self.Win.weight.data.numpy()[:,iik]
-            tin_b = self.Win.bias.data.numpy()
+            tiz_w = self.Wiz.weight.data.numpy()[iic,:]
+            # print(self.Wiz.weight.shape) (cell,47)
+            tiz_b = self.Wiz.bias.data.numpy()[iic]
+            tin_w = self.Win.weight.data.numpy()[iic,:]
+            # print(self.Win.weight.shape) #(cell,47)
+            tin_b = self.Win.bias.data.numpy()[iic]
             ## Assume ht-1==0
             # Z
             posi_z_t=[]
@@ -1915,6 +1941,7 @@ class KNW_OBJ(object):
         :param switch:
         :return:
         """
+
         Ntot = self.lsize
         KnwU = None
         if style == "IITNN":
@@ -1936,9 +1963,9 @@ class KNW_ORG(object):
         self.nlp=nlp
         self.prior=prior
         self.lsize=len(nlp.id_to_word)
-        self.knw_list=None
-        self.knw_list_fingerp=None
-        self.knw_gate_index = None # if index happens than list of knowledge activated
+        self.knw_list=[]
+        self.knw_list_fingerp=[]
+        self.knw_gate_index = [[] for ii in range(self.lsize)]
 
     def test(self):
         # Generating output label
@@ -1976,31 +2003,32 @@ class KNW_ORG(object):
         :return:
         """
         for knw in knw_ls:
-            expertInd, posiZ, negZ, posiN, negN = knw
+            expertIndL, posiZ, negZ, posiN, negN = knw
             ### Z0 N0 style knowledge
-            if len(negN)>0:
-                for item in negN:
-                    if item in negZ:
-                        # if item then next not expertInd style knowledge
-                        knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
-                        if knw_fingerp not in self.knw_list_fingerp:
-                            knw_item=KNW_OBJ(self.nlp.id_to_word,self.prior)
-                            knw_item.create("IITNN",[item,expertInd])
-                            self.knw_list.append(knw_item)
-                            self.knw_list_fingerp.append(knw_item.knw_fingerp)
-                            self.knw_gate_index[item].append(knw_item.knw_fingerp)
-            ### Z0 N1 style knowledge
-            if len(posiN)>0:
-                for item in posiN:
-                    if item in negZ:
-                        # if item then next is expertInd style knowledge
-                        knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
-                        if knw_fingerp not in self.knw_list_fingerp:
-                            knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
-                            knw_item.create("IITNI", [item, expertInd])
-                            self.knw_list.append(knw_item)
-                            self.knw_list_fingerp.append(knw_item.knw_fingerp)
-                            self.knw_gate_index[item].append(knw_item.knw_fingerp)
+            for expertInd in expertIndL:
+                if len(negN)>0:
+                    for item in negN:
+                        if item in negZ:
+                            # if item then next not expertInd style knowledge
+                            knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
+                            if knw_fingerp not in self.knw_list_fingerp:
+                                knw_item=KNW_OBJ(self.nlp.id_to_word,self.prior)
+                                knw_item.create("IITNN",[item,expertInd])
+                                self.knw_list.append(knw_item)
+                                self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                                self.knw_gate_index[item].append(knw_item.knw_fingerp)
+                ### Z0 N1 style knowledge
+                if len(posiN)>0:
+                    for item in posiN:
+                        if item in negZ:
+                            # if item then next is expertInd style knowledge
+                            knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
+                            if knw_fingerp not in self.knw_list_fingerp:
+                                knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
+                                knw_item.create("IITNI", [item, expertInd])
+                                self.knw_list.append(knw_item)
+                                self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                                self.knw_gate_index[item].append(knw_item.knw_fingerp)
         print(len(self.knw_list))
 
     def clean(self):
@@ -2054,13 +2082,13 @@ class KNW_ORG(object):
         """
         word_to_id =  {v: k for k, v in self.nlp.id_to_word.items()}
         print("Knowledge evaluating ...")
+        for knwobj in self.knw_list:
+            knwobj.eval_cnt = [0, 0]
         for nn in range(len(self.nlp.sub_corpus)-1):
             x = word_to_id[self.nlp.sub_corpus[nn]]
             y = word_to_id[self.nlp.sub_corpus[nn+1]]
             for knwid in self.knw_gate_index[x]:
                 knwobj,_=self.get(knwid)
-                if type(knwobj.eval_cnt)==type(None):
-                    knwobj.eval_cnt=[0,0] # [tot, right]
                 mask=knwobj.knw_outmask
                 predvec=np.zeros(self.lsize)
                 predvec[y]=1
@@ -2133,10 +2161,13 @@ class KNW_ORG(object):
         for batchii in range(inputm.shape[1]):
             inputd=list(inputm[0,batchii,:]).index(1)
             clogits = plogits
-            for knwid in self.knw_gate_index[inputd]:
-                knwobj,_ = self.get(knwid)
-                clogits=clogits+knwobj.knw_outmask*knwobj.logith
-            postr[0,batchii,:]=np.exp(clogits)/np.sum(np.exp(clogits))
+            try:
+                for knwid in self.knw_gate_index[inputd]:
+                    knwobj,_ = self.get(knwid)
+                    clogits=clogits+knwobj.knw_outmask*knwobj.logith
+                postr[0,batchii,:]=np.exp(clogits)/np.sum(np.exp(clogits))
+            except:
+                pass
         return postr
 
     def optimize_logith(self):
@@ -2220,7 +2251,6 @@ class KNW_ORG(object):
         :return:
         """
         print("Knowledge para pytorch optimizing ...")
-
         plogits = np.log(self.prior)
         plogits = torch.from_numpy(plogits)
         plogits = plogits.type(torch.FloatTensor)
@@ -2243,7 +2273,7 @@ class KNW_ORG(object):
                 ylb = []
                 for iib in range(batch):
                     wrd = self.nlp.sub_corpus[(int(rstartv[iib]) + iiss + 1)]
-                    ydg = self.nlp.word_to_id.get(wrd, self.nlp.word_to_id["UNK"])
+                    ydg = self.nlp.word_to_id.get(wrd, self.nlp.word_to_id.get("UNK",None))
                     ylb.append(ydg)
                 yl.append(np.array(ylb))
             outlab = Variable(torch.from_numpy(np.array(yl).T))
