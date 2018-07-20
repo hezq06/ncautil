@@ -1072,7 +1072,7 @@ class PDC_NLP(object):
         loss = lossc(outputl.view(1, -1, len(databp) - 1), outlab)
         print("Evaluation Perplexity: ", np.exp(loss.item()))
 
-    def do_eval(self,txtseqs,knw=None):
+    def do_eval(self,txtseqs,knw_org=None):
         """
 
         :param seqs: sequence for evaluation
@@ -1080,7 +1080,10 @@ class PDC_NLP(object):
         """
         lsize = self.lsize
         datab = self.nlp.build_textmat(txtseqs)
-        databp = np.matmul(self.pcaPM,datab.T)
+        try:
+            databp = np.matmul(self.pcaPM,datab.T)
+        except:
+            pass
         databp = databp.T
         databp=np.array(databp)
         rnn = self.model
@@ -1102,7 +1105,13 @@ class PDC_NLP(object):
             if self.mode=="LSTM":
                 output, hidden = rnn(x, hidden, y)
             elif self.mode=="GRU":
-                output, hidden = rnn(x, hidden)
+                if knw_org is None:
+                    output, hidden = rnn(x, hidden)
+                else:
+                    add_vec = np.log(knw_org.forward_m(x.data.numpy()))
+                    add_tvec = torch.from_numpy(add_vec)
+                    add_tvec = add_tvec.type(torch.FloatTensor)
+                    output, hidden = rnn(x, hidden, add_prior=add_tvec)
             # if type(outputl) == type(None):
             #     outputl = output.view(1, -1)
             # else:
@@ -1188,7 +1197,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", pcalsize=0, knw_org=None):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", pcalsize=0, knw_org=None, cellnum=1):
         """
         Entrance for training
         :param learning_rate:
@@ -1230,10 +1239,11 @@ class PDC_NLP(object):
             elif mode=="GRU":
                 # rnn = GRU_Cell_Zoneout(lsize, 30, lout, zoneout_rate=0.2)
                 # rnn=GRU_NLP(lsize, 30, lout, num_layers=1)
-                rnn = GRU_KNW_L(lsize, 1, lout ,prior_vec=self.prior)
+                rnn = GRU_KNW_L(lsize, cellnum, lout ,prior_vec=self.prior)
             # rnn = LSTM_AU(lsize, 12, lsize)
         else:
             rnn=self.model
+        self.model = copy.deepcopy(rnn)
         rnn.train()
 
 
@@ -1264,9 +1274,9 @@ class PDC_NLP(object):
 
             l1_reg = Variable(torch.FloatTensor(1), requires_grad=True)
             # l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
-            l1_reg = l1_reg + model.Wiz.weight.norm(1) + model.Win.weight.norm(1)
+            l1_reg = model.Wiz.weight.norm(1) + model.Win.weight.norm(1)
 
-            return loss1 +0.03*lossh2o*cstep/step+0.001*l1_reg*cstep/step   #+0.3*lossz+0.3*lossn #
+            return loss1+0.002*l1_reg*cstep/step #+0.02*lossh2o*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
         # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
@@ -1338,7 +1348,7 @@ class PDC_NLP(object):
                         if knw_org is None:
                             output, hidden = rnn(x, hidden)
                         else:
-                            add_vec=knw_org.forward_m(x.data.numpy())
+                            add_vec=np.log(knw_org.forward_m(x.data.numpy()))
                             add_tvec=torch.from_numpy(add_vec)
                             add_tvec=add_tvec.type(torch.FloatTensor)
                             output, hidden = rnn(x, hidden, add_prior=add_tvec)
@@ -1398,12 +1408,15 @@ class PDC_NLP(object):
         for ii in range(len(train_hist)):
             x.append([ii, train_hist[ii]])
         x = np.array(x)
-        plt.plot(x[:, 0], x[:, 1])
-        if type(save) != type(None):
-            plt.savefig(save)
-            plt.gcf().clear()
-        else:
-            plt.show()
+        try:
+            plt.plot(x[:, 0], x[:, 1])
+            if type(save) != type(None):
+                plt.savefig(save)
+                plt.gcf().clear()
+            else:
+                plt.show()
+        except:
+            pass
 
 
 class RNN_PDC_LSTM_NLP(torch.nn.Module):
@@ -1700,6 +1713,8 @@ class GRU_KNW_L(torch.nn.Module):
         self.Whn = torch.nn.Linear(hidden_size, hidden_size)
 
         self.h2o = torch.nn.Linear(hidden_size, output_size,bias=True)
+        # self.h2o.weight=torch.nn.Parameter(torch.zeros(output_size,hidden_size))
+        # self.h2o.bias = torch.nn.Parameter(torch.zeros(output_size))
 
         # self.Wshare = torch.nn.Parameter(torch.rand(input_size, hidden_size), requires_grad=True)
         # self.Wshare_bz = torch.nn.Parameter(torch.rand(hidden_size), requires_grad=True)
@@ -2036,10 +2051,15 @@ class KNW_ORG(object):
         Clean up knowledge base
         :return:
         """
-        evalhith=1e-4 # Criteria 1: two low hit rate
+        # Criteria 1: too low hit rate
+        evalhith=1e-4
         deletels=[]
         for item in self.knw_list:
             if item.eval_cnt[1]<evalhith*item.eval_cnt[0]:
+                deletels.append(item.knw_fingerp)
+        # Criteria 2: too small logith
+        for item in self.knw_list:
+            if item.logith < 0.0:
                 deletels.append(item.knw_fingerp)
         for dstr in deletels:
             self.remove(dstr)
@@ -2130,7 +2150,7 @@ class KNW_ORG(object):
             perpls.append(perp)
         avperp=np.mean(np.array(perpls))
         print("Calculated knowledge perplexity:",np.exp(avperp))
-        return avperp
+        return np.exp(avperp)
 
 
     def forward_s(self,inputd):

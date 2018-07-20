@@ -38,6 +38,31 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_softrule(self,length,prob=0.9,onehot=False):
+        """
+        Soft rule sequence A->B->C->A is prob, A->C->B->A is 1-prob.
+        [A1: 0, A2: 1, A3: 2, B1: 3, B2: 4, B3: 5, C1: 6, C2: 7, C3: 8]
+        :param length:
+        :param onehot:
+        :return:
+        """
+        sq1 = int(3 * np.random.rand())
+        reseq = [sq1]
+        # statem=[0,1,2]
+        for iil in range(length):
+            lstat=int(reseq[-1]/3)
+            if np.random.rand()-prob<0: # forward
+                nstat=(lstat+1)%3
+            else:
+                nstat = (lstat - 1) % 3
+            dig=nstat*3+int(3 * np.random.rand())
+            reseq.append(dig)
+        if onehot:
+            reseq=self.one_hot(reseq,length=9)
+            reseq = np.array(reseq)
+        return reseq
+
+
     def gen_longtermdep(self,length,onehot=False):
         """
         Artifitial long term dependency seq
