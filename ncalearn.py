@@ -339,3 +339,7 @@ def genDist(N):
     """
     vec=np.random.random(N)
     return vec/np.sum(vec)
+
+def sigmoid(x):
+    res=np.exp(x)/(np.exp(x)+1)
+    return res

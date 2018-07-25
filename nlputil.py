@@ -1276,7 +1276,7 @@ class PDC_NLP(object):
             # l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
             l1_reg = model.Wiz.weight.norm(1) + model.Win.weight.norm(1)
 
-            return loss1+0.002*l1_reg*cstep/step #+0.02*lossh2o*cstep/step   #+0.3*lossz+0.3*lossn #
+            return loss1 +0.002*l1_reg*cstep/step +0.01*lossh2o*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
         # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
@@ -1814,21 +1814,22 @@ class GRU_KNW_L(torch.nn.Module):
 
             ## Para input for sigmoid
             tiz_w = self.Wiz.weight.data.numpy()[iic,:]
-            # print(self.Wiz.weight.shape) (cell,47)
             tiz_b = self.Wiz.bias.data.numpy()[iic]
             tin_w = self.Win.weight.data.numpy()[iic,:]
-            # print(self.Win.weight.shape) #(cell,47)
             tin_b = self.Win.bias.data.numpy()[iic]
             ## Assume ht-1==0
             # Z
             posi_z_t=[]
             posi_z_tvec=thz_b+tiz_b+tiz_w-theta_t
+            ## if ii_in in knw set, ht-1==1
+            for ii_in in resknw_N:
+                posi_z_tvec[ii_in]=posi_z_tvec[ii_in]+thz_w
             for iin in range(len(posi_z_tvec)):
                 if posi_z_tvec[iin]>0:
                     posi_z_t.append(iin)
             print("ht-1==0: Posi Z found:",posi_z_t)
             neg_z_t = []
-            neg_z_tvec = thz_b + tiz_b + tiz_w + theta_t
+            neg_z_tvec = posi_z_tvec + 2*theta_t
             for iin in range(len(neg_z_tvec)):
                 if neg_z_tvec[iin] < 0:
                     neg_z_t.append(iin)
@@ -1836,12 +1837,15 @@ class GRU_KNW_L(torch.nn.Module):
             # N
             posi_n_t = []
             posi_n_tvec = thn_b + tin_b + tin_w - theta_t
+            ## if ii_in in knw set, ht-1==1
+            for ii_in in resknw_N:
+                posi_n_tvec[ii_in] = posi_n_tvec[ii_in] + thn_w
             for iin in range(len(posi_n_tvec)):
                 if posi_n_tvec[iin] > 0:
                     posi_n_t.append(iin)
             print("ht-1==0: Posi N found:", posi_n_t)
             neg_n_t = []
-            neg_n_tvec = thn_b + tin_b + tin_w + theta_t
+            neg_n_tvec = posi_n_tvec + 2*theta_t
             for iin in range(len(neg_n_tvec)):
                 if neg_n_tvec[iin] < 0:
                     neg_n_t.append(iin)
@@ -2059,7 +2063,7 @@ class KNW_ORG(object):
                 deletels.append(item.knw_fingerp)
         # Criteria 2: too small logith
         for item in self.knw_list:
-            if item.logith < 0.0:
+            if item.logith < 0.1:
                 deletels.append(item.knw_fingerp)
         for dstr in deletels:
             self.remove(dstr)
