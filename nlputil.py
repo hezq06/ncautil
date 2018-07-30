@@ -1080,13 +1080,7 @@ class PDC_NLP(object):
         :return:
         """
         lsize = self.lsize
-        datab = self.nlp.build_textmat(txtseqs)
-        try:
-            databp = np.matmul(self.pcaPM,datab.T)
-        except:
-            pass
-        databp = databp.T
-        databp=np.array(databp)
+        databp = self.nlp.build_textmat(txtseqs)
         rnn = self.model
         gpuavail = torch.cuda.is_available()
         if gpuavail:
@@ -1096,6 +1090,8 @@ class PDC_NLP(object):
         print(databp.shape)
         assert databp.shape[1] == lsize
         hidden = rnn.initHidden(1)
+        if knw_org is not None:
+            hidden_korg = knw_org.forward_init(1)
         outputl = []
         hiddenl=[]
 
@@ -1103,22 +1099,12 @@ class PDC_NLP(object):
             x = Variable(torch.from_numpy(databp[iis, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             y = Variable(torch.from_numpy(databp[iis+1, :].reshape(1, 1, lsize)).contiguous(), requires_grad=True)
             x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-            if self.mode=="LSTM":
-                output, hidden = rnn(x, hidden, y)
-            elif self.mode=="GRU":
-                if knw_org is None:
-                    output, hidden = rnn(x, hidden)
-                else:
-                    add_vec = np.log(knw_org.forward_m(x.data.numpy()))
-                    add_tvec = torch.from_numpy(add_vec)
-                    add_tvec = add_tvec.type(torch.FloatTensor)
-                    output, hidden = rnn(x, hidden, add_prior=add_tvec)
-            # if type(outputl) == type(None):
-            #     outputl = output.view(1, -1)
-            # else:
-            #     outputl = torch.cat((outputl, output.view(1, -1)), dim=0)
-            # print(outputl.reshape(1,-1).shape,output.data.numpy().reshape(1,-1).shape)
-            # outputl=np.stack((outputl.reshape(1,-1),output.data.numpy().reshape(1,-1)))
+            if knw_org is None:
+                output, hidden = rnn(x, hidden)
+            else:
+                add_tvec, hidden_korg = knw_org.forward_m(x, hidden_korg)
+                output, hidden = rnn(x, hidden, add_prior=add_tvec)
+
             outputl.append(output.view(-1).data.numpy())
             hiddenl.append(hidden)
 
@@ -1198,7 +1184,7 @@ class PDC_NLP(object):
         return outputl
 
 
-    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, seqtrain=False, mode="GRU", pcalsize=0, knw_org=None, cellnum=1):
+    def run_training(self,step,learning_rate=1e-2,batch=20, window=110, save=None, mode="GRU", knw_org=None, cellnum=1):
         """
         Entrance for training
         :param learning_rate:
@@ -1207,14 +1193,10 @@ class PDC_NLP(object):
         :return:
         """
         prtstep=int(step/10)
-
         startt=time.time()
 
         self.mlost = 1.0e9
-        if pcalsize>0:
-            self.lsize=pcalsize
-        else:
-            self.lsize=len(self.nlp.w2v_dict[self.nlp.id_to_word[0]])
+        self.lsize=len(self.nlp.w2v_dict[self.nlp.id_to_word[0]])
         lsize=self.lsize
         lout=len(self.nlp.w2v_dict)
         self.lout=lout
@@ -1238,19 +1220,10 @@ class PDC_NLP(object):
 
 
         if type(self.model)==type(None):
-            # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
-            if mode=="LSTM":
-                rnn = RNN_PDC_LSTM_NLP(lsize, 100, 3, 24, lout)
-            elif mode=="GRU":
-                # rnn = GRU_Cell_Zoneout(lsize, 30, lout, zoneout_rate=0.2)
-                # rnn=GRU_NLP(lsize, 30, lout, num_layers=1)
-                rnn = GRU_KNW_L(lsize, cellnum, lout ,prior_vec=self.prior)
-            # rnn = LSTM_AU(lsize, 12, lsize)
+            rnn = GRU_KNW_L(lsize, cellnum, lout ,prior_vec=self.prior)
         else:
             rnn=self.model
-        self.model = copy.deepcopy(rnn)
         rnn.train()
-
 
         gpuavail=torch.cuda.is_available()
         device = torch.device("cuda:0" if gpuavail else "cpu")
@@ -1266,37 +1239,15 @@ class PDC_NLP(object):
             logith2o = model.h2o.weight#+model.h2o.bias.view(-1) size(47,cell)
             pih2o=torch.exp(logith2o)/torch.sum(torch.exp(logith2o),dim=0)
             lossh2o = -torch.mean(torch.sum(pih2o*torch.log(pih2o),dim=0))
-
-            # # logitz=model.Wiz.weight.view(-1)
-            # logitz = model.Wiz.view(-1)
-            # piz = torch.exp(logitz) / torch.sum(torch.exp(logitz))
-            # lossz= -torch.sum(piz * torch.log(piz))
-            #
-            # # logitn = model.Win.weight.view(-1)
-            # logitn = model.Win.view(-1)
-            # pin = torch.exp(logitn) / torch.sum(torch.exp(logitn))
-            # lossn = -torch.sum(pin * torch.log(pin))
-
-            l1_reg = Variable(torch.FloatTensor(1), requires_grad=True)
-            # l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
             l1_reg = model.Wiz.weight.norm(1) + model.Win.weight.norm(1)+model.Whz.weight.norm(1) + model.Whn.weight.norm(1)
-
             return loss1 +0.001*l1_reg*cstep/step +0.005*lossh2o*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
-        # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
 
         train_hist=[]
         his = 0
 
-        datab=self.nlp.build_textmat(self.nlp.sub_corpus)
-        if pcalsize>0:
-            databp,pm=pca_proj(datab.T,lsize)
-            databp=databp.T
-            self.pcaPM=pm
-        else:
-            self.pcaPM=np.eye(self.lsize)
-            databp=datab
+        databp=self.nlp.build_textmat(self.nlp.sub_corpus)
         assert databp[0].shape[0] == lsize
         databp = torch.from_numpy(databp)
         if gpuavail:
@@ -1326,74 +1277,39 @@ class PDC_NLP(object):
             outlab = Variable(torch.from_numpy(np.array(yl).T))
             outlab = outlab.type(torch.LongTensor)
 
-            if not seqtrain:
-                # step by step training
-                outputl = None
-                # vec1 = rdata_b[:, :, 0]
-                # x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
-                for iiss in range(window):
-                    vec1m=None
-                    vec2m=None
-                    for iib in range(batch):
-                        vec1 = databp[(int(rstartv[iib])+iiss),:]
-                        vec2 = databp[(int(rstartv[iib])+iiss + 1), :]
-                        if type(vec1m) == type(None):
-                            vec1m = vec1.view(1, -1)
-                            vec2m = vec2.view(1, -1)
-                        else:
-                            vec1m = torch.cat((vec1m, vec1.view(1,-1)), dim=0)
-                            vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=0)
-                    # One by one guidance training ####### error can propagate due to hidden state
-                    x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True) #
-                    y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
-                    x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-                    if gpuavail:
-                        outlab = outlab.to(device)
-                        x, y = x.to(device), y.to(device)
-                    if mode == "LSTM":
-                        output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
-                    elif mode=="GRU":
-                        if knw_org is None:
-                            output, hidden = rnn(x, hidden)
-                        else:
-                            # add_vec=np.log(knw_org.forward_m(x.data.numpy()))
-                            # add_tvec=torch.from_numpy(add_vec)
-                            # add_tvec=add_tvec.type(torch.FloatTensor)
-                            add_tvec,hidden_korg = knw_org.forward_m(x,hidden_korg,plogits)
-                            output, hidden = rnn(x, hidden, add_prior=add_tvec)
-                    if type(outputl)==type(None):
-                        outputl=output.view(batch,lout,1)
-                    else:
-                        outputl=torch.cat((outputl.view(batch,lout,-1),output.view(batch,lout,1)),dim=2)
-                # loss = lossc(outputl, outlab)
-                loss=custom_KNWLoss(outputl, outlab, rnn, iis)
-
-            else:
-                # LSTM provided whole sequence training
-                vec1m = None
-                vec2m = None
+            # step by step training
+            outputl = None
+            # vec1 = rdata_b[:, :, 0]
+            # x = Variable(torch.from_numpy(vec1.reshape(1, batch,lsize)).contiguous(), requires_grad=True)
+            for iiss in range(window):
+                vec1m=None
+                vec2m=None
                 for iib in range(batch):
-                    vec1 = databp[int(rstartv[iib]) : int(rstartv[iib]) + window, :]
-                    vec2 = databp[int(rstartv[iib]) + 1 : int(rstartv[iib]) + 1 + window, :]
-                    # (batch,seq,lsize)
+                    vec1 = databp[(int(rstartv[iib])+iiss),:]
+                    vec2 = databp[(int(rstartv[iib])+iiss + 1), :]
                     if type(vec1m) == type(None):
-                        vec1m = vec1.view(1, window, -1)
-                        vec2m = vec2.view(1, window, -1)
+                        vec1m = vec1.view(1, -1)
+                        vec2m = vec2.view(1, -1)
                     else:
-                        vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
-                        vec2m = torch.cat((vec2m, vec2.view(1, window, -1)), dim=0)
-                # LSTM order (seql,batch,lsize)
-                    x = Variable(vec1m.permute(1,0,2), requires_grad=True)
-                    y = Variable(vec2m.permute(1,0,2), requires_grad=True)
-                    x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                        vec1m = torch.cat((vec1m, vec1.view(1,-1)), dim=0)
+                        vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=0)
+                # One by one guidance training ####### error can propagate due to hidden state
+                x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True) #
+                y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if gpuavail:
                     outlab = outlab.to(device)
                     x, y = x.to(device), y.to(device)
-                # output, hidden = rnn(x, hidden, y, cps=0.0, batch=batch)
-                output, hidden = rnn(x, hidden, batch=batch)
-                output=output.permute(1,2,0)
-
-                loss = lossc(output, outlab)
+                if knw_org is None:
+                    output, hidden = rnn(x, hidden)
+                else:
+                    add_tvec,hidden_korg = knw_org.forward_m(x,hidden_korg,plogits)
+                    output, hidden = rnn(x, hidden, add_prior=add_tvec)
+                if type(outputl)==type(None):
+                    outputl=output.view(batch,lout,1)
+                else:
+                    outputl=torch.cat((outputl.view(batch,lout,-1),output.view(batch,lout,1)),dim=2)
+            loss=custom_KNWLoss(outputl, outlab, rnn, iis)
 
             if int(iis / prtstep) != his:
                 print("Perlexity: ",iis, np.exp(loss.item()))
@@ -2376,7 +2292,7 @@ class KNW_ORG(object):
         return torch.zeros(1, batch, knw_size)
 
 
-    def forward_m(self,inputm, hidden, plogits):
+    def forward_m(self,inputm, hidden, plogits=None):
         """
         Forwarding and calculate logit with knowledge
         assert shape(1,batch,lsize)
@@ -2404,82 +2320,12 @@ class KNW_ORG(object):
 
         knw_act = torch.matmul(inputm, self.knw_actmat) + hidden
         scaled_act = knw_act * self.knw_para
-        knw_vec = torch.matmul(scaled_act, self.knw_maskmat) + plogits
+        knw_vec = torch.matmul(scaled_act, self.knw_maskmat)
+        if plogits is not None:
+            knw_vec=knw_vec + plogits
         hiddenresetter = torch.matmul(inputm, self.knw_resetmat)
         hidden = knw_act * hiddenresetter
         return knw_vec,hidden
-
-    def optimize_logith(self):
-        """
-        Optimize logith using scipy optimizor
-        :param dataset:
-        :return:
-        """
-        print("Knowledge optimizing ...")
-
-        def eval(para,dataset):
-            perpls = []
-            for nn in range(len(dataset) - 1):
-                x = self.nlp.word_to_id[dataset[nn]]
-                y = self.nlp.word_to_id[dataset[nn + 1]]
-                plogits = np.log(self.prior)
-                for knwid in self.knw_gate_index[x]:
-                    knwobj,ind = self.get(knwid)
-                    plogits = plogits + knwobj.knw_outmask * para[ind]
-                postr = np.exp(plogits) / np.sum(np.exp(plogits))
-                yvec = np.zeros(self.lsize)
-                yvec[y] = 1
-                perp = cal_kldiv(yvec, postr)
-                perpls.append(perp)
-            avperp = np.mean(np.array(perpls))
-            print("Calculated knowledge perplexity:", np.exp(avperp))
-            return avperp
-
-        x=np.ones(len(self.knw_list))
-        res=minimize(eval, x ,self.nlp.sub_corpus, method='SLSQP')
-        print(res)
-        for iit in range(len(res.x)):
-            self.knw_list[iit].logith=res.x[iit]
-
-    def optimize_logith_batch(self,bper=0.02,step=100):
-        """
-        Use mini batched version to do knowledge optimizing
-        :param dataset:
-        :param bper:
-        :return:
-        """
-        print("Knowledge mini-batched optimizing ...")
-
-        def eval(para,dataset):
-            perpls = []
-            for nn in range(len(dataset) - 1):
-                x = self.nlp.word_to_id[dataset[nn]]
-                y = self.nlp.word_to_id[dataset[nn + 1]]
-                plogits = np.log(self.prior)
-                for knwid in self.knw_gate_index[x]:
-                    knwobj,ind = self.get(knwid)
-                    plogits = plogits + knwobj.knw_outmask * para[ind]
-                postr = np.exp(plogits) / np.sum(np.exp(plogits))
-                yvec = np.zeros(self.lsize)
-                yvec[y] = 1
-                perp = cal_kldiv(yvec, postr)
-                perpls.append(perp)
-            avperp = np.mean(np.array(perpls))
-            return avperp
-
-        x = np.ones(len(self.knw_list))
-        for iis in range(step):
-            startp=np.random.rand()*(1-bper)*len(self.nlp.sub_corpus)
-            mbdataset=self.nlp.sub_corpus[int(startp):int(startp+bper*len(self.nlp.sub_corpus))]
-            res = minimize(eval, x, mbdataset, method='SLSQP',options={"maxiter":3})
-            avperp=eval(res.x,mbdataset)
-            print("Step "+str(iis)+", calculated perplexity:", np.exp(avperp))
-            x=res.x
-        avperp = eval(x, self.nlp.sub_corpus)
-        print("Final evaluation, calculated perplexity:", np.exp(avperp))
-        print(res)
-        for iit in range(len(res.x)):
-            self.knw_list[iit].logith = res.x[iit]
 
     def optimize_logith_torch(self,step,learning_rate=1e-2,batch=20, window=110):
         """
@@ -2557,26 +2403,7 @@ class KNW_ORG(object):
 
             optimizer.step()
 
-        def eval(para,dataset):
-            perpls = []
-            for nn in range(len(dataset) - 1):
-                x = self.nlp.word_to_id[dataset[nn]]
-                y = self.nlp.word_to_id[dataset[nn + 1]]
-                plogits = np.log(self.prior)
-                for knwid in self.knw_gate_index[x]:
-                    knwobj,ind = self.get(knwid)
-                    plogits = plogits + knwobj.knw_outmask * para[ind]
-                postr = np.exp(plogits) / np.sum(np.exp(plogits))
-                yvec = np.zeros(self.lsize)
-                yvec[y] = 1
-                perp = cal_kldiv(yvec, postr)
-                perpls.append(perp)
-            avperp = np.mean(np.array(perpls))
-            return avperp
-
         res=rnn.knw_para.data.numpy()
-        avperp = eval(res, self.nlp.sub_corpus)
-        print("Final evaluation, calculated perplexity:", np.exp(avperp))
         for iit in range(len(res)):
             self.knw_list[iit].logith = res[iit]
 
