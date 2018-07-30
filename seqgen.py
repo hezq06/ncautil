@@ -38,6 +38,36 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_higherorderdep(self,length,onehot=False):
+        """
+        Artifitial high order dependency seq
+        [if A+A->B, B+B->C, C+C->A else random]
+        :param length:
+        :param onehot:
+        :return:
+        """
+        sq1=int(9 * np.random.rand())
+        sq2 = int(9 * np.random.rand())
+        cA = [0, 1, 2]
+        cB = [3, 4, 5]
+        cC = [6, 7, 8]
+        reseq = [sq1,sq2]
+        for iil in range(length):
+            if reseq[-2] in cA and reseq[-1] in cA:
+                sqn = int(3 * np.random.rand()) + 3
+            elif reseq[-2] in cB and reseq[-1] in cB:
+                sqn = int(3 * np.random.rand()) + 6
+            elif reseq[-2] in cC and reseq[-1] in cC:
+                sqn = int(3 * np.random.rand())
+            else:
+                sqn = int(9 * np.random.rand())
+            reseq.append(sqn)
+        if onehot:
+            reseq=self.one_hot(reseq,length=9)
+            reseq = np.array(reseq)
+        return reseq
+
+
     def gen_softrule(self,length,prob=0.9,onehot=False):
         """
         Soft rule sequence A->B->C->A is prob, A->C->B->A is 1-prob.

@@ -1074,8 +1074,9 @@ class PDC_NLP(object):
 
     def do_eval(self,txtseqs,knw_org=None):
         """
-
+        do eval
         :param seqs: sequence for evaluation
+        :param knw_org: knowledge organizor
         :return:
         """
         lsize = self.lsize
@@ -1231,6 +1232,10 @@ class PDC_NLP(object):
         self.prior=plogits
         self.prior = np.zeros(lout)
 
+        plogits = self.prior
+        plogits = torch.from_numpy(plogits)
+        plogits = plogits.type(torch.FloatTensor)
+
 
         if type(self.model)==type(None):
             # def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size):
@@ -1274,9 +1279,9 @@ class PDC_NLP(object):
 
             l1_reg = Variable(torch.FloatTensor(1), requires_grad=True)
             # l1_reg = l1_reg + model.Wiz.weight.norm(1)+model.Win.weight.norm(1)
-            l1_reg = model.Wiz.weight.norm(1) + model.Win.weight.norm(1)
+            l1_reg = model.Wiz.weight.norm(1) + model.Win.weight.norm(1)+model.Whz.weight.norm(1) + model.Whn.weight.norm(1)
 
-            return loss1 +0.002*l1_reg*cstep/step +0.01*lossh2o*cstep/step   #+0.3*lossz+0.3*lossn #
+            return loss1 +0.001*l1_reg*cstep/step +0.005*lossh2o*cstep/step   #+0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
         # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
@@ -1305,6 +1310,9 @@ class PDC_NLP(object):
                 hidden = rnn.initHidden_cuda(device, batch)
             else:
                 hidden = rnn.initHidden(batch)
+
+            hidden_korg=knw_org.forward_init(batch)
+
 
             # Generating output label
             yl = []
@@ -1348,9 +1356,10 @@ class PDC_NLP(object):
                         if knw_org is None:
                             output, hidden = rnn(x, hidden)
                         else:
-                            add_vec=np.log(knw_org.forward_m(x.data.numpy()))
-                            add_tvec=torch.from_numpy(add_vec)
-                            add_tvec=add_tvec.type(torch.FloatTensor)
+                            # add_vec=np.log(knw_org.forward_m(x.data.numpy()))
+                            # add_tvec=torch.from_numpy(add_vec)
+                            # add_tvec=add_tvec.type(torch.FloatTensor)
+                            add_tvec,hidden_korg = knw_org.forward_m(x,hidden_korg,plogits)
                             output, hidden = rnn(x, hidden, add_prior=add_tvec)
                     if type(outputl)==type(None):
                         outputl=output.view(batch,lout,1)
@@ -1774,23 +1783,13 @@ class GRU_KNW_L(torch.nn.Module):
             # Getting out first order knowledge
             knw_w = self.h2o.weight.data.numpy()[:,iic]
             knw_on=knw_b+knw_w
-            # logitM=np.max(knw_on)
-            # nM=np.argmax(knw_on)
-            # knw_on[nM]=np.min(knw_on)
-            # logitM2 = np.max(knw_on)
-            # resknw_N=None
-            # if logitM-logitM2>knw_t:
-            #     print("Expert for "+str(id_to_word[nM])+" detected!")
-            #     resknw_N=nM
-            # else:
-            #     print("Knowledge not found!")
-            #     continue
             knw_on_zip=list(zip(knw_on,range(len(knw_on))))
             knw_on_zip.sort(key=lambda x: x[0],reverse=True)
             maxv=knw_on_zip[0][0]
             maxvw=maxv-knw_t[1]
             maxvt=maxv-knw_t[0]
             resknw_N=[]
+            resknw_MN = []
             kstr=""
             found=False
             for iip in range(len(knw_on_zip)-1):
@@ -1802,9 +1801,28 @@ class GRU_KNW_L(torch.nn.Module):
                     print("Expert for " + kstr + " detected!")
                     found=True
                     break
+
             if not found:
-                print("Knowledge not found!")
-                continue
+                knw_on=-knw_on
+                knw_on_zip = list(zip(knw_on, range(len(knw_on))))
+                knw_on_zip.sort(key=lambda x: x[0], reverse=True)
+                maxv = knw_on_zip[0][0]
+                maxvw = maxv - knw_t[1]
+                maxvt = maxv - knw_t[0]
+                kstr = ""
+                found = False
+                for iip in range(len(knw_on_zip) - 1):
+                    if knw_on_zip[iip][0] > maxvw and knw_on_zip[iip + 1][0] < maxvt:
+                        for iik in range(iip + 1):
+                            kid = knw_on_zip[iik][1]
+                            resknw_MN.append(kid)
+                            kstr = kstr + str(id_to_word[kid]) + ", "
+                        print("Expert for non-" + kstr + " detected!")
+                        found = True
+                        break
+                if not found:
+                    print("Knowledge not found!")
+                    continue
 
             ## Para hidden for sigmoid
             thz_w=self.Whz.weight.data.numpy()[iic,iic]
@@ -1850,7 +1868,7 @@ class GRU_KNW_L(torch.nn.Module):
                 if neg_n_tvec[iin] < 0:
                     neg_n_t.append(iin)
             print("ht-1==0: Neg N found:", neg_n_t)
-            resKNWls.append([resknw_N,posi_z_t,neg_z_t,posi_n_t,neg_n_t])
+            resKNWls.append([resknw_N,resknw_MN,posi_z_t,neg_z_t,posi_n_t,neg_n_t])
 
         return resKNWls
 
@@ -1860,60 +1878,29 @@ class GRU_KNW_L(torch.nn.Module):
     def initHidden_cuda(self, device, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
 
-class GRU_KNW_CL(torch.nn.Module):
-    """
-    PyTorch GRU adjuested for Clean Logit based knowledge learning
-    """
-    def __init__(self, input_size, hidden_size, output_size,prior_vec=None):
-        """
-
-        :param input_size:
-        :param hidden_size:
-        :param output_size:
-        :param prior_vec: logit of prior knowledge
-        """
-        super(GRU_KNW_CL, self).__init__()
-
-        self.hidden_size = hidden_size
-        self.input_size = input_size
-
-        self.Wiz = torch.nn.Parameter(torch.rand(input_size, hidden_size), requires_grad=True)
-        self.Win = torch.nn.Parameter(torch.rand(input_size, hidden_size), requires_grad=True)
-
-        self.h2o = torch.nn.Linear(hidden_size, output_size,bias=True)
-
-
-        if type(prior_vec)!=type(None):
-            self.prior_vec=torch.from_numpy(np.array(prior_vec))
-            self.prior_vec = self.prior_vec.type(torch.FloatTensor)
-        else:
-            self.prior_vec = torch.zeros(output_size)
-
-        self.sigmoid = torch.nn.Sigmoid()
-        self.tanh = torch.nn.Tanh()
-        self.Lsoftmax = torch.nn.LogSoftmax(dim=-1)
-        self.softmax = torch.nn.Softmax(dim=0)
-
-    def forward(self, input, hidden,batch=None):
-        """
-
-        :param input: input
-        :param hidden: hidden
-        :param result:
-        :return:
-        """
-        zt = torch.matmul(input,self.softmax(self.Wiz))
-        nt = torch.matmul(input,self.softmax(self.Win))
-        ht = (1 - zt) * nt + zt * hidden
-        output = self.h2o(ht)+self.prior_vec
-        output = self.Lsoftmax(output)
-        return output, ht
-
-    def initHidden(self, batch=1):
-        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
-
-    def initHidden_cuda(self, device, batch=1):
-        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
+# class If_Then(torch.nn.Module):
+#     """
+#     Trial of hard if-then network
+#     """
+#     def __init__(self,lsize):
+#         self.W = torch.nn.Parameter(torch.rand(lsize), requires_grad=True)
+#         self.h2o = torch.nn.Parameter(torch.rand(lsize), requires_grad=True)
+#         self.b = torch.nn.Parameter(torch.rand(1), requires_grad=True)
+#
+#         self.sigmoid = torch.nn.Sigmoid()
+#         self.tanh = torch.nn.Tanh()
+#         self.softmax = torch.nn.LogSoftmax(dim=-1)
+#
+#     def forward(self, input):
+#         h = torch.matmul(input, self.W))
+#         if h>
+#
+# class Setter_Resetter(torch.nn.Module):
+#     """
+#     Trial of hard setter-resetter network for long-term dependency
+#     """
+#     def __init__(self):
+#         pass
 
 class KNW_OBJ(object):
     """
@@ -1929,13 +1916,14 @@ class KNW_OBJ(object):
         self.knw_fingerp=None
         self.knw_utility=None
         self.knw_outmask = None
+        self.knw_untilmask = None
         self.logith = 1.0 # Confidence of this knowledge
         self.eval_cnt=None # event cnt of this knowledge [total correct]
 
     def create(self,style,data):
-        item=data[0]
-        expertInd=data[1]
         if style=="IITNN":
+            item = data[0]
+            expertInd = data[1]
             self.style = "IITNN"  # if item then next not
             self.description = "If " + str(self.id_to_word[item]) + " then next not " + str(self.id_to_word[expertInd])
             self.data = data
@@ -1945,6 +1933,8 @@ class KNW_OBJ(object):
             tmp[expertInd]=0
             self.knw_outmask=tmp
         elif style=="IITNI":
+            item = data[0]
+            expertInd = data[1]
             self.style = "IITNI"  # if item then next is
             self.description = "If " + str(self.id_to_word[item]) + " then next is " + str(self.id_to_word[expertInd])
             self.data = data
@@ -1953,6 +1943,65 @@ class KNW_OBJ(object):
             tmp = np.zeros(self.lsize)
             tmp[expertInd] = 1
             self.knw_outmask = tmp
+        elif style=="SETRESET":
+            item_s = data[0]
+            item_r = data[1]
+            expertInd = data[2]
+            self.style = "SETRESET"  # if item then next not
+            utstr = ""
+            for item in item_r:
+                utstr = utstr + str(self.id_to_word[item])
+            self.description = "If " + str(self.id_to_word[item_s]) + " then next is " + str(self.id_to_word[expertInd]) + " until " + utstr
+            self.data = data
+            self.knw_fingerp = "SETRESET" + "-s-" + str(item_s) + "-r-" + str(item_r)+"-"+str(expertInd)
+            self.knw_utility = self.cal_knwU(self.style,self.data)
+            tmp = np.zeros(self.lsize)
+            tmp[expertInd] = 1
+            self.knw_outmask=tmp
+            tmp2 = np.zeros(self.lsize)
+            tmp2[item_r] = 1
+            self.knw_untilmask = tmp2
+        elif style=="IITNNN":
+            item = data[0]
+            expertInd = data[1]
+            self.style = "IITNNN"  # if item then next not
+            self.description = "If " + str(self.id_to_word[item]) + " then next not non-" + str(self.id_to_word[expertInd])
+            self.data = data
+            self.knw_fingerp = "IITNNN" + "-" + str(item) + "-" + str(expertInd)
+            self.knw_utility = self.cal_knwU(self.style,self.data)
+            tmp = np.zeros(self.lsize)
+            tmp[expertInd] = 1
+            self.knw_outmask=tmp
+        elif style=="IITNIN":
+            item = data[0]
+            expertInd = data[1]
+            self.style = "IITNIN"  # if item then next is
+            self.description = "If " + str(self.id_to_word[item]) + " then next is non-" + str(self.id_to_word[expertInd])
+            self.data = data
+            self.knw_fingerp = "IITNIN" + "-" + str(item) + "-" + str(expertInd)
+            self.knw_utility = self.cal_knwU(self.style, self.data)
+            tmp = np.ones(self.lsize)
+            tmp[expertInd] = 0
+            self.knw_outmask = tmp
+        elif style=="SETRESETN":
+            item_s = data[0]
+            item_r = data[1]
+            expertInd = data[2]
+            self.style = "SETRESETN"  # if item then next not
+            utstr=""
+            for item in item_r:
+                utstr=utstr+"_"+str(self.id_to_word[item])
+            self.description = "If " + str(self.id_to_word[item_s]) + " then next is non-" + str(self.id_to_word[expertInd]) + " until " + utstr
+            self.data = data
+            self.knw_fingerp = "SETRESETN" + "-s-" + str(item_s) + "-r-" + str(item_r)+"-"+str(expertInd)
+            self.knw_utility = self.cal_knwU(self.style,self.data)
+            tmp=np.ones(self.lsize)
+            tmp[expertInd]=0
+            self.knw_outmask=tmp
+            tmp2 = np.zeros(self.lsize)
+            tmp2[item_r] = 1
+            self.knw_untilmask = tmp2
+
 
     def cal_knwU(self, style, data):
         """
@@ -1963,13 +2012,13 @@ class KNW_OBJ(object):
 
         Ntot = self.lsize
         KnwU = None
-        if style == "IITNN":
+        if style == "IITNN" or style == "IITNIN" or style == "SETRESETN":
             tmp = self.prior.copy()
-            tmp[data[1]] = 0
+            tmp[data[-1]] = 0
             KnwU = cal_kldiv(tmp, self.prior) * (self.prior[data[0]] / np.sum(self.prior))
-        elif style == "IITNI":
+        elif style == "IITNI" or style == "IITNNN" or style == "SETRESET":
             tmp = np.zeros(Ntot)
-            tmp[data[1]] = 1
+            tmp[data[-1]] = 1
             KnwU = cal_kldiv(tmp, self.prior) * (self.prior[data[0]] / np.sum(self.prior))
         return KnwU
 
@@ -1985,6 +2034,11 @@ class KNW_ORG(object):
         self.knw_list=[]
         self.knw_list_fingerp=[]
         self.knw_gate_index = [[] for ii in range(self.lsize)]
+
+        self.knw_actmat = None
+        self.knw_maskmat = None
+        self.knw_resetmat = None
+        self.knw_para = None
 
     def test(self):
         # Generating output label
@@ -2022,32 +2076,90 @@ class KNW_ORG(object):
         :return:
         """
         for knw in knw_ls:
-            expertIndL, posiZ, negZ, posiN, negN = knw
-            ### Z0 N0 style knowledge
-            for expertInd in expertIndL:
-                if len(negN)>0:
-                    for item in negN:
-                        if item in negZ:
-                            # if item then next not expertInd style knowledge
-                            knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
+            expertIndL, expertIndLN, posiZ, negZ, posiN, negN = knw
+            for expertInd in expertIndL:  # Positive knowledge
+                if len(posiZ)==0: # short term knowledge
+                    ### Z0 N0 style knowledge
+                    if len(negN)>0:
+                        for item in negN:
+                            if item in negZ:
+                                # if item then next not expertInd style knowledge
+                                knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
+                                if knw_fingerp not in self.knw_list_fingerp:
+                                    knw_item=KNW_OBJ(self.nlp.id_to_word,self.prior)
+                                    knw_item.create("IITNN",[item,expertInd])
+                                    self.knw_list.append(knw_item)
+                                    self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                                    self.knw_gate_index[item].append(knw_item.knw_fingerp)
+                    ### Z0 N1 style knowledge
+                    if len(posiN)>0:
+                        for item in posiN:
+                            if item in negZ:
+                                # if item then next is expertInd style knowledge
+                                knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
+                                if knw_fingerp not in self.knw_list_fingerp:
+                                    knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
+                                    knw_item.create("IITNI", [item, expertInd])
+                                    self.knw_list.append(knw_item)
+                                    self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                                    self.knw_gate_index[item].append(knw_item.knw_fingerp)
+                else: # long term knowledge setter-resetter
+                    for item_s in posiN:
+                        if item_s in negZ:
+                            reseters=[]
+                            for item_r in negN:
+                                if item_r in negZ:
+                                    reseters.append(item_r)
+                            knw_fingerp = "SETRESET" + "-s-" + str(item_s) + "-r-" + str(reseters)+"-"+str(expertInd)
                             if knw_fingerp not in self.knw_list_fingerp:
-                                knw_item=KNW_OBJ(self.nlp.id_to_word,self.prior)
-                                knw_item.create("IITNN",[item,expertInd])
+                                knw_item = KNW_OBJ(self.nlp.id_to_word, self.prior)
+                                knw_item.create("SETRESET", [item_s, reseters, expertInd])
                                 self.knw_list.append(knw_item)
                                 self.knw_list_fingerp.append(knw_item.knw_fingerp)
-                                self.knw_gate_index[item].append(knw_item.knw_fingerp)
-                ### Z0 N1 style knowledge
-                if len(posiN)>0:
-                    for item in posiN:
-                        if item in negZ:
-                            # if item then next is expertInd style knowledge
-                            knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
+                                self.knw_gate_index[item_s].append(knw_item.knw_fingerp)
+
+            for expertInd in expertIndLN: # Negtive knowledge
+                if len(posiZ) == 0:  # short term knowledge
+                    ### Z0 N0 style knowledge
+                    if len(negN) > 0:
+                        for item in negN:
+                            if item in negZ:
+                                # if item then next not non-expertInd style knowledge
+                                knw_fingerp = "IITNNN" + "-" + str(item) + "-" + str(expertInd)
+                                if knw_fingerp not in self.knw_list_fingerp:
+                                    knw_item = KNW_OBJ(self.nlp.id_to_word, self.prior)
+                                    knw_item.create("IITNNN", [item, expertInd])
+                                    self.knw_list.append(knw_item)
+                                    self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                                    self.knw_gate_index[item].append(knw_item.knw_fingerp)
+                    ### Z0 N1 style knowledge
+                    if len(posiN) > 0:
+                        for item in posiN:
+                            if item in negZ:
+                                # if item then next is non-expertInd style knowledge
+                                knw_fingerp = "IITNIN" + "-" + str(item) + "-" + str(expertInd)
+                                if knw_fingerp not in self.knw_list_fingerp:
+                                    knw_item = KNW_OBJ(self.nlp.id_to_word, self.prior)
+                                    knw_item.create("IITNIN", [item, expertInd])
+                                    self.knw_list.append(knw_item)
+                                    self.knw_list_fingerp.append(knw_item.knw_fingerp)
+                                    self.knw_gate_index[item].append(knw_item.knw_fingerp)
+                else:  # long term knowledge setter-resetter
+                    for item_s in posiN:
+                        if item_s in negZ:
+                            reseters = []
+                            for item_r in negN:
+                                if item_r in negZ:
+                                    reseters.append(item_r)
+                            knw_fingerp = "SETRESETN" + "-s-" + str(item_s) + "-r-" + str(reseters) + "-" + str(
+                                expertInd)
                             if knw_fingerp not in self.knw_list_fingerp:
-                                knw_item = KNW_OBJ(self.nlp.id_to_word,self.prior)
-                                knw_item.create("IITNI", [item, expertInd])
+                                knw_item = KNW_OBJ(self.nlp.id_to_word, self.prior)
+                                knw_item.create("SETRESETN", [item_s, reseters, expertInd])
                                 self.knw_list.append(knw_item)
                                 self.knw_list_fingerp.append(knw_item.knw_fingerp)
-                                self.knw_gate_index[item].append(knw_item.knw_fingerp)
+                                self.knw_gate_index[item_s].append(knw_item.knw_fingerp)
+
         print(len(self.knw_list))
 
     def clean(self):
@@ -2088,7 +2200,7 @@ class KNW_ORG(object):
     def print(self):
         print("No. of knowledge: ",len(self.knw_list))
         for ii in range(len(self.knw_list)):
-            print(self.knw_list_fingerp[ii]+" : "+self.knw_list[ii].description, self.knw_list[ii].knw_utility, self.knw_list[ii].eval_cnt, self.knw_list[ii].logith)
+            print(self.knw_list_fingerp[ii]+" : " + self.knw_list[ii].description, self.knw_list[ii].knw_utility, self.knw_list[ii].eval_cnt, self.knw_list[ii].logith)
 
     def update(self):
         """
@@ -2108,18 +2220,58 @@ class KNW_ORG(object):
         print("Knowledge evaluating ...")
         for knwobj in self.knw_list:
             knwobj.eval_cnt = [0, 0]
+        ltknwcnt = []  # long term knowledge counter
         for nn in range(len(self.nlp.sub_corpus)-1):
             x = word_to_id[self.nlp.sub_corpus[nn]]
             y = word_to_id[self.nlp.sub_corpus[nn+1]]
             for knwid in self.knw_gate_index[x]:
-                knwobj,_=self.get(knwid)
-                mask=knwobj.knw_outmask
-                predvec=np.zeros(self.lsize)
-                predvec[y]=1
-                mres=np.max(mask*predvec)
-                knwobj.eval_cnt[0] = knwobj.eval_cnt[0] + 1
-                if mres>0: # Compatible
-                    knwobj.eval_cnt[1]=knwobj.eval_cnt[1]+1
+                knwobj, _ = self.get(knwid)
+                if knwobj.style in ["IITNN","IITNNN","IITNI","IITNIN"]: # short term knowledge
+                    mask = knwobj.knw_outmask
+                    predvec = np.zeros(self.lsize)
+                    predvec[y] = 1
+                    mres=np.max(mask*predvec)
+                    knwobj.eval_cnt[0] = knwobj.eval_cnt[0] + 1
+                    if mres>0: # Compatible
+                        knwobj.eval_cnt[1]=knwobj.eval_cnt[1]+1
+                else:
+                    if knwobj.style == "SETRESET":
+                        ltknwcnt.append([knwid,False]) # Setter Reseter kind of knowledge success if appear once
+                    elif knwobj.style == "SETRESETN":
+                        ltknwcnt.append([knwid, True]) # Setter Reseter Non kind of knowledge success if always
+                dells = []
+                for iicnt in range(len(ltknwcnt)):
+                    knwcnt=ltknwcnt[iicnt]
+                    knwid=knwcnt[0]
+                    knwobj, _ = self.get(knwid)
+                    predvec = np.zeros(self.lsize)
+                    predvec[y] = 1
+                    masko = knwobj.knw_outmask
+                    mres = np.max(masko * predvec)
+                    if knwobj.style=="SETRESET":
+                        if mres > 0:  # Compatible
+                            ltknwcnt[iicnt][1]=True
+                        masku = knwobj.knw_untilmask
+                        mresu = np.max(masku * predvec)
+                        if mresu > 0:  # Until hit
+                            knwobj.eval_cnt[0] = knwobj.eval_cnt[0] + 1
+                            if ltknwcnt[iicnt][1]:
+                                knwobj.eval_cnt[1] = knwobj.eval_cnt[1] + 1
+                            dells.append(iicnt)
+                    elif knwobj.style=="SETRESETN":
+                        if mres == 0:  # Incompatible
+                            ltknwcnt[iicnt][1]=False
+                        masku = knwobj.knw_untilmask
+                        mresu = np.max(masku * predvec)
+                        if mresu > 0:  # Until hit
+                            knwobj.eval_cnt[0] = knwobj.eval_cnt[0] + 1
+                            if ltknwcnt[iicnt][1]:
+                                knwobj.eval_cnt[1] = knwobj.eval_cnt[1] + 1
+                            dells.append(iicnt)
+                for iidel in range(len(dells)):
+                    del ltknwcnt[dells[len(dells)-1-iidel]]
+
+
 
     def assign(self,data,switch="logith"):
         """
@@ -2144,10 +2296,11 @@ class KNW_ORG(object):
         word_to_id = {v: k for k, v in self.nlp.id_to_word.items()}
         print("Knowledge evaluating ...")
         perpls=[]
+        hidden=[]
         for nn in range(len(self.nlp.sub_corpus)-1):
             x = word_to_id[self.nlp.sub_corpus[nn]]
             y = word_to_id[self.nlp.sub_corpus[nn+1]]
-            prd = self.forward_s(x)
+            prd,hidden = self.forward_s(x,hidden)
             yvec=np.zeros(self.lsize)
             yvec[y]=1
             perp=cal_kldiv(yvec,prd)
@@ -2157,42 +2310,104 @@ class KNW_ORG(object):
         return np.exp(avperp)
 
 
-    def forward_s(self,inputd):
+    def forward_s(self,inputd,hiddenls=None):
         """
-        Forwarding and calculate logit with knowledge, inputd is a digit
+        Forwarding and calculate logit with knowledge, inputd is a digit, not a one-hot vec
         :param logith: logit threshold for hard knowledge
         :return:
         """
         plogits = np.log(self.prior)
         for knwid in self.knw_gate_index[inputd]:
             knwobj, _ = self.get(knwid)
-            plogits=plogits+knwobj.knw_outmask*knwobj.logith
+            if knwobj.style in ["IITNN","IITNNN","IITNI","IITNIN"]:
+                plogits = plogits + knwobj.knw_outmask * knwobj.logith
+            elif knwobj.style in ["SETRESET","SETRESETN"]:
+                if hiddenls is None:
+                    hiddenls=[]
+                hiddenls.append(knwobj.knw_fingerp)
+        dells=[]
+        for iif in range(len(hiddenls)):
+            knwobj, _ = self.get(hiddenls[iif])
+            plogits = plogits + knwobj.knw_outmask * knwobj.logith
+            if inputd in knwobj.data[1]: # reset
+                dells.append(iif)
+        for iidel in range(len(dells)):
+            del hiddenls[dells[len(dells) - 1 - iidel]]
         postr=np.exp(plogits)/np.sum(np.exp(plogits))
-        return postr
+        return postr,hiddenls
 
-    def forward_m(self,inputm):
+    def forward_init(self,batch):
+        """
+        Initialization for forward_m
+        :return:
+        """
+        knw_size=len(self.knw_list)
+        knw_maskmat = np.ones((knw_size, self.lsize))
+        # knowledge act mat (lsize,knw_size)
+        for iik in range(knw_size):
+            knw_maskmat[iik, :] = self.knw_list[iik].knw_outmask
+        self.knw_maskmat = torch.from_numpy(knw_maskmat)
+        self.knw_maskmat = self.knw_maskmat.type(torch.FloatTensor)
+
+        knw_actmat = np.zeros((self.lsize, knw_size))
+        for iil in range(self.lsize):
+            for iia in range(len(self.knw_gate_index[iil])):
+                ida = self.knw_list_fingerp.index(self.knw_gate_index[iil][iia])
+                knw_actmat[iil, ida] = 1
+        self.knw_actmat = torch.from_numpy(knw_actmat)
+        self.knw_actmat = self.knw_actmat.type(torch.FloatTensor)
+
+        knw_resetmat = np.zeros((self.lsize, knw_size))
+        for iik in range(len(self.knw_list)):
+            kobj = self.knw_list[iik]
+            if kobj.knw_untilmask is not None:
+                knw_resetmat[:, iik] = 1.0 - kobj.knw_untilmask
+        self.knw_resetmat = torch.from_numpy(knw_resetmat)
+        self.knw_resetmat = self.knw_resetmat.type(torch.FloatTensor)
+
+        self.knw_para = torch.zeros(knw_size)
+        knw_para=np.zeros(knw_size)
+        for iik in range(knw_size):
+            knw_para[iik]=self.knw_list[iik].logith
+        tLogith =torch.from_numpy(knw_para)
+        tLogith = tLogith.type(torch.FloatTensor)
+        self.knw_para=tLogith
+
+        return torch.zeros(1, batch, knw_size)
+
+
+    def forward_m(self,inputm, hidden, plogits):
         """
         Forwarding and calculate logit with knowledge
         assert shape(1,batch,lsize)
         :param logith: logit threshold for hard knowledge
         :return:
         """
+        if self.knw_actmat is None:
+            self.forward_init()
+
         assert inputm.shape[0] == 1
         assert inputm.shape[2] == self.lsize
         assert len(inputm.shape) == 3
-        plogits = np.log(self.prior)
-        postr=np.zeros(inputm.shape)
-        for batchii in range(inputm.shape[1]):
-            inputd=list(inputm[0,batchii,:]).index(1)
-            clogits = plogits
-            try:
-                for knwid in self.knw_gate_index[inputd]:
-                    knwobj,_ = self.get(knwid)
-                    clogits=clogits+knwobj.knw_outmask*knwobj.logith
-                postr[0,batchii,:]=np.exp(clogits)/np.sum(np.exp(clogits))
-            except:
-                pass
-        return postr
+        # plogits = np.log(self.prior)
+        # postr=np.zeros(inputm.shape)
+        # for batchii in range(inputm.shape[1]):
+        #     inputd=list(inputm[0,batchii,:]).index(1)
+        #     clogits = plogits
+        #     try:
+        #         for knwid in self.knw_gate_index[inputd]:
+        #             knwobj,_ = self.get(knwid)
+        #             clogits=clogits+knwobj.knw_outmask*knwobj.logith
+        #         postr[0,batchii,:]=np.exp(clogits)/np.sum(np.exp(clogits))
+        #     except:
+        #         pass
+
+        knw_act = torch.matmul(inputm, self.knw_actmat) + hidden
+        scaled_act = knw_act * self.knw_para
+        knw_vec = torch.matmul(scaled_act, self.knw_maskmat) + plogits
+        hiddenresetter = torch.matmul(inputm, self.knw_resetmat)
+        hidden = knw_act * hiddenresetter
+        return knw_vec,hidden
 
     def optimize_logith(self):
         """
@@ -2290,6 +2505,9 @@ class KNW_ORG(object):
         his = 0
 
         for iis in range(step):
+
+            hidden = rnn.initHidden(batch)
+
             rstartv = np.floor(np.random.rand(batch) * (len(self.nlp.sub_corpus) - window - 1))
             # Generating output label
             yl = []
@@ -2302,8 +2520,6 @@ class KNW_ORG(object):
                 yl.append(np.array(ylb))
             outlab = Variable(torch.from_numpy(np.array(yl).T))
             outlab = outlab.type(torch.LongTensor)
-
-
             outputl = None
 
             for iiss in range(window):
@@ -2322,7 +2538,7 @@ class KNW_ORG(object):
                 x = Variable(vec1m.reshape(1, batch, self.lsize).contiguous(), requires_grad=True)  #
                 y = Variable(vec2m.reshape(1, batch, self.lsize).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-                output = rnn(x,plogits)
+                output,hidden = rnn(x,hidden,plogits)
                 if type(outputl) == type(None):
                     outputl = output.view(batch, self.lsize, 1)
                 else:
@@ -2409,39 +2625,105 @@ class KNW_CELL(torch.nn.Module):
     """
     def __init__(self, lsize, knw_list, knw_gate_index,knw_list_fingerp):
         super(KNW_CELL, self).__init__()
-        knw_size = len(knw_list)
-        self.knw_para = torch.nn.Parameter(torch.ones(knw_size), requires_grad=True)
+        self.knw_size = len(knw_list)
+        self.knw_para = torch.nn.Parameter(torch.ones(self.knw_size), requires_grad=True)
         # knowledge mask mat (knw_size,lsize)
-        knw_maskmat=np.ones((knw_size,lsize))
-        # knowledge act mat (lsize,knw_size)
-        knw_actmat = np.zeros((lsize,knw_size))
-        for iik in range(knw_size):
-            knw_maskmat[iik,:]=knw_list[iik].knw_outmask
-        for iil in range(lsize):
-            for iia in range(len(knw_gate_index[iil])):
-                ida=knw_list_fingerp.index(knw_gate_index[iil][iia])
-                knw_actmat[iil,ida] = 1
 
+        knw_maskmat = np.ones((self.knw_size, lsize))
+        # knowledge act mat (lsize,knw_size)
+        for iik in range(self.knw_size):
+            knw_maskmat[iik,:]=knw_list[iik].knw_outmask
         self.knw_maskmat=torch.from_numpy(knw_maskmat)
         self.knw_maskmat=self.knw_maskmat.type(torch.FloatTensor)
 
+        knw_actmat = np.zeros((lsize, self.knw_size))
+        for iil in range(lsize):
+            for iia in range(len(knw_gate_index[iil])):
+                ida = knw_list_fingerp.index(knw_gate_index[iil][iia])
+                knw_actmat[iil, ida] = 1
         self.knw_actmat = torch.from_numpy(knw_actmat)
         self.knw_actmat = self.knw_actmat.type(torch.FloatTensor)
 
+        knw_resetmat = np.zeros((lsize, self.knw_size))
+        for iik in range(len(knw_list)):
+            kobj=knw_list[iik]
+            if kobj.knw_untilmask is not None:
+                knw_resetmat[:,iik]=1.0-kobj.knw_untilmask
+        self.knw_resetmat = torch.from_numpy(knw_resetmat)
+        self.knw_resetmat = self.knw_resetmat.type(torch.FloatTensor)
+
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-    def forward(self, input,plogits):
+    def forward(self, input, hidden, plogits):
         """
         Forward
         :param input:
         :param hidden:
+        :param plogits: prior
         :return:
         """
-        knw_act=torch.matmul(input,self.knw_actmat)
+        knw_act=torch.matmul(input,self.knw_actmat)+hidden
         scaled_act=knw_act*self.knw_para
         knw_vec=torch.matmul(scaled_act,self.knw_maskmat)+plogits
         output=self.softmax(knw_vec)
-        return output
+        hiddenresetter=torch.matmul(input,self.knw_resetmat)
+        hidden=knw_act*hiddenresetter
+        return output,hidden
+
+    def initHidden(self,batch=1):
+        return Variable(torch.zeros(1, batch, self.knw_size), requires_grad=True)
+
+class DUMMY_KNW_ORG(object):
+    """
+    A dummy knowledge organizor
+    """
+    def __init__(self):
+        pass
+
+    def forward_s(self,inputd):
+        """
+        Forward a single data, inputd is a digit
+        :param inputm:
+        :return:
+        """
+        cA = [0, 1, 2]
+        cB = [3, 4, 5]
+        cC = [6, 7, 8]
+        res = np.zeros(9)
+        id0 = int(inputd[0] / 3)
+        id1 = int(inputd[1] / 3)
+        if id0 != id1:
+            pass
+        elif id0 == id1 and id0 == 0:
+            res[3:6]=res[3:6]+10.0
+        elif id0 == id1 and id0 == 1:
+            res[6:9]=res[6:9]+10.0
+        elif id0 == id1 and id0 == 2:
+            res[0:3]=res[0:3]+10.0
+        return res
+
+    def eval_perplexity(self,seq):
+        """
+        Knowledge evaluation on dataset, perplexity
+        :param dataset:
+        :return:
+        """
+        perpls = []
+        h=[-1,-1]
+        for nn in range(len(seq) - 1):
+            x=seq[nn]
+            y=seq[nn+1]
+            h=[h[-1],x]
+            prd = self.forward_s(h)
+            yvec = np.zeros(9)
+            yvec[y] = 1
+            perp = cal_kldiv(yvec, prd)
+            perpls.append(perp)
+        avperp = np.mean(np.exp(np.array(perpls)))
+        print("Calculated knowledge perplexity:", avperp)
+        # avperp = np.mean(np.array(perpls))
+        # print("Calculated knowledge perplexity:", np.exp(avperp))
+        return avperp
 
 
 
