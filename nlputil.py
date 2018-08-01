@@ -1863,7 +1863,7 @@ class KNW_OBJ(object):
             item_s = data[0]
             item_r = data[1]
             expertInd = data[2]
-            self.style = "SETRESET"  # if item then next not
+            self.style = "SETRESET"
             utstr = ""
             for item in item_r:
                 utstr = utstr + str(self.id_to_word[item])
@@ -2117,13 +2117,6 @@ class KNW_ORG(object):
         print("No. of knowledge: ",len(self.knw_list))
         for ii in range(len(self.knw_list)):
             print(self.knw_list_fingerp[ii]+" : " + self.knw_list[ii].description, self.knw_list[ii].knw_utility, self.knw_list[ii].eval_cnt, self.knw_list[ii].logith)
-
-    def update(self):
-        """
-        Updating its knowledge database
-        :return:
-        """
-
 
 
     def eval_rate(self):
