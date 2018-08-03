@@ -23,8 +23,8 @@ class KNW_OBJ(object):
     """
     Root node for knowledge
     """
-    def __init__(self,lsize,prior=None):
-        self.id_to_word=dict([])
+    def __init__(self,lsize,prior=None,id_to_word=dict([])):
+        self.id_to_word=id_to_word
         self.lsize = lsize
         # possibility prior distribution
         if prior is not None:
@@ -44,9 +44,7 @@ class KNW_OBJ(object):
         self.knw_t=[1.0,0.2] # group thread
         self.theta_t=1.0
 
-        self.rnn = None
-
-    def distill_create(self):
+    def distill_create(self,rnn,prior=None,id_to_word=None):
         raise NotImplementedError
 
     def create(self, data):
@@ -61,7 +59,7 @@ class KNW_OBJ(object):
     def eval_rate(self,y,fcnt=0):
         raise NotImplementedError
 
-    def knw_distill(self):
+    def knw_distill(self,rnn):
         raise NotImplementedError
 
     def knwg_detect(self,knw_on):
@@ -79,7 +77,7 @@ class KNW_OBJ(object):
         kstr = ""
         found = False
         for iip in range(len(knw_on_zip) - 1):
-            if knw_on_zip[iip][0] > maxvw and knw_on_zip[iip + 1][0] < maxvt:
+            if knw_on_zip[iip][0] > maxvw and knw_on_zip[iip + 1][0] < maxvt and maxv>self.knw_t[0]:
                 for iik in range(iip + 1):
                     kid = knw_on_zip[iik][1]
                     resknw_N.append(kid)
@@ -99,19 +97,19 @@ class KNW_OBJ(object):
         return restheta_N
 
 class KNW_IITNN(KNW_OBJ):
-    def __init__(self, lsize, prior=None):
-        super(self.__class__, self).__init__(lsize,prior=prior)
+    def __init__(self, lsize, prior=None, id_to_word=None):
+        super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
 
-    def distill_create(self):
+    def distill_create(self,rnn,prior=None,id_to_word=None):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, expertInds = self.knw_distill()
+        items, expertInds = self.knw_distill(rnn)
         for item in items:
             for expertInd in expertInds:
-                knw_obj = self.__class__(self.lsize)
+                knw_obj = self.__class__(self.lsize,prior=prior,id_to_word=id_to_word)
                 knw_obj.create([item,expertInd])
                 knwls.append(knw_obj)
         return knwls
@@ -125,7 +123,7 @@ class KNW_IITNN(KNW_OBJ):
         item=data[0]
         expertInd=data[1]
         self.style = "IITNN"  # if item then next not
-        self.description = "If " + str(item) + " then next not " + str(expertInd)
+        self.description = "If " + str(self.id_to_word.get(item,item)) + " then next not " + str(self.id_to_word.get(expertInd,expertInd))
         self.data = [item,expertInd]
         self.knw_fingerp = "IITNN" + "-" + str(item) + "-" + str(expertInd)
         self.knw_utility = self.cal_knwU()
@@ -140,11 +138,10 @@ class KNW_IITNN(KNW_OBJ):
         return KnwU
 
     def build_rnn(self):
-        plogits = self.prior
-        plogits = torch.from_numpy(plogits)
-        plogits = plogits.type(torch.FloatTensor)
-        rnn = KNW_CELL(self.lsize,"IITNN",plogits)
-        self.rnn=rnn
+        # plogits = self.prior
+        # plogits = torch.from_numpy(plogits)
+        # plogits = plogits.type(torch.FloatTensor)
+        rnn = KNW_CELL(self.lsize,"IITNN")
         return rnn
 
     def eval_rate(self,y,fcnt=0):
@@ -157,31 +154,31 @@ class KNW_IITNN(KNW_OBJ):
             self.eval_cnt[1] = self.eval_cnt[1] + 1
         return 0
 
-    def knw_distill(self):
-        knw_b = self.rnn.h2o.bias.data.numpy()
-        knw_w = self.rnn.h2o.weight.data.numpy()[:,0]
+    def knw_distill(self,rnn):
+        knw_b = rnn.h2o.bias.data.numpy()
+        knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
         expertInd=self.knwg_detect(knw_on)
-        Ws_b=self.rnn.Ws.bias.data.numpy()
-        Ws_w = self.rnn.Ws.weight.data.numpy()[0,:]
+        Ws_b=rnn.Ws.bias.data.numpy()
+        Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
         setId=self.thred_detect(Ws)
         return [setId,expertInd]
 
 class KNW_IITNI(KNW_OBJ):
-    def __init__(self, lsize, prior=None):
-        super(self.__class__, self).__init__(lsize,prior=prior)
+    def __init__(self, lsize, prior=None, id_to_word=None):
+        super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
 
-    def distill_create(self):
+    def distill_create(self,rnn,prior=None,id_to_word=None):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, expertInds = self.knw_distill()
+        items, expertInds = self.knw_distill(rnn)
         for item in items:
             for expertInd in expertInds:
-                knw_obj = self.__class__(self.lsize)
+                knw_obj = self.__class__(self.lsize,prior=prior,id_to_word=id_to_word)
                 knw_obj.create([item,expertInd])
                 knwls.append(knw_obj)
         return knwls
@@ -195,7 +192,7 @@ class KNW_IITNI(KNW_OBJ):
         item=data[0]
         expertInd=data[1]
         self.style = "IITNI"  # if item then next is
-        self.description = "If " + str(item) + " then next is " + str(expertInd)
+        self.description = "If " + str(self.id_to_word.get(item,item)) + " then next is " + str(self.id_to_word.get(expertInd,expertInd))
         self.data = [item,expertInd]
         self.knw_fingerp = "IITNI" + "-" + str(item) + "-" + str(expertInd)
         self.knw_utility = self.cal_knwU()
@@ -210,11 +207,10 @@ class KNW_IITNI(KNW_OBJ):
         return KnwU
 
     def build_rnn(self):
-        plogits = self.prior
-        plogits = torch.from_numpy(plogits)
-        plogits = plogits.type(torch.FloatTensor)
-        rnn=KNW_CELL(self.lsize,"IITNI",plogits)
-        self.rnn=rnn
+        # plogits = self.prior
+        # plogits = torch.from_numpy(plogits)
+        # plogits = plogits.type(torch.FloatTensor)
+        rnn=KNW_CELL(self.lsize,"IITNI")
         return rnn
 
     def eval_rate(self,y,fcnt=0):
@@ -227,33 +223,33 @@ class KNW_IITNI(KNW_OBJ):
             self.eval_cnt[1] = self.eval_cnt[1] + 1
         return 0
 
-    def knw_distill(self):
-        knw_b = self.rnn.h2o.bias.data.numpy()
-        knw_w = self.rnn.h2o.weight.data.numpy()[:,0]
+    def knw_distill(self,rnn):
+        knw_b = rnn.h2o.bias.data.numpy()
+        knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
         expertInd=self.knwg_detect(knw_on)
-        Ws_b=self.rnn.Ws.bias.data.numpy()
-        Ws_w = self.rnn.Ws.weight.data.numpy()[0,:]
+        Ws_b=rnn.Ws.bias.data.numpy()
+        Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
         setId=self.thred_detect(Ws)
         return [setId,expertInd]
 
 class KNW_SETRESET(KNW_OBJ):
-    def __init__(self, lsize, prior=None):
-        super(self.__class__, self).__init__(lsize,prior=prior)
+    def __init__(self, lsize, prior=None, id_to_word=None):
+        super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
         self.knw_ckeck = False
 
-    def distill_create(self):
+    def distill_create(self,rnn,prior=None,id_to_word=None):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, resetId, expertInds = self.knw_distill()
+        items, resetId, expertInds = self.knw_distill(rnn)
         for item in items:
             for expertInd in expertInds:
                 if resetId:
-                    knw_obj = self.__class__(self.lsize)
+                    knw_obj = self.__class__(self.lsize,prior=prior,id_to_word=id_to_word)
                     knw_obj.create([item,resetId,expertInd])
                     knwls.append(knw_obj)
         return knwls
@@ -267,9 +263,11 @@ class KNW_SETRESET(KNW_OBJ):
         item=data[0]
         item_r=data[1]
         expertInd=data[2]
-        self.rnn = self.rnn
         self.style = "SETRESET"
-        self.description = "If " + str(item) + " then next is " + str(expertInd) + " until " + str(item_r)
+        utstr = ""
+        for ir in item_r:
+            utstr = utstr + "_" + str(self.id_to_word.get(ir,ir))
+        self.description = "If " + str(self.id_to_word.get(item,item)) + " then next is " + str(self.id_to_word.get(expertInd,expertInd)) + " until " + utstr
         self.data = [item, item_r, expertInd]
         self.knw_fingerp = "SETRESET" + "-s-" + str(item) + "-r-" + str(item_r) + "-" + str(expertInd)
         self.knw_utility = self.cal_knwU()
@@ -290,8 +288,7 @@ class KNW_SETRESET(KNW_OBJ):
         plogits = self.prior
         plogits = torch.from_numpy(plogits)
         plogits = plogits.type(torch.FloatTensor)
-        rnn=KNW_CELL(self.lsize,"SETRESET",plogits)
-        self.rnn = rnn
+        rnn=KNW_CELL(self.lsize,"SETRESET")
         return rnn
 
     def eval_rate(self,y,fcnt=0):
@@ -319,37 +316,37 @@ class KNW_SETRESET(KNW_OBJ):
         else:
             return fcnt
 
-    def knw_distill(self):
-        knw_b = self.rnn.h2o.bias.data.numpy()
-        knw_w = self.rnn.h2o.weight.data.numpy()[:,0]
+    def knw_distill(self,rnn):
+        knw_b = rnn.h2o.bias.data.numpy()
+        knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
         expertInd=self.knwg_detect(knw_on)
-        Ws_b=self.rnn.Ws.bias.data.numpy()
-        Ws_w = self.rnn.Ws.weight.data.numpy()[0,:]
+        Ws_b=rnn.Ws.bias.data.numpy()
+        Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
         setId=self.thred_detect(Ws)
-        Wr_b = self.rnn.Wr.bias.data.numpy()
-        Wr_w = self.rnn.Wr.weight.data.numpy()[0,:]
+        Wr_b = rnn.Wr.bias.data.numpy()
+        Wr_w = rnn.Wr.weight.data.numpy()[0,:]
         Wr = Wr_b + Wr_w
         resetId = self.thred_detect(Wr)
         return [setId,resetId,expertInd]
 
 class KNW_SETRESETN(KNW_OBJ):
-    def __init__(self, lsize, prior=None):
-        super(self.__class__, self).__init__(lsize,prior=prior)
+    def __init__(self, lsize, prior=None, id_to_word=None):
+        super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
         self.knw_ckeck = False
 
-    def distill_create(self):
+    def distill_create(self,rnn,prior=None,id_to_word=None):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, item_r, expertInds = self.knw_distill()
+        items, item_r, expertInds = self.knw_distill(rnn)
         for item in items:
             for expertInd in expertInds:
                 if item_r:
-                    knw_obj = self.__class__(self.lsize)
+                    knw_obj = self.__class__(self.lsize,prior=prior,id_to_word=id_to_word)
                     knw_obj.create([item,item_r,expertInd])
                     knwls.append(knw_obj)
         return knwls
@@ -364,7 +361,10 @@ class KNW_SETRESETN(KNW_OBJ):
         item_r = data[1]
         expertInd=data[2]
         self.style = "SETRESETN"
-        self.description = "If " + str(item) + " then next is non-" + str(expertInd) + " until " + str(item_r)
+        utstr = ""
+        for ir in item_r:
+            utstr = utstr + "_" + str(self.id_to_word.get(ir, ir))
+        self.description = "If " + str(self.id_to_word.get(item, item)) + " then next is non-" + str(self.id_to_word.get(expertInd, expertInd)) + " until " + utstr
         self.data = [item, item_r, expertInd]
         self.knw_fingerp = "SETRESETN" + "-s-" + str(item) + "-r-" + str(item_r) + "-" + str(expertInd)
         self.knw_utility = self.cal_knwU()
@@ -382,11 +382,10 @@ class KNW_SETRESETN(KNW_OBJ):
         return KnwU
 
     def build_rnn(self):
-        plogits = self.prior
-        plogits = torch.from_numpy(plogits)
-        plogits = plogits.type(torch.FloatTensor)
-        rnn=KNW_CELL(self.lsize, "SETRESETN", plogits)
-        self.rnn = rnn
+        # plogits = self.prior
+        # plogits = torch.from_numpy(plogits)
+        # plogits = plogits.type(torch.FloatTensor)
+        rnn=KNW_CELL(self.lsize, "SETRESETN")
         return rnn
 
     def eval_rate(self, y, fcnt=0):
@@ -414,17 +413,17 @@ class KNW_SETRESETN(KNW_OBJ):
         else:
             return fcnt
 
-    def knw_distill(self):
-        knw_b = self.rnn.h2o.bias.data.numpy()
-        knw_w = self.rnn.h2o.weight.data.numpy()[:,0]
+    def knw_distill(self,rnn):
+        knw_b = rnn.h2o.bias.data.numpy()
+        knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
         expertInd=self.knwg_detect(knw_on)
-        Ws_b=self.rnn.Ws.bias.data.numpy()
-        Ws_w = self.rnn.Ws.weight.data.numpy()[0,:]
+        Ws_b=rnn.Ws.bias.data.numpy()
+        Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
         setId=self.thred_detect(Ws)
-        Wr_b = self.rnn.Wr.bias.data.numpy()
-        Wr_w = self.rnn.Wr.weight.data.numpy()[0,:]
+        Wr_b = rnn.Wr.bias.data.numpy()
+        Wr_w = rnn.Wr.weight.data.numpy()[0,:]
         Wr = Wr_b + Wr_w
         resetId = self.thred_detect(Wr)
         return [setId,resetId,expertInd]
@@ -433,7 +432,7 @@ class KNW_CELL(torch.nn.Module):
     """
     PyTorch knowledge cell for single piece of knowledge
     """
-    def __init__(self, lsize, mode, prior=None):
+    def __init__(self, lsize, mode):
         """
 
         :param lsize:
@@ -450,11 +449,6 @@ class KNW_CELL(torch.nn.Module):
         self.sigmoid = torch.nn.Sigmoid()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-        if prior is not None:
-            self.prior=prior
-        else:
-            self.prior = 0
-
         if mode=="IITNN":
             self.ctrl = [-1, 0]
         elif mode=="IITNI":
@@ -466,7 +460,7 @@ class KNW_CELL(torch.nn.Module):
         else:
             raise Exception("Mode not supported")
 
-    def forward(self, input, hidden, add_prior=None):
+    def forward(self, input, hidden, plogits=None, add_prior=None):
         """
         Forward
         :param input:
@@ -475,7 +469,10 @@ class KNW_CELL(torch.nn.Module):
         :return:
         """
         ht=self.sigmoid(self.Ws(input))+hidden
-        output = self.ctrl[0]*self.h2o(ht) + self.prior
+        if plogits:
+            output = self.ctrl[0]*self.h2o(ht) + plogits
+        else:
+            output = self.ctrl[0] * self.h2o(ht)
         output = self.softmax(output)
         if add_prior is not None:
             output=output+add_prior
@@ -531,7 +528,10 @@ class KNW_CELL_ORG(torch.nn.Module):
         """
         knw_act=torch.matmul(input,self.knw_actmat)+hidden
         scaled_act=knw_act*self.knw_para
-        knw_vec=torch.matmul(scaled_act,self.knw_maskmat)+plogits
+        if plogits:
+            knw_vec=torch.matmul(scaled_act,self.knw_maskmat)+plogits
+        else:
+            knw_vec = torch.matmul(scaled_act, self.knw_maskmat)
         output=self.softmax(knw_vec)
         hiddenresetter=torch.matmul(input,self.knw_resetmat)
         hidden=knw_act*hiddenresetter
@@ -544,10 +544,17 @@ class KNW_ORG(object):
     """
     Knowledge organizor
     """
-    def __init__(self, dataset, lsize, prior=None):
+    def __init__(self, dataset, lsize, prior=None, id_to_word=None):
         self.prior=prior
+        self.plogits=None
+        if prior:
+            plogits = prior
+            plogits = torch.from_numpy(plogits)
+            plogits = plogits.type(torch.FloatTensor)
+            self.plogits=plogits
         self.dataset=dataset
         self.lsize=lsize
+        self.id_to_word=id_to_word
         self.knw_list=[]
         self.knw_list_fingerp=[]
         self.knw_gate_index = [[] for ii in range(self.lsize)]
@@ -565,7 +572,7 @@ class KNW_ORG(object):
         if self.knw_obj is None:
             print("No ready knowledge found")
         else:
-            knw_objs=self.knw_obj.distill_create()
+            knw_objs=self.knw_obj.distill_create(self.model,prior=self.prior)
             if not knw_objs:
                 print("No knowledge extractable.")
             for knw_obj in knw_objs:
@@ -591,6 +598,25 @@ class KNW_ORG(object):
             self.knw_gate_index = [[] for ii in range(self.lsize)]
             for knwitem in self.knw_list:
                 self.knw_gate_index[knwitem.data[0]].append(knwitem.knw_fingerp)
+
+    def clean(self):
+        """
+        Clean up knowledge base
+        :return:
+        """
+        # Criteria 1: too low hit rate
+        evalhith=1e-4
+        deletels=[]
+        for item in self.knw_list:
+            if item.eval_cnt[1]<evalhith*item.eval_cnt[0]:
+                deletels.append(item.knw_fingerp)
+        # Criteria 2: too small logith
+        for item in self.knw_list:
+            if item.logith < 0.1:
+                deletels.append(item.knw_fingerp)
+        for dstr in deletels:
+            self.remove(dstr)
+        self.print()
 
     def get(self,fingerp):
         """
@@ -726,7 +752,7 @@ class KNW_ORG(object):
         for nn in range(len(databpt)-1):
             x = databpt[nn]
             y = databpt[nn+1]
-            prd,hidden = self.forward(x.view(1,1,self.lsize),hidden)
+            prd,hidden = self.forward(x.view(1,1,self.lsize),hidden,plogits=self.plogits)
             prd = torch.exp(prd) / torch.sum(np.exp(prd))
             perp=cal_kldiv(y,prd.view(-1))
             perpls.append(perp)
@@ -911,6 +937,7 @@ class KNW_ORG(object):
         databp=torch.from_numpy(np.array(datab))
 
         # mode: IITNN, IITNI, SETRESET, SETRESETN
+        self.mlost=1.0e9
         if mode in ["IITNN", "IITNI", "SETRESET", "SETRESETN"]:
             if mode=="IITNN":
                 knw_obj=KNW_IITNN(lsize)
@@ -933,7 +960,7 @@ class KNW_ORG(object):
         def custom_KNWLoss(outputl, outlab, model, cstep):
             lossc = torch.nn.CrossEntropyLoss()
             loss1 = lossc(outputl, outlab)
-            logith2o = model.h2o.weight  # +model.h2o.bias.view(-1) size(47,cell)
+            logith2o = model.h2o.weight#+model.h2o.bias.view(-1)
             pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
             lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
             l1_reg = model.Ws.weight.norm(1) + model.Wr.weight.norm(1)
@@ -983,7 +1010,7 @@ class KNW_ORG(object):
                 y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if knw:
-                    add_tvec, hidden_korg = self.forward(x, hidden_korg)
+                    add_tvec, hidden_korg = self.forward(x, hidden_korg,plogits=self.plogits)
                     output, hidden = rnn(x, hidden, add_prior=add_tvec)
                 else:
                     output, hidden = rnn(x, hidden)
