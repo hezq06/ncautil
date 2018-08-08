@@ -23,7 +23,7 @@ class KNW_OBJ(object):
     """
     Root node for knowledge
     """
-    def __init__(self,lsize,prior=None,id_to_word=dict([])):
+    def __init__(self,lsize,prior=None,id_to_word=None):
         self.id_to_word=id_to_word
         self.lsize = lsize
         # possibility prior distribution
@@ -41,10 +41,7 @@ class KNW_OBJ(object):
         self.logith = 1.0 # Confidence of this knowledge
         self.eval_cnt=None # event cnt of this knowledge [total correct]
 
-        self.knw_t=[1.0,0.2] # group thread
-        self.theta_t=1.0
-
-    def distill_create(self,rnn,prior=None,id_to_word=None):
+    def distill_create(self,rnn,prior=None,id_to_word=None,knw_t=1.0,theta_t=1.0):
         raise NotImplementedError
 
     def create(self, data):
@@ -59,40 +56,46 @@ class KNW_OBJ(object):
     def eval_rate(self,y,fcnt=0):
         raise NotImplementedError
 
-    def knw_distill(self,rnn):
+    def knw_distill(self,rnn,knw_t,theta_t):
         raise NotImplementedError
 
-    def knwg_detect(self,knw_on):
+    def knwg_detect(self,knw_on,knw_t):
         """
         Common function, detect an ON group
         :param vec:
         :return: list
         """
-        knw_on_zip = list(zip(knw_on, range(len(knw_on))))
-        knw_on_zip.sort(key=lambda x: x[0], reverse=True)
-        maxv = knw_on_zip[0][0]
-        maxvw = maxv - self.knw_t[1]
-        maxvt = maxv - self.knw_t[0]
+        # knw_on_zip = list(zip(knw_on, range(len(knw_on))))
+        # knw_on_zip.sort(key=lambda x: x[0], reverse=True)
+        # maxv = knw_on_zip[0][0]
+        # maxvw = maxv - knw_t[1]
+        # maxvt = maxv - knw_t[0]
+        # resknw_N = []
+        # kstr = ""
+        # found = False
+        # for iip in range(len(knw_on_zip) - 1):
+        #     if knw_on_zip[iip][0] > maxvw and knw_on_zip[iip + 1][0] < maxvt and maxv>knw_t[0]:
+        #         for iik in range(iip + 1):
+        #             kid = knw_on_zip[iik][1]
+        #             resknw_N.append(kid)
+        #             kstr = kstr + str(kid) + ", "
+        #         print("Expert for " + kstr + " detected!")
+        #         found=True
+        #         break
+        # if not found:
+        #     print("Knowledge not found!")
+        # return resknw_N
         resknw_N = []
-        kstr = ""
-        found = False
-        for iip in range(len(knw_on_zip) - 1):
-            if knw_on_zip[iip][0] > maxvw and knw_on_zip[iip + 1][0] < maxvt and maxv>self.knw_t[0]:
-                for iik in range(iip + 1):
-                    kid = knw_on_zip[iik][1]
-                    resknw_N.append(kid)
-                    kstr = kstr + str(kid) + ", "
-                print("Expert for " + kstr + " detected!")
-                found=True
-                break
-        if not found:
-            print("Knowledge not found!")
+        knw_on=knw_on-np.mean(knw_on)
+        for ii in range(len(knw_on)):
+            if knw_on[ii]>knw_t:
+                resknw_N.append(ii)
         return resknw_N
 
-    def thred_detect(self,theta_on):
+    def thred_detect(self,theta_on,theta_t):
         restheta_N=[]
         for ii in range(len(theta_on)):
-            if theta_on[ii]>=self.theta_t:
+            if theta_on[ii]>=theta_t:
                 restheta_N.append(ii)
         return restheta_N
 
@@ -100,13 +103,13 @@ class KNW_IITNN(KNW_OBJ):
     def __init__(self, lsize, prior=None, id_to_word=None):
         super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
 
-    def distill_create(self,rnn,prior=None,id_to_word=None):
+    def distill_create(self,rnn,prior=None,id_to_word=None,knw_t=1.0,theta_t=1.0):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, expertInds = self.knw_distill(rnn)
+        items, expertInds = self.knw_distill(rnn,knw_t,theta_t)
         for item in items:
             for expertInd in expertInds:
                 knw_obj = self.__class__(self.lsize,prior=prior,id_to_word=id_to_word)
@@ -154,28 +157,28 @@ class KNW_IITNN(KNW_OBJ):
             self.eval_cnt[1] = self.eval_cnt[1] + 1
         return 0
 
-    def knw_distill(self,rnn):
+    def knw_distill(self,rnn,knw_t,theta_t):
         knw_b = rnn.h2o.bias.data.numpy()
         knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
-        expertInd=self.knwg_detect(knw_on)
+        expertInd=self.knwg_detect(knw_on,knw_t)
         Ws_b=rnn.Ws.bias.data.numpy()
         Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
-        setId=self.thred_detect(Ws)
+        setId=self.thred_detect(Ws,theta_t)
         return [setId,expertInd]
 
 class KNW_IITNI(KNW_OBJ):
     def __init__(self, lsize, prior=None, id_to_word=None):
         super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
 
-    def distill_create(self,rnn,prior=None,id_to_word=None):
+    def distill_create(self,rnn,prior=None,id_to_word=None,knw_t=1.0,theta_t=1.0):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, expertInds = self.knw_distill(rnn)
+        items, expertInds = self.knw_distill(rnn,knw_t,theta_t)
         for item in items:
             for expertInd in expertInds:
                 knw_obj = self.__class__(self.lsize,prior=prior,id_to_word=id_to_word)
@@ -223,15 +226,15 @@ class KNW_IITNI(KNW_OBJ):
             self.eval_cnt[1] = self.eval_cnt[1] + 1
         return 0
 
-    def knw_distill(self,rnn):
+    def knw_distill(self,rnn,knw_t,theta_t):
         knw_b = rnn.h2o.bias.data.numpy()
         knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
-        expertInd=self.knwg_detect(knw_on)
+        expertInd=self.knwg_detect(knw_on,knw_t)
         Ws_b=rnn.Ws.bias.data.numpy()
         Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
-        setId=self.thred_detect(Ws)
+        setId=self.thred_detect(Ws,theta_t)
         return [setId,expertInd]
 
 class KNW_SETRESET(KNW_OBJ):
@@ -239,13 +242,13 @@ class KNW_SETRESET(KNW_OBJ):
         super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
         self.knw_ckeck = False
 
-    def distill_create(self,rnn,prior=None,id_to_word=None):
+    def distill_create(self,rnn,prior=None,id_to_word=None,knw_t=1.0,theta_t=1.0):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, resetId, expertInds = self.knw_distill(rnn)
+        items, resetId, expertInds = self.knw_distill(rnn,knw_t,theta_t)
         for item in items:
             for expertInd in expertInds:
                 if resetId:
@@ -316,19 +319,19 @@ class KNW_SETRESET(KNW_OBJ):
         else:
             return fcnt
 
-    def knw_distill(self,rnn):
+    def knw_distill(self,rnn,knw_t,theta_t):
         knw_b = rnn.h2o.bias.data.numpy()
         knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
-        expertInd=self.knwg_detect(knw_on)
+        expertInd=self.knwg_detect(knw_on,knw_t)
         Ws_b=rnn.Ws.bias.data.numpy()
         Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
-        setId=self.thred_detect(Ws)
+        setId=self.thred_detect(Ws,theta_t)
         Wr_b = rnn.Wr.bias.data.numpy()
         Wr_w = rnn.Wr.weight.data.numpy()[0,:]
         Wr = Wr_b + Wr_w
-        resetId = self.thred_detect(Wr)
+        resetId = self.thred_detect(Wr,theta_t)
         return [setId,resetId,expertInd]
 
 class KNW_SETRESETN(KNW_OBJ):
@@ -336,13 +339,13 @@ class KNW_SETRESETN(KNW_OBJ):
         super(self.__class__, self).__init__(lsize,prior=prior,id_to_word=id_to_word)
         self.knw_ckeck = False
 
-    def distill_create(self,rnn,prior=None,id_to_word=None):
+    def distill_create(self,rnn,prior=None,id_to_word=None,knw_t=1.0,theta_t=1.0):
         """
         Distill & create
         :return:
         """
         knwls = []
-        items, item_r, expertInds = self.knw_distill(rnn)
+        items, item_r, expertInds = self.knw_distill(rnn,knw_t,theta_t)
         for item in items:
             for expertInd in expertInds:
                 if item_r:
@@ -413,19 +416,19 @@ class KNW_SETRESETN(KNW_OBJ):
         else:
             return fcnt
 
-    def knw_distill(self,rnn):
+    def knw_distill(self,rnn,knw_t,theta_t):
         knw_b = rnn.h2o.bias.data.numpy()
         knw_w = rnn.h2o.weight.data.numpy()[:,0]
         knw_on = knw_b + knw_w
-        expertInd=self.knwg_detect(knw_on)
+        expertInd=self.knwg_detect(knw_on,knw_t)
         Ws_b=rnn.Ws.bias.data.numpy()
         Ws_w = rnn.Ws.weight.data.numpy()[0,:]
         Ws=Ws_b+Ws_w
-        setId=self.thred_detect(Ws)
+        setId=self.thred_detect(Ws,theta_t)
         Wr_b = rnn.Wr.bias.data.numpy()
         Wr_w = rnn.Wr.weight.data.numpy()[0,:]
         Wr = Wr_b + Wr_w
-        resetId = self.thred_detect(Wr)
+        resetId = self.thred_detect(Wr,theta_t)
         return [setId,resetId,expertInd]
 
 class KNW_CELL(torch.nn.Module):
@@ -469,13 +472,12 @@ class KNW_CELL(torch.nn.Module):
         :return:
         """
         ht=self.sigmoid(self.Ws(input))+hidden
-        if plogits:
-            output = self.ctrl[0]*self.h2o(ht) + plogits
-        else:
-            output = self.ctrl[0] * self.h2o(ht)
-        output = self.softmax(output)
+        output = self.ctrl[0] * self.h2o(ht)
+        if plogits is not None:
+            output=output+ plogits
         if add_prior is not None:
             output=output+add_prior
+        output = self.softmax(output)
         resetter = 1 - self.sigmoid(self.Wr(input))
         hidden=resetter*ht*self.ctrl[1]
         return output, hidden
@@ -528,7 +530,7 @@ class KNW_CELL_ORG(torch.nn.Module):
         """
         knw_act=torch.matmul(input,self.knw_actmat)+hidden
         scaled_act=knw_act*self.knw_para
-        if plogits:
+        if plogits is not None:
             knw_vec=torch.matmul(scaled_act,self.knw_maskmat)+plogits
         else:
             knw_vec = torch.matmul(scaled_act, self.knw_maskmat)
@@ -547,14 +549,17 @@ class KNW_ORG(object):
     def __init__(self, dataset, lsize, prior=None, id_to_word=None):
         self.prior=prior
         self.plogits=None
-        if prior:
-            plogits = prior
+        if prior is not None:
+            plogits = np.log(prior)
             plogits = torch.from_numpy(plogits)
             plogits = plogits.type(torch.FloatTensor)
             self.plogits=plogits
         self.dataset=dataset
         self.lsize=lsize
-        self.id_to_word=id_to_word
+        if id_to_word is not None:
+            self.id_to_word=id_to_word
+        else:
+            self.id_to_word = dict([])
         self.knw_list=[]
         self.knw_list_fingerp=[]
         self.knw_gate_index = [[] for ii in range(self.lsize)]
@@ -568,11 +573,11 @@ class KNW_ORG(object):
         self.knw_resetmat = None
         self.knw_para = None
 
-    def insert(self):
+    def insert(self,knw_t=1.0,theta_t=1.0):
         if self.knw_obj is None:
             print("No ready knowledge found")
         else:
-            knw_objs=self.knw_obj.distill_create(self.model,prior=self.prior)
+            knw_objs=self.knw_obj.distill_create(self.model,id_to_word=self.id_to_word,prior=self.prior,knw_t=knw_t,theta_t=theta_t)
             if not knw_objs:
                 print("No knowledge extractable.")
             for knw_obj in knw_objs:
@@ -605,14 +610,16 @@ class KNW_ORG(object):
         :return:
         """
         # Criteria 1: too low hit rate
-        evalhith=1e-4
+        evalhith=1e-2
         deletels=[]
         for item in self.knw_list:
-            if item.eval_cnt[1]<evalhith*item.eval_cnt[0]:
+            if item.eval_cnt is None:
+                deletels.append(item.knw_fingerp)
+            elif item.eval_cnt[1]<evalhith*item.eval_cnt[0]:
                 deletels.append(item.knw_fingerp)
         # Criteria 2: too small logith
         for item in self.knw_list:
-            if item.logith < 0.1:
+            if item.logith < 0.5:
                 deletels.append(item.knw_fingerp)
         for dstr in deletels:
             self.remove(dstr)
@@ -656,6 +663,7 @@ class KNW_ORG(object):
         file = os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
         print(file)
         knw_list = pickle.load(open(file, "rb"))
+        print("No. of knowledge to be loaded: ", len(knw_list))
         self.knw_list = []
         self.knw_list_fingerp = []
         self.knw_gate_index = [[] for ii in range(self.lsize)]
@@ -663,19 +671,20 @@ class KNW_ORG(object):
             mode=knwd["style"]
             knw_item=None
             if mode=="IITNN":
-                knw_item=KNW_IITNN(self.lsize)
+                knw_item=KNW_IITNN(self.lsize,prior=self.prior,id_to_word=self.id_to_word)
             elif mode=="IITNI":
-                knw_item=KNW_IITNI(self.lsize)
+                knw_item=KNW_IITNI(self.lsize,prior=self.prior,id_to_word=self.id_to_word)
             elif mode=="SETRESET":
-                knw_item=KNW_SETRESET(self.lsize)
+                knw_item=KNW_SETRESET(self.lsize,prior=self.prior,id_to_word=self.id_to_word)
             elif  mode=="SETRESETN":
-                knw_item=KNW_SETRESETN(self.lsize)
+                knw_item=KNW_SETRESETN(self.lsize,prior=self.prior,id_to_word=self.id_to_word)
             knw_item.create(knwd["data"])
             knw_item.logith = knwd["logith"]
             knw_item.eval_cnt = knwd["eval_cnt"]
             self.knw_list.append(knw_item)
             self.knw_list_fingerp.append(knw_item.knw_fingerp)
             self.knw_gate_index[knwd["data"][0]].append(knw_item.knw_fingerp)
+        print("Knowledge data loaded.")
 
     def eval_rate(self):
         """
@@ -700,7 +709,7 @@ class KNW_ORG(object):
                             ltknwcnt[iicnt]=0
                 rescnt=knwobj.eval_rate(y,fcnt=1)
                 ltknwcnt[ind] = ltknwcnt[ind] + rescnt
-        self.print()
+        # self.print()
 
     def knw_plot(self):
         """
@@ -960,11 +969,11 @@ class KNW_ORG(object):
         def custom_KNWLoss(outputl, outlab, model, cstep):
             lossc = torch.nn.CrossEntropyLoss()
             loss1 = lossc(outputl, outlab)
-            logith2o = model.h2o.weight#+model.h2o.bias.view(-1)
+            logith2o = model.h2o.weight+model.h2o.bias.view(-1)
             pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
             lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
             l1_reg = model.Ws.weight.norm(1) + model.Wr.weight.norm(1)
-            return loss1 + 0.0005 * l1_reg * cstep / step + 0.005 * lossh2o * cstep / step  # +0.3*lossz+0.3*lossn #
+            return loss1 + 0.001 * l1_reg * cstep / step + 0.005 * lossh2o * cstep / step  # +0.3*lossz+0.3*lossn #
 
         optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
 
@@ -1010,8 +1019,8 @@ class KNW_ORG(object):
                 y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if knw:
-                    add_tvec, hidden_korg = self.forward(x, hidden_korg,plogits=self.plogits)
-                    output, hidden = rnn(x, hidden, add_prior=add_tvec)
+                    add_tvec, hidden_korg = self.forward(x, hidden_korg)
+                    output, hidden = rnn(x, hidden, add_prior=add_tvec,plogits=self.plogits)
                 else:
                     output, hidden = rnn(x, hidden)
                 if type(outputl) == type(None):
