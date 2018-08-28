@@ -11,6 +11,34 @@ from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.linalg as la
+import time
+
+import torch
+import copy
+from torch.autograd import Variable
+
+from sklearn.cluster import KMeans
+from sklearn.manifold import TSNE
+
+def cluster(data,n_clusters,mode="kmeans"):
+    """
+    Do clustering
+    :param data: data to be clustered
+    :param n_clusters: number of clusters
+    :param mode: "kmeans"
+    :return:
+    """
+    kmeans = KMeans(n_clusters=n_clusters, init="random", ).fit(data)
+    center=np.zeros((n_clusters,len(data[0])))
+    clscounter=np.zeros(n_clusters)
+    for iid in range(len(data)):
+        ncls=kmeans.labels_[iid]
+        center[ncls]=center[ncls]+data[iid]
+        clscounter[ncls]=clscounter[ncls]+1
+    for iic in range(n_clusters):
+        center[iic]=center[iic]/clscounter[iic]
+    return kmeans.labels_, center
+
 
 def pca(data,D):
     """
@@ -175,6 +203,21 @@ def ica(data,LR=1e-2,step=1e4,show_step=1e2):
     plt.show()
     return Xh,W
 
+def pltsne(data):
+    """
+    Plot 2D w2v graph with tsne
+    Referencing part of code from: Basic word2vec example tensorflow
+    :param numpt: number of points
+    :return: null
+    """
+    tsnetrainer = TSNE(perplexity=20, n_components=2, init='pca', n_iter=5000, method='exact')
+    tsne = tsnetrainer.fit_transform(data)
+    for i in range(len(data)):
+        x, y = tsne[i, :]
+        plt.scatter(x, y)
+    plt.show()
+
+
 def pl_eig_pca(data):
     """
     Plot the eigenvalue of covariance
@@ -272,7 +315,8 @@ def pl_mucov(data1,data2):
     assert data2.shape[1] >= data2.shape[0]
     assert data1.shape==data2.shape
     D=data1.shape[0]
-    plt.imshow(np.cov(np.abs(data1), np.abs(data2))[0:D, D:2 * D], cmap='seismic')
+    muCov=np.cov(np.abs(data1), np.abs(data2))[0:D, D:2 * D]
+    plt.imshow(muCov, cmap='seismic', clim=(-np.amax(muCov), np.amax(muCov)))
     plt.xlabel("Data 1")
     plt.ylabel("Data 2")
     plt.title("cov(|D1|,|D2|)")
@@ -343,3 +387,230 @@ def genDist(N):
 def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)
     return res
+
+def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None):
+    """
+    General rnn training funtion for one-hot training
+    :param dataset:
+    :param lsize:
+    :param model:
+    :param step:
+    :param learning_rate:
+    :param batch:
+    :param window:
+    :param save:
+    :param seqtrain:
+    :param coop: a cooperational rnn unit
+    :param coopseq: a pre-calculated cooperational logit vec
+    :return:
+    """
+    prtstep = int(step / 10)
+    startt = time.time()
+    datab=[]
+    for data in dataset:
+        datavec=np.zeros(lsize)
+        datavec[data]=1
+        datab.append(datavec)
+    databp=torch.from_numpy(np.array(datab))
+    if coopseq is not None:
+        coopseq=torch.from_numpy(np.array(coopseq))
+        coopseq=coopseq.type(torch.FloatTensor)
+
+    rnn.train()
+
+    if coop is not None:
+        coop.eval()
+
+    def custom_KNWLoss(outputl, outlab, model, cstep):
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # logith2o = model.h2o.weight+model.h2o.bias.view(-1)
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.Ws.weight.norm(1) + model.Wr.weight.norm(1)
+        return loss1# + 0.001 * l1_reg * cstep / step + 0.005 * lossh2o * cstep / step  # +0.3*lossz+0.3*lossn #
+
+    optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+
+    train_hist = []
+    his = 0
+
+    for iis in range(step):
+
+        rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+
+        hidden = rnn.initHidden(batch)
+
+        # Generating output label
+        yl = []
+        for iiss in range(window):
+            ylb = []
+            for iib in range(batch):
+                wrd = dataset[(int(rstartv[iib]) + iiss + 1)]
+                ylb.append(wrd)
+            yl.append(np.array(ylb))
+        outlab = Variable(torch.from_numpy(np.array(yl).T))
+        outlab = outlab.type(torch.LongTensor)
+
+        # step by step training
+        if not seqtrain:
+            outputl = None
+            for iiss in range(window):
+                vec1m = None
+                vec2m = None
+                if coopseq is not None:
+                    veccoopm = None
+                for iib in range(batch):
+                    vec1 = databp[(int(rstartv[iib]) + iiss), :]
+                    vec2 = databp[(int(rstartv[iib]) + iiss + 1), :]
+                    if vec1m is None:
+                        vec1m = vec1.view(1, -1)
+                        vec2m = vec2.view(1, -1)
+                    else:
+                        vec1m = torch.cat((vec1m, vec1.view(1, -1)), dim=0)
+                        vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=0)
+                    if coopseq is not None:
+                        veccoop=coopseq[(int(rstartv[iib]) + iiss +1), :]
+                        if veccoopm is None:
+                            veccoopm = veccoop.view(1, -1)
+                        else:
+                            veccoopm = torch.cat((veccoopm, veccoop.view(1, -1)), dim=0)
+                # One by one guidance training ####### error can propagate due to hidden state
+                x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True)  #
+                y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                if coop is not None:
+                    outputc, hiddenc = coop(x, hidden=None,logitmode=True)
+                    output, hidden = rnn(x, hidden, add_logit=outputc)
+                elif coopseq is not None:
+                    output, hidden = rnn(x, hidden, add_logit=veccoopm)
+                else:
+                    output, hidden = rnn(x, hidden, add_logit=None)
+                if type(outputl) == type(None):
+                    outputl = output.view(batch, lsize, 1)
+                else:
+                    outputl = torch.cat((outputl.view(batch, lsize, -1), output.view(batch, lsize, 1)), dim=2)
+            loss = custom_KNWLoss(outputl, outlab, rnn, iis)
+        # else:
+        #     # LSTM/GRU provided whole sequence training
+        #     vec1m = None
+        #     vec2m = None
+        #     outputl = None
+        #     for iib in range(batch):
+        #         vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
+        #         vec2 = databp[int(rstartv[iib])+1:int(rstartv[iib])+window+1, :]
+        #         if type(vec1m) == type(None):
+        #             vec1m = vec1.view(window, 1, -1)
+        #             vec2m = vec2.view(window, 1, -1)
+        #         else:
+        #             vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
+        #             vec2m = torch.cat((vec2m, vec2.view(window, 1, -1)), dim=1)
+        #     x = Variable(vec1m.reshape(window, batch, lsize).contiguous(), requires_grad=True)  #
+        #     y = Variable(vec2m.reshape(window, batch, lsize).contiguous(), requires_grad=True)
+        #     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+        #     output, hidden = rnn(x, hidden, batch=batch)
+        #     loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
+
+        if int(iis / prtstep) != his:
+            print("Perlexity: ", iis, np.exp(loss.item()))
+            his = int(iis / prtstep)
+
+        train_hist.append(np.exp(loss.item()))
+
+        optimizer.zero_grad()
+
+        loss.backward()
+
+        optimizer.step()
+
+    endt = time.time()
+    print("Time used in training:", endt - startt)
+
+    x = []
+    for ii in range(len(train_hist)):
+        x.append([ii, train_hist[ii]])
+    x = np.array(x)
+    try:
+        plt.plot(x[:, 0], x[:, 1])
+        if type(save) != type(None):
+            plt.savefig(save)
+            plt.gcf().clear()
+        else:
+            plt.show()
+    except:
+        pass
+
+    return rnn
+
+####### Section Logit Dynamic study
+
+def build_basis(n):
+    """
+    A handy set of basis for logit (normalized), v1: (1,-1/(n-1),-1/(n-1),...)/L, v2: (0,1,-1/(n-2),-1/(n-2)...)
+    :param n: number of classes
+    :return: a base vector with length n-1
+    """
+    vecb=[]
+    for iib in range(n-1):
+        veciib=np.zeros(n)
+        veciib[iib]=1
+        for iibd in range(n-iib-1):
+            veciib[iib+iibd+1]=-1/(n-1-iib)
+        vecb.append(np.array(veciib)/np.linalg.norm(veciib))
+    return np.array(vecb)
+
+def proj(vec,vecb):
+    """
+    Project vec onto predifined orthoganal vecbasis
+    """
+    res=[]
+    vec=np.array(vec)
+    for base in vecb:
+        base=np.array(base)/np.linalg.norm(base)
+        xp=vec.dot(base)
+        res.append(xp)
+    return np.array(res)
+
+def aproj(vec,vecb):
+    """
+    Reverse operation of projection
+    :param vec:
+    :param vecb:
+    :return:
+    """
+    res=np.zeros(len(vecb[0]))
+    for ii in range(len(vec)):
+        res=res+vec[ii]*np.array(vecb[ii])
+    return res
+
+def logit_space_transfer(seq):
+    """
+    Transfer a logit sequence to non-redundant sub-space
+    :param seq: a sequence of logit
+    :return: transfered sequence
+    """
+    seq=np.array(seq)
+    assert len(seq.shape)==2
+    assert seq.shape[0]>seq.shape[1]
+    resp = []
+    basis = build_basis(len(seq[0]))
+    for vec in seq:
+        vecp = proj(vec, basis)
+        resp.append(vecp)
+    return resp
+
+def logit_space_atransfer(seq):
+    """
+    Reverse transfer a non-redundant sub-space vec back to logit sequence
+    :param seq: a sequence non-redundant sub-space vec
+    :return: transfered back sequence
+    """
+    seq=np.array(seq)
+    assert len(seq.shape)==2
+    assert seq.shape[0]>seq.shape[1]
+    resp = []
+    basis = build_basis(len(seq[0])+1)
+    for vec in seq:
+        vecp = aproj(vec, basis)
+        resp.append(vecp)
+    return resp

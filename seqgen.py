@@ -3563,12 +3563,3 @@ class TF_FFN(TFNet):
             else:
                 self.run_training(sess,datain,dataout,mode=None)
 
-if __name__ == "__main__":
-    from ncautil.nlputil import NLPutil
-    nlp = NLPutil()
-    sqg = SeqGen()
-    seq = sqg.gen_cantorseq(2)
-    nlp.plot_txtmat(np.array(seq).reshape(1, -1))
-    ptc = PT_CNN_FRAC()
-    ptc.run(100, 1000, learning_rate=1e-2, window=18, kwid=3)
-
