@@ -210,7 +210,7 @@ def pltsne(data):
     :param numpt: number of points
     :return: null
     """
-    tsnetrainer = TSNE(perplexity=20, n_components=2, init='pca', n_iter=5000, method='exact')
+    tsnetrainer = TSNE(perplexity=50, n_components=2, init='pca', n_iter=5000, method='exact')
     tsne = tsnetrainer.fit_transform(data)
     for i in range(len(data)):
         x, y = tsne[i, :]
@@ -388,7 +388,7 @@ def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)
     return res
 
-def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None):
+def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None, id_2_vec=None):
     """
     General rnn training funtion for one-hot training
     :param dataset:
@@ -404,13 +404,24 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     :param coopseq: a pre-calculated cooperational logit vec
     :return:
     """
-    prtstep = int(step / 10)
+    if type(lsize) is list:
+        lsize_in=lsize[0]
+        lsize_out = lsize[1]
+    else:
+        lsize_in = lsize
+        lsize_out = lsize
+    prtstep = int(step / 100)
     startt = time.time()
     datab=[]
-    for data in dataset:
-        datavec=np.zeros(lsize)
-        datavec[data]=1
-        datab.append(datavec)
+    if id_2_vec is None: # No embedding, one-hot representation
+        for data in dataset:
+            datavec=np.zeros(lsize_in)
+            datavec[data]=1
+            datab.append(datavec)
+    else:
+        for data in dataset:
+            datavec=np.array(id_2_vec[data])
+            datab.append(datavec)
     databp=torch.from_numpy(np.array(datab))
     if coopseq is not None:
         coopseq=torch.from_numpy(np.array(coopseq))
@@ -476,8 +487,8 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                         else:
                             veccoopm = torch.cat((veccoopm, veccoop.view(1, -1)), dim=0)
                 # One by one guidance training ####### error can propagate due to hidden state
-                x = Variable(vec1m.reshape(1, batch, lsize).contiguous(), requires_grad=True)  #
-                y = Variable(vec2m.reshape(1, batch, lsize).contiguous(), requires_grad=True)
+                x = Variable(vec1m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)  #
+                y = Variable(vec2m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
                 if coop is not None:
                     outputc, hiddenc = coop(x, hidden=None,logitmode=True)
@@ -487,29 +498,28 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                 else:
                     output, hidden = rnn(x, hidden, add_logit=None)
                 if type(outputl) == type(None):
-                    outputl = output.view(batch, lsize, 1)
+                    outputl = output.view(batch, lsize_out, 1)
                 else:
-                    outputl = torch.cat((outputl.view(batch, lsize, -1), output.view(batch, lsize, 1)), dim=2)
+                    outputl = torch.cat((outputl.view(batch, lsize_out, -1), output.view(batch, lsize_out, 1)), dim=2)
             loss = custom_KNWLoss(outputl, outlab, rnn, iis)
-        # else:
-        #     # LSTM/GRU provided whole sequence training
-        #     vec1m = None
-        #     vec2m = None
-        #     outputl = None
-        #     for iib in range(batch):
-        #         vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
-        #         vec2 = databp[int(rstartv[iib])+1:int(rstartv[iib])+window+1, :]
-        #         if type(vec1m) == type(None):
-        #             vec1m = vec1.view(window, 1, -1)
-        #             vec2m = vec2.view(window, 1, -1)
-        #         else:
-        #             vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
-        #             vec2m = torch.cat((vec2m, vec2.view(window, 1, -1)), dim=1)
-        #     x = Variable(vec1m.reshape(window, batch, lsize).contiguous(), requires_grad=True)  #
-        #     y = Variable(vec2m.reshape(window, batch, lsize).contiguous(), requires_grad=True)
-        #     x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
-        #     output, hidden = rnn(x, hidden, batch=batch)
-        #     loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
+        else:
+            # LSTM/GRU provided whole sequence training
+            vec1m = None
+            vec2m = None
+            for iib in range(batch):
+                vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
+                vec2 = databp[int(rstartv[iib])+1:int(rstartv[iib])+window+1, :]
+                if type(vec1m) == type(None):
+                    vec1m = vec1.view(window, 1, -1)
+                    vec2m = vec2.view(window, 1, -1)
+                else:
+                    vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
+                    vec2m = torch.cat((vec2m, vec2.view(window, 1, -1)), dim=1)
+            x = Variable(vec1m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)  #
+            y = Variable(vec2m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)
+            x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            output, hidden = rnn(x, hidden)
+            loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
 
         if int(iis / prtstep) != his:
             print("Perlexity: ", iis, np.exp(loss.item()))
@@ -607,7 +617,6 @@ def logit_space_atransfer(seq):
     """
     seq=np.array(seq)
     assert len(seq.shape)==2
-    assert seq.shape[0]>seq.shape[1]
     resp = []
     basis = build_basis(len(seq[0])+1)
     for vec in seq:

@@ -109,10 +109,12 @@ class NLPutil(object):
             string=string+self.sub_corpus[start+ii] +" "
         print(string)
 
-    def build_vocab(self,corpus=None,unk=True):
+    def build_vocab(self,corpus=None,Vsize=None):
         """
         Building vocabulary
         Referencing part of code from: Basic word2vec example tensorflow, reader.py
+        :param corpus: corpus
+        :param Vsize: vocabulary size
         :return:
         """
         if type(corpus)==type(None):
@@ -123,11 +125,19 @@ class NLPutil(object):
         counter = collections.Counter(corpus)
         count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
         words, counts = list(zip(*count_pairs))
-        if unk: # If "UNK" is inserted or not
-            self.word_to_id["UNK"] = 0
-            self.word_to_id = dict(zip(words, range(1, 1 + len(words))))
-        else:
-            self.word_to_id = dict(zip(words, range(len(words))))
+        if Vsize is not None and len(words)>Vsize:
+            words = list(words)
+            counts = list(counts)
+            print(len(words),len(counts))
+            unkc=0
+            clenw = len(words)
+            for iiex in range(clenw-Vsize):
+                del words[clenw-iiex-1]
+                unkc=unkc+counts[clenw - iiex - 1]
+                del counts[clenw - iiex - 1]
+            words.append("UNK")
+            counts.append(unkc)
+        self.word_to_id = dict(zip(words, range(len(words))))
         self.word_to_cnt = dict(zip(words, counts))
         bv = self.word_to_cnt[words[0]]
         for k,v in self.word_to_cnt.items():
