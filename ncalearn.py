@@ -446,11 +446,22 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     train_hist = []
     his = 0
 
+    gpuavail = torch.cuda.is_available()
+    device = torch.device("cuda:0" if gpuavail else "cpu")
+    # If we are on a CUDA machine, then this should print a CUDA device:
+    print(device)
+    if gpuavail:
+        rnn.to(device)
+        databp.to(device)
+
     for iis in range(step):
 
         rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
 
-        hidden = rnn.initHidden(batch)
+        if gpuavail:
+            hidden = rnn.initHidden_cuda(device, batch)
+        else:
+            hidden = rnn.initHidden(batch)
 
         # Generating output label
         yl = []
@@ -518,6 +529,9 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             x = Variable(vec1m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)  #
             y = Variable(vec2m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)
             x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            if gpuavail:
+                outlab = outlab.to(device)
+                x, y = x.to(device), y.to(device)
             output, hidden = rnn(x, hidden)
             loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
 
