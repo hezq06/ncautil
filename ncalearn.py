@@ -388,6 +388,49 @@ def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)
     return res
 
+def do_eval(dataset,lsize,rnn, id_2_vec=None):
+    """
+    General evaluation function
+    :param dataset:
+    :param lsize:
+    :param rnn:
+    :return:
+    """
+    print("Start Evaluation ...")
+    if type(lsize) is list:
+        lsize_in=lsize[0]
+        lsize_out = lsize[1]
+    else:
+        lsize_in = lsize
+        lsize_out = lsize
+    datab=[]
+    if id_2_vec is None: # No embedding, one-hot representation
+        for data in dataset:
+            datavec=np.zeros(lsize_in)
+            datavec[data]=1
+            datab.append(datavec)
+    else:
+        for data in dataset:
+            datavec=np.array(id_2_vec[data])
+            datab.append(datavec)
+    databpt=torch.from_numpy(np.array(datab))
+    databpt = databpt.type(torch.FloatTensor)
+    hidden = rnn.initHidden_eval()
+
+    perpls=[]
+    for nn in range(len(databpt) - 1):
+        x = databpt[nn]
+        y = databpt[nn + 1]
+        prd, hidden = rnn.forward(x.view(1, 1, lsize_in), hidden)
+        prd = torch.exp(prd) / torch.sum(torch.exp(prd))
+        perp = cal_kldiv(y.data.numpy(), prd.view(-1).data.numpy())
+    #     perpls.append(perp)
+    # avperp = np.mean(np.array(perpls))
+    # print("Calculated knowledge perplexity:", np.exp(avperp))
+    # return avperp
+    print("Caled")
+
+
 def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None, id_2_vec=None):
     """
     General rnn training funtion for one-hot training
@@ -410,7 +453,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     else:
         lsize_in = lsize
         lsize_out = lsize
-    prtstep = int(step / 100)
+    prtstep = int(step / 10)
     startt = time.time()
     datab=[]
     if id_2_vec is None: # No embedding, one-hot representation
