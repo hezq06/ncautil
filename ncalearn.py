@@ -396,6 +396,54 @@ def sigmoid(x):
     return res
 
 def do_eval(dataset,lsize,rnn, id_2_vec=None):
+    print("Start Evaluation ...")
+    if type(lsize) is list:
+        lsize_in=lsize[0]
+        lsize_out = lsize[1]
+    else:
+        lsize_in = lsize
+        lsize_out = lsize
+    datab=[]
+    if id_2_vec is None: # No embedding, one-hot representation
+        for data in dataset:
+            datavec=np.zeros(lsize_in)
+            datavec[data]=1
+            datab.append(datavec)
+    else:
+        for data in dataset:
+            datavec=np.array(id_2_vec[data])
+            datab.append(datavec)
+    databpt=torch.from_numpy(np.array(datab))
+    databpt = databpt.type(torch.FloatTensor)
+    hidden = rnn.initHidden_eval()
+    outputl = []
+    hiddenl = []
+
+    for iis in range(len(databpt) - 1):
+        x = databpt[iis, :].view(1, 1, lsize)
+        output, hidden = rnn(x, hidden)
+        outputl.append(output.view(-1).data.numpy())
+        hiddenl.append(hidden)
+
+    outputl = np.array(outputl)
+    outputl = Variable(torch.from_numpy(outputl).contiguous())
+    outputl = outputl.permute((1, 0))
+    print(outputl.shape)
+    # Generating output label
+    yl = []
+    for iiss in range(len(dataset) - 1):
+        ylb = []
+        wrd = dataset[iiss + 1]
+        ylb.append(wrd)
+        yl.append(np.array(ylb))
+    outlab = torch.from_numpy(np.array(yl).T)
+    outlab = outlab.type(torch.LongTensor)
+    lossc = torch.nn.CrossEntropyLoss()
+    loss = lossc(outputl.view(1, -1, len(dataset) - 1), outlab)
+    print("Evaluation Perplexity: ", np.exp(loss.item()))
+    return outputl, hiddenl, outlab.view(-1)
+
+def do_eval_p(dataset,lsize,rnn, id_2_vec=None):
     """
     General evaluation function
     :param dataset:
@@ -431,11 +479,10 @@ def do_eval(dataset,lsize,rnn, id_2_vec=None):
         prd, hidden = rnn.forward(x.view(1, 1, lsize_in), hidden)
         prd = torch.exp(prd) / torch.sum(torch.exp(prd))
         perp = cal_kldiv(y.data.numpy(), prd.view(-1).data.numpy())
-    #     perpls.append(perp)
-    # avperp = np.mean(np.array(perpls))
-    # print("Calculated knowledge perplexity:", np.exp(avperp))
-    # return avperp
-    print("Caled")
+        perpls.append(perp)
+    avperp = np.mean(np.array(perpls))
+    print("Calculated knowledge perplexity:", np.exp(avperp))
+    return avperp
 
 
 def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None, id_2_vec=None):
