@@ -379,6 +379,9 @@ class GRU_NLP(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
 
+    def initHidden_eval(self):
+        return torch.zeros(self.num_layers, 1, self.hidden_size)
+
 class GRU_TWO(torch.nn.Module):
     """
     PyTorch GRU for NLP
