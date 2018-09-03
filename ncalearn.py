@@ -28,6 +28,7 @@ def cluster(data,n_clusters,mode="kmeans"):
     :param mode: "kmeans"
     :return:
     """
+    startt = time.time()
     kmeans = KMeans(n_clusters=n_clusters, init="random", ).fit(data)
     center=np.zeros((n_clusters,len(data[0])))
     clscounter=np.zeros(n_clusters)
@@ -37,6 +38,8 @@ def cluster(data,n_clusters,mode="kmeans"):
         clscounter[ncls]=clscounter[ncls]+1
     for iic in range(n_clusters):
         center[iic]=center[iic]/clscounter[iic]
+    endt = time.time()
+    print("Time used in training:", endt - startt)
     return kmeans.labels_, center
 
 
@@ -224,13 +227,17 @@ def pl_eig_pca(data):
     :param data: data matrix
     :return: eigs
     """
+    startt = time.time()
     data=np.array(data)
     assert len(data.shape) == 2
     assert data.shape[1]>=data.shape[0]
     N=data.shape[1]
     Cov= data.dot(data.T) / N
     S = la.svdvals(Cov)
+    endt = time.time()
+    print("Time used in calculation:", endt - startt)
     plt.plot(S, 'b*-')
+    plt.yscale("log")
     plt.show()
     return S
 
