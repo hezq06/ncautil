@@ -368,7 +368,7 @@ class GRU_NLP(torch.nn.Module):
         hout, hn = self.gru(input,hidden1)
         output = self.h2o(hout)
         if add_logit is not None:
-            output=output*0+add_logit
+            output=output+add_logit
         if not logit_mode:
             output=self.softmax(output)
         return output,hn
