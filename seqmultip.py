@@ -346,7 +346,6 @@ class GRU_NLP(torch.nn.Module):
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1):
         super(self.__class__, self).__init__()
-
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.num_layers = num_layers

@@ -420,7 +420,7 @@ def do_eval(dataset,lsize,rnn, id_2_vec=None):
     hiddenl = []
 
     for iis in range(len(databpt) - 1):
-        x = databpt[iis, :].view(1, 1, lsize)
+        x = databpt[iis, :].view(1, 1, lsize_in)
         output, hidden = rnn(x, hidden)
         outputl.append(output.view(-1).data.numpy())
         hiddenl.append(hidden)
@@ -475,10 +475,11 @@ def do_eval_p(dataset,lsize,rnn, id_2_vec=None):
     perpls=[]
     for nn in range(len(databpt) - 1):
         x = databpt[nn]
-        y = databpt[nn + 1]
+        y = np.zeros(lsize_out)
+        y[dataset[nn+1]]=1
         prd, hidden = rnn.forward(x.view(1, 1, lsize_in), hidden)
         prd = torch.exp(prd) / torch.sum(torch.exp(prd))
-        perp = cal_kldiv(y.data.numpy(), prd.view(-1).data.numpy())
+        perp = cal_kldiv(y, prd.view(-1).data.numpy())
         perpls.append(perp)
     avperp = np.mean(np.array(perpls))
     print("Calculated knowledge perplexity:", np.exp(avperp))
@@ -598,6 +599,9 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                 x = Variable(vec1m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)  #
                 y = Variable(vec2m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)
                 x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                if gpuavail:
+                    outlab = outlab.to(device)
+                    x, y = x.to(device), y.to(device)
                 if coop is not None:
                     outputc, hiddenc = coop(x, hidden=None,logitmode=True)
                     output, hidden = rnn(x, hidden, add_logit=outputc)
