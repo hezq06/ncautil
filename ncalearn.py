@@ -395,8 +395,9 @@ def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)
     return res
 
-def do_eval(dataset,lsize,rnn, id_2_vec=None):
+def do_eval(dataset,lsize,rnn, id_2_vec=None, seqeval=False):
     print("Start Evaluation ...")
+    startt = time.time()
     if type(lsize) is list:
         lsize_in=lsize[0]
         lsize_out = lsize[1]
@@ -415,20 +416,26 @@ def do_eval(dataset,lsize,rnn, id_2_vec=None):
             datab.append(datavec)
     databpt=torch.from_numpy(np.array(datab))
     databpt = databpt.type(torch.FloatTensor)
-    hidden = rnn.initHidden_eval()
-    outputl = []
+    hidden = rnn.initHidden(1)
     hiddenl = []
+    if not seqeval:
+        outputl = []
+        for iis in range(len(databpt) - 1):
+            x = databpt[iis, :].view(1, 1, lsize_in)
+            output, hidden = rnn(x, hidden)
+            outputl.append(output.view(-1).data.numpy())
+            hiddenl.append(hidden)
+        outputl = np.array(outputl)
+        outputl = Variable(torch.from_numpy(outputl).contiguous())
+        outputl = outputl.permute((1, 0))
+        print(outputl.shape)
+    else:
+        # LSTM/GRU provided whole sequence training
+        dlen=len(databpt)
+        x = databpt[0:dlen-1, :].view(dlen-1, 1, lsize_in)
+        outputl, hidden = rnn(x, hidden)
+        outputl=outputl.permute(1, 2, 0)
 
-    for iis in range(len(databpt) - 1):
-        x = databpt[iis, :].view(1, 1, lsize_in)
-        output, hidden = rnn(x, hidden)
-        outputl.append(output.view(-1).data.numpy())
-        hiddenl.append(hidden)
-
-    outputl = np.array(outputl)
-    outputl = Variable(torch.from_numpy(outputl).contiguous())
-    outputl = outputl.permute((1, 0))
-    print(outputl.shape)
     # Generating output label
     yl = []
     for iiss in range(len(dataset) - 1):
@@ -441,9 +448,11 @@ def do_eval(dataset,lsize,rnn, id_2_vec=None):
     lossc = torch.nn.CrossEntropyLoss()
     loss = lossc(outputl.view(1, -1, len(dataset) - 1), outlab)
     print("Evaluation Perplexity: ", np.exp(loss.item()))
+    endt = time.time()
+    print("Time used in evaluation:", endt - startt)
     return outputl, hiddenl, outlab.view(-1)
 
-def do_eval_p(dataset,lsize,rnn, id_2_vec=None):
+def do_eval_p(dataset,lsize,rnn, id_2_vec=None, prior=None):
     """
     General evaluation function
     :param dataset:
@@ -452,6 +461,7 @@ def do_eval_p(dataset,lsize,rnn, id_2_vec=None):
     :return:
     """
     print("Start Evaluation ...")
+    startt = time.time()
     if type(lsize) is list:
         lsize_in=lsize[0]
         lsize_out = lsize[1]
@@ -470,20 +480,110 @@ def do_eval_p(dataset,lsize,rnn, id_2_vec=None):
             datab.append(datavec)
     databpt=torch.from_numpy(np.array(datab))
     databpt = databpt.type(torch.FloatTensor)
-    hidden = rnn.initHidden_eval()
+    hidden = rnn.initHidden(1)
 
-    perpls=[]
+    perpls=[0.0]
     for nn in range(len(databpt) - 1):
         x = databpt[nn]
         y = np.zeros(lsize_out)
         y[dataset[nn+1]]=1
-        prd, hidden = rnn.forward(x.view(1, 1, lsize_in), hidden)
-        prd = torch.exp(prd) / torch.sum(torch.exp(prd))
-        perp = cal_kldiv(y, prd.view(-1).data.numpy())
+        if prior is not None:
+            perp = cal_kldiv(y, prior)
+        else:
+            prd, hidden = rnn.forward(x.view(1, 1, lsize_in), hidden)
+            prd = torch.exp(prd) / torch.sum(torch.exp(prd))
+            perp = cal_kldiv(y, prd.view(-1).data.numpy())
         perpls.append(perp)
     avperp = np.mean(np.array(perpls))
     print("Calculated knowledge perplexity:", np.exp(avperp))
-    return avperp
+    endt = time.time()
+    print("Time used in evaluation:", endt - startt)
+    return perpls
+
+def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None):
+    """
+    General evaluation function using stochastic batch evaluation on GPU
+    :param dataset:
+    :param lsize:
+    :param rnn:
+    :return:
+    """
+    print("Start Evaluation ...")
+    startt = time.time()
+    if type(lsize) is list:
+        lsize_in=lsize[0]
+        lsize_out = lsize[1]
+    else:
+        lsize_in = lsize
+        lsize_out = lsize
+    datab=[]
+    if id_2_vec is None: # No embedding, one-hot representation
+        for data in dataset:
+            datavec=np.zeros(lsize_in)
+            datavec[data]=1
+            datab.append(datavec)
+    else:
+        for data in dataset:
+            datavec=np.array(id_2_vec[data])
+            datab.append(datavec)
+    databpt=torch.from_numpy(np.array(datab))
+    databpt = databpt.type(torch.FloatTensor)
+
+    gpuavail = torch.cuda.is_available()
+    device = torch.device("cuda:0" if gpuavail else "cpu")
+    # If we are on a CUDA machine, then this should print a CUDA device:
+    print(device)
+    rnn=rnn.to(device)
+
+    lossc = torch.nn.CrossEntropyLoss()
+    perpl=[]
+
+    for iis in range(step):
+
+        rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+
+        if gpuavail:
+            hidden = rnn.initHidden_cuda(device, batch)
+        else:
+            hidden = rnn.initHidden(batch)
+
+        # Generating output label
+        yl = []
+        for iiss in range(window):
+            ylb = []
+            for iib in range(batch):
+                wrd = dataset[(int(rstartv[iib]) + iiss + 1)]
+                ylb.append(wrd)
+            yl.append(np.array(ylb))
+        outlab = Variable(torch.from_numpy(np.array(yl).T))
+        outlab = outlab.type(torch.LongTensor)
+
+        # LSTM/GRU provided whole sequence training
+        vec1m = None
+        vec2m = None
+        for iib in range(batch):
+            vec1 = databpt[int(rstartv[iib]):int(rstartv[iib]) + window, :]
+            vec2 = databpt[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1, :]
+            if type(vec1m) == type(None):
+                vec1m = vec1.view(window, 1, -1)
+                vec2m = vec2.view(window, 1, -1)
+            else:
+                vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
+                vec2m = torch.cat((vec2m, vec2.view(window, 1, -1)), dim=1)
+        x = Variable(vec1m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)  #
+        y = Variable(vec2m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)
+        x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+        if gpuavail:
+            outlab = outlab.to(device)
+            x, y = x.to(device), y.to(device)
+        output, hidden = rnn(x, hidden)
+        loss = lossc(output.permute(1,2,0), outlab)
+        perpl.append(loss.item())
+
+    print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
+    endt = time.time()
+    print("Time used in evaluation:", endt - startt)
+    return True
 
 
 def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None, id_2_vec=None):

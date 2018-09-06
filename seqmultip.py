@@ -340,6 +340,46 @@ class PAIR_NET(torch.nn.Module):
     def initHidden(self,batch):
         return None
 
+class LSTM_NLP(torch.nn.Module):
+    """
+    PyTorch GRU for NLP
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.gru=torch.nn.LSTM(input_size,hidden_size,num_layers=num_layers)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        hout, hn = self.gru(input,hidden1)
+        output = self.h2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
+
 class GRU_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP

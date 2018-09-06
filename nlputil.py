@@ -48,6 +48,7 @@ class NLPutil(object):
         self.word_to_id=None
         self.id_to_word=None
         self.word_to_cnt=None
+        self.prior=None
         self.w2v_dict=None
         self.test_text=None
         self.labels=None
@@ -143,6 +144,10 @@ class NLPutil(object):
         for k,v in self.word_to_cnt.items():
             self.word_to_cnt[k]=1/(self.word_to_cnt[k]/bv)
         self.id_to_word = {v: k for k, v in self.word_to_id.items()}
+        self.prior=np.zeros(len(self.id_to_word))
+        for id in range(len(self.id_to_word)):
+            self.prior[id]=1/self.word_to_cnt[self.id_to_word[id]]
+        self.prior=self.prior/np.sum(self.prior)
         print(self.id_to_word)
         return self.word_to_id, self.id_to_word
 
@@ -178,6 +183,8 @@ class NLPutil(object):
                     vec = model[word]
                     self.w2v_dict[word] = vec
                 except:
+                    vec = np.zeros(len(model[self.id_to_word[10]]))
+                    self.w2v_dict[word] = vec
                     skip.append(word)
             print("Except list: length " + str(len(skip)))
             print(skip)
