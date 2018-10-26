@@ -19,6 +19,7 @@ from torch.autograd import Variable
 
 from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
+import matplotlib.ticker as ticker
 
 def cluster(data,n_clusters,mode="kmeans"):
     """
@@ -265,7 +266,7 @@ def pl_eig_ppca(data,history=1):
     plt.show()
     return S
 
-def pl_cov(data):
+def pl_cov(data,text=None,texty=None):
     """
     Plot covariance
     :param data: data matrix
@@ -278,14 +279,35 @@ def pl_cov(data):
     for ii in range(data.shape[1]):
         data[:,ii]=data[:,ii]-np.mean(data[:,ii])
     Cov = data.dot((data).T) / N
-    plt.imshow(Cov, cmap='seismic',clim=(-np.amax(np.abs(Cov)),np.amax(np.abs(Cov))))
+    fig, ax = plt.subplots()
+    fig = ax.imshow(Cov, cmap='seismic',clim=(-np.amax(np.abs(Cov)),np.amax(np.abs(Cov))))
+    if text != None:
+        st, end = ax.get_xlim()
+        ax.xaxis.set_ticks(np.arange(st + 0.5, end + 0.5, 1))
+        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+        labels = [item.get_text() for item in ax.get_xticklabels()]
+        for ii in range(len(labels)):
+            labels[ii] = str(text[ii])
+        ax.set_xticklabels(labels, rotation=70)
+    if texty != None:
+        st, end = ax.get_ylim()
+        if st < end:
+            ax.yaxis.set_ticks(np.arange(st + 0.5, end + 0.5, 1))
+        else:
+            ax.yaxis.set_ticks(np.arange(end + 0.5, st + 0.5, 1))
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+        labels = [item.get_text() for item in ax.get_yticklabels()]
+        for ii in range(len(labels)):
+            labels[ii] = str(texty[ii])
+        ax.set_yticklabels(labels, rotation=0)
     plt.xlabel("Data 1")
     plt.ylabel("Data 1")
     plt.title("cov(|D1|,|D1|)")
-    plt.colorbar()
+    plt.colorbar(fig)
     plt.show()
+    return Cov
 
-def pl_corr(data):
+def pl_corr(data,text=None,texty=None):
     """
     Plot correlation
     :param data: data matrix
@@ -300,12 +322,33 @@ def pl_corr(data):
     Cov = data.dot((data).T) / N
     d=np.diag(1/np.sqrt(np.diag(Cov)))
     Corr=d.dot(Cov).dot(d)
-    plt.imshow(Corr, cmap='seismic', clim=(-np.amax(np.abs(Corr)), np.amax(np.abs(Corr))))
+    fig, ax = plt.subplots()
+    fig = ax.imshow(Corr, cmap='seismic', clim=(-np.amax(np.abs(Corr)), np.amax(np.abs(Corr))))
+    if text != None:
+        st, end = ax.get_xlim()
+        ax.xaxis.set_ticks(np.arange(st + 0.5, end + 0.5, 1))
+        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+        labels = [item.get_text() for item in ax.get_xticklabels()]
+        for ii in range(len(labels)):
+            labels[ii] = str(text[ii])
+        ax.set_xticklabels(labels, rotation=70)
+    if texty != None:
+        st, end = ax.get_ylim()
+        if st < end:
+            ax.yaxis.set_ticks(np.arange(st + 0.5, end + 0.5, 1))
+        else:
+            ax.yaxis.set_ticks(np.arange(end + 0.5, st + 0.5, 1))
+        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))
+        labels = [item.get_text() for item in ax.get_yticklabels()]
+        for ii in range(len(labels)):
+            labels[ii] = str(texty[ii])
+        ax.set_yticklabels(labels, rotation=0)
     plt.xlabel("Data 1")
     plt.ylabel("Data 1")
-    plt.title("Corr(|D1|,|D1|)")
-    plt.colorbar()
+    plt.title("cov(|D1|,|D1|)")
+    plt.colorbar(fig)
     plt.show()
+    return Corr
 
 def pl_mucov(data1,data2):
     """
@@ -334,9 +377,19 @@ def plot_mat(data,start=0,range=1000):
     data=np.array(data)
     assert len(data.shape) == 2
     img=data[:,start:start+range]
-    plt.imshow(img, cmap='seismic')
+    plt.imshow(img, cmap='seismic',clim=(-np.amax(data), np.amax(data)))
     plt.colorbar()
     plt.show()
+
+def cal_cosdist(v1,v2):
+    """
+    Calculate cosine distance between two word embedding vectors
+    :param self:
+    :param v1:
+    :param v2:
+    :return:
+    """
+    return np.dot(v1,v2)/np.linalg.norm(v1)/np.linalg.norm(v2)
 
 def cal_pdist(data):
     """
@@ -394,6 +447,69 @@ def genDist(N):
 def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)
     return res
+
+def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
+    """
+    Free generation
+    :param step:
+    :param lsize:
+    :param rnn:
+    :param id_2_vec:
+    :return:
+    """
+    print("Start Evaluation ...")
+    startt = time.time()
+    if type(lsize) is list:
+        lsize_in = lsize[0]
+        lsize_out = lsize[1]
+    else:
+        lsize_in = lsize
+        lsize_out = lsize
+
+    hidden = rnn.initHidden(1)
+    x = torch.zeros(1, 1, lsize_in)
+    outputl = []
+    outwrdl=[]
+    outpl=[]
+    hiddenl=[]
+    # clul=[]
+
+    def logp(vec):
+        """
+        LogSoftmax function
+        :param vec:
+        :return:
+        """
+        vec = np.exp(vec)
+        dwn = np.sum(vec)
+        return vec / dwn
+
+    for iis in range(step):
+        x= x.type(torch.FloatTensor)
+        output, hidden, hout = rnn(x, hidden)    ############ rnn
+        ynp = output.data.numpy().reshape(lsize_out)
+        rndp = np.random.rand()
+        pii = logp(ynp).reshape(-1)
+        dig = 0
+        for ii in range(len(pii)):
+            rndp = rndp - pii[ii]
+            if rndp < 0:
+                dig = ii
+                break
+        xword = id_to_word[dig]
+        outputl.append(dig)
+        outwrdl.append(xword)
+        hiddenl.append(hout.cpu().data.numpy().reshape(-1))
+        if prior is None:
+            outpl.append(pii[0:200])
+        else:
+            outpl.append(pii[0:200]/prior[0:200])
+        # clul.append(np.exp(clu.data.numpy().reshape(30)))
+        xvec = id_2_vec[dig]
+        x = torch.from_numpy(xvec.reshape((1, 1, lsize_in)))
+    endt = time.time()
+    print("Time used in generation:", endt - startt)
+    return outputl,outwrdl,outpl,hiddenl #clul
 
 def do_eval(dataset,lsize,rnn, id_2_vec=None, seqeval=False):
     print("Start Evaluation ...")
@@ -583,7 +699,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None):
     print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
     endt = time.time()
     print("Time used in evaluation:", endt - startt)
-    return perpl,hiddenl,outlabl
+    return perpl,hiddenl,outlabl,
 
 
 def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None, id_2_vec=None):
@@ -636,7 +752,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
         # logith2o = model.h2o.weight+model.h2o.bias.view(-1)
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        l1_reg = model.h2o.weight.norm(2)
+        l1_reg = model.h2o.weight.norm(1)
         return loss1 + 0.002 * l1_reg #* cstep / step + 0.005 * lossh2o * cstep / step  # +0.3*lossz+0.3*lossn #
 
     optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)

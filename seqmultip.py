@@ -370,7 +370,7 @@ class LSTM_NLP(torch.nn.Module):
             output=output+add_logit
         if not logit_mode:
             output=self.softmax(output)
-        return output,hn
+        return output,hn,hout.permute(1,0,2)
 
     def initHidden(self,batch):
         return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
@@ -422,6 +422,61 @@ class GRU_NLP(torch.nn.Module):
         if not logit_mode:
             output=self.softmax(output)
         return output,hn,hout.permute(1,0,2)
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
+    def initHidden_eval(self):
+        return torch.zeros(self.num_layers, 1, self.hidden_size)
+
+class GRU_NLP_CLU(torch.nn.Module):
+    """
+    PyTorch GRU for NLP, adding a SoftMax bottle neck for clustering
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+        super(self.__class__, self).__init__()
+
+        clusterNum=30
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers)
+        self.h2c = torch.nn.Linear(hidden_size, clusterNum)
+        self.c2o = torch.nn.Linear(clusterNum, output_size)
+
+        # self.h2m = torch.nn.Linear(hidden_size, 150)
+        # self.m2o = torch.nn.Linear(150, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        hout, hn = self.gru(input,hidden1)
+        clusterl = self.h2c(hout)
+        # clusterl = clusterl/torch.sum(clusterl, dim=-1,keepdim=True)
+        clusterl=self.softmax(clusterl)
+        output = self.c2o(clusterl)
+        # outm=self.h2m(hout)
+        # outm = self.cdrop(outm)
+        # output = self.m2o(outm)
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn,hout.permute(1,0,2),clusterl
 
     def initHidden(self,batch):
         return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
