@@ -432,6 +432,61 @@ class GRU_NLP(torch.nn.Module):
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
 
+class GRU_NLP_WTA(torch.nn.Module):
+    """
+    PyTorch GRU for NLP, with winner takes all output layer to form concept cluster
+    """
+    def __init__(self, input_size, hidden_size, concept_size, output_size, num_layers=1):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.concept_size = concept_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers)
+        self.h2c = torch.nn.Linear(hidden_size, concept_size)
+        self.c2o = torch.nn.Linear(concept_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        # dropout
+        self.cdrop = torch.nn.Dropout(p=0.5)
+
+        # mid result storing
+        self.concept_layer = None
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        hout, hn = self.gru(input,hidden1)
+        # hout = self.cdrop(hout) # dropout layer
+        hout2con=self.h2c(hout)
+        argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
+        self.concept_layer = torch.zeros(hout2con.shape)
+        self.concept_layer.scatter_(-1, argmax, 1.0)
+        output = self.c2o(self.concept_layer)
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
+    def initHidden_eval(self):
+        return torch.zeros(self.num_layers, 1, self.hidden_size)
+
 class GRU_NLP_CLU(torch.nn.Module):
     """
     PyTorch GRU for NLP, adding a SoftMax bottle neck for clustering
@@ -489,7 +544,7 @@ class GRU_NLP_CLU(torch.nn.Module):
 
 class GRU_TWO(torch.nn.Module):
     """
-    PyTorch GRU for NLP
+    PyTorch GRU for NLP, two GRU working together
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1):
         super(GRU_TWO, self).__init__()

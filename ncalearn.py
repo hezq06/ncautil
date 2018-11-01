@@ -448,6 +448,11 @@ def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)
     return res
 
+def relu(x):
+    x=np.array(x)
+    res=(x+np.abs(x))/2
+    return res
+
 def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
     """
     Free generation
@@ -730,6 +735,92 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
     endt = time.time()
     print("Time used in evaluation:", endt - startt)
     return perpl,hiddenl,outlabl
+
+def lossf_rms(output, target):
+    """
+    Root mean square loss function
+    :param input:
+    :param output:
+    :return:
+    """
+    lossc = torch.nn.MSELoss()
+    # MSELoss is calculating dimension 1
+    loss=lossc(torch.t(output), torch.t(target))
+    return loss
+
+def run_training_univ(dataset,lsize, model, lossf,step,learning_rate=1e-2, batch=20, save=None):
+    """
+    Trial of universal training function
+    :param dataset:
+    :param lsize:
+    :param model:
+    :param lossf: loss function
+    :param step:
+    :param learning_rate:
+    :param batch:
+    :return:
+    """
+    if type(lsize) is list:
+        lsize_in=lsize[0]
+        lsize_out = lsize[1]
+    else:
+        lsize_in = lsize
+        lsize_out = lsize
+    prtstep = int(step / 10)
+    startt = time.time()
+
+    train_hist = []
+    his = 0
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0)
+
+    dataset=torch.from_numpy(dataset)
+    dataset=dataset.type(torch.FloatTensor)
+
+    for iis in range(step):
+        rstartv = np.floor(np.random.rand(batch) * len(dataset))
+        input=None
+        for iib in range(batch):
+            vec = dataset[int(rstartv[iib]), :]
+            if input is None:
+                input = vec.view(1, -1)
+            else:
+                input = torch.cat((input, vec.view(1, -1)), dim=0)
+
+        output=model(input,iter=10)
+
+        loss=lossf(output,input)
+
+        train_hist.append(loss.item())
+
+        optimizer.zero_grad()
+
+        loss.backward()
+
+        optimizer.step()
+
+        if int(iis / prtstep) != his:
+            print("Lost: ", iis, loss.item())
+            his = int(iis / prtstep)
+
+    endt = time.time()
+    print("Time used in training:", endt - startt)
+
+    x = []
+    for ii in range(len(train_hist)):
+        x.append([ii, train_hist[ii]])
+    x = np.array(x)
+    try:
+        plt.plot(x[:, 0], x[:, 1])
+        if type(save) != type(None):
+            plt.savefig(save)
+            plt.gcf().clear()
+        else:
+            plt.show()
+    except:
+        pass
+
+    return model
 
 
 def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None, id_2_vec=None):
