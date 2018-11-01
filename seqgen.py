@@ -1174,7 +1174,7 @@ class RNN_PDC_LSTM_WTA(torch.nn.Module):
         for ii in range(5):
             wtalayer = torch.matmul(self.V, wtalayer.view(-1, 1))
             wtalayer = self.relu(wtalayer)
-        if (wtalayer.norm(2) > 0).data.numpy():
+        if (wtalayer.norm(2) > 0).data.numpy(): ### ?????????
             wtalayer = wtalayer / wtalayer.norm(2)
         hidden1 = hidden1 * self.c2r1h(wtalayer.view(1,-1))
         # hidden1 = hidden1 + self.c2r1h(wtalayer.view(1,-1))

@@ -1815,6 +1815,64 @@ class GRU_KNW_L(torch.nn.Module):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
 
 
+class WTA_AE(torch.nn.Module):
+    """
+    Winner takes all auto-encoder (Not that working)
+    """
+    def __init__(self,input_size, hidden_size):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.hidden_size=hidden_size
+        self.i2h=torch.nn.Linear(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, input_size)
+        self.relu = torch.nn.ReLU()
+        V = np.zeros((hidden_size, hidden_size)) - 1 / hidden_size
+        for ii in range(hidden_size):
+            V[ii, ii] = 1
+        V = V / np.linalg.det(V)
+        self.V = Variable(torch.from_numpy(V), requires_grad=True)
+        self.V = self.V.type(torch.FloatTensor)
+        self.wtalayer = None
+
+    def forward(self, input,iter=5):
+        hidden=self.i2h(input)
+        self.wtalayer = hidden / torch.norm(hidden,2,-1,keepdim=True)
+
+        # Winner takes all layers
+        for ii in range(iter):
+            self.wtalayer = torch.matmul(self.wtalayer, self.V)
+            self.wtalayer = self.relu(self.wtalayer)
+            self.wtalayer = self.wtalayer / torch.norm(self.wtalayer,2,-1,keepdim=True)
+
+        output=self.h2o(self.wtalayer)
+        return output
+
+class WTA_AE_MAX(torch.nn.Module):
+    """
+    Winner takes all auto-encoder, hard WTA
+    """
+    def __init__(self,input_size, hidden_size):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.hidden_size=hidden_size
+        self.i2h=torch.nn.Linear(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, input_size)
+
+        self.wtalayer = None
+
+    def forward(self, input,iter=5):
+        hidden=self.i2h(input)
+        argmax=torch.argmax(hidden,dim=-1,keepdim=True)
+        self.wtalayer = torch.zeros(hidden.shape)
+        self.wtalayer.scatter_(-1, argmax, 1.0)
+        output=self.h2o(self.wtalayer)
+        return output
+
+
+
+
+
+
 
 
 
