@@ -660,8 +660,9 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
 
     lossc = torch.nn.CrossEntropyLoss()
     perpl=[]
-    hiddenl=[]
     outlabl=[]
+    conceptl=[]
+    outputll=[]
 
     for iis in range(step):
 
@@ -698,9 +699,15 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
             if gpuavail:
                 outlab = outlab.to(device)
                 x = x.to(device)
-            outputl, hidden, hout = rnn(x, hidden)
-            hiddenl.append(hout.cpu().data.numpy())
-            outlabl.append(outlab.cpu().data.numpy())
+            outputl, hidden = rnn(x, hidden)
+            outlabl.append(outlab.transpose(0,1).cpu().data.numpy())
+            # try:
+            #     conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            # except:
+            #     pass
+            conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            # conceptl.append(rnn.hout2con_masked.cpu().data.numpy())
+            outputll.append(outputl.cpu().data.numpy())
         else:
             outputl = None
             for iiss in range(window):
@@ -734,7 +741,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
     print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
     endt = time.time()
     print("Time used in evaluation:", endt - startt)
-    return perpl,hiddenl,outlabl
+    return perpl,outputll,conceptl,outlabl
 
 def lossf_rms(output, target):
     """
@@ -944,6 +951,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                 elif coopseq is not None:
                     output, hidden = rnn(x, hidden, add_logit=veccoopm)
                 else:
+                    # output, hidden = rnn(x, hidden,wta_noise=1.0+0.0*(1.0-iis/step))
                     output, hidden = rnn(x, hidden)
                 if type(outputl) == type(None):
                     outputl = output.view(batch, lsize_out, 1)
@@ -972,7 +980,8 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             if gpuavail:
                 outlab = outlab.to(device)
                 x, y = x.to(device), y.to(device)
-            output, hidden, hout = rnn(x, hidden)
+            output, hidden = rnn(x, hidden)
+            # output, hidden = rnn(x, hidden, wta_noise=0.2 * (1.0 - iis / step))
             loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
             # if gpuavail:
             #     del x,y,outlab

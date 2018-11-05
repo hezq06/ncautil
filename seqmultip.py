@@ -401,7 +401,14 @@ class GRU_NLP(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
         # dropout
-        self.cdrop = torch.nn.Dropout(p=0.5)
+        # self.cdrop = torch.nn.Dropout(p=0.5)
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        # dummy base
+        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
+        # self.ones=torch.ones(50,30,1).to(self.device)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False):
         """
@@ -421,7 +428,10 @@ class GRU_NLP(torch.nn.Module):
             output=output+add_logit
         if not logit_mode:
             output=self.softmax(output)
-        return output,hn,hout.permute(1,0,2)
+        return output,hn
+        # output=torch.matmul(self.ones,self.dummy)
+        # output=self.softmax(output)
+        # return output,hn
 
     def initHidden(self,batch):
         return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
@@ -436,7 +446,7 @@ class GRU_NLP_WTA(torch.nn.Module):
     """
     PyTorch GRU for NLP, with winner takes all output layer to form concept cluster
     """
-    def __init__(self, input_size, hidden_size, concept_size, output_size, num_layers=1):
+    def __init__(self, input_size, hidden_size, concept_size, output_size, num_layers=1, block_mode=True):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.concept_size = concept_size
@@ -452,12 +462,18 @@ class GRU_NLP_WTA(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
         # dropout
-        self.cdrop = torch.nn.Dropout(p=0.5)
+        # self.cdrop = torch.nn.Dropout(p=0.5)
 
         # mid result storing
         self.concept_layer = None
+        self.hout2con_masked = None
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False):
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        self.block_mode=block_mode
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False,wta_noise=0.0):
         """
         Forward
         :param input:
@@ -468,9 +484,16 @@ class GRU_NLP_WTA(torch.nn.Module):
         # hout = self.cdrop(hout) # dropout layer
         hout2con=self.h2c(hout)
         argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
-        self.concept_layer = torch.zeros(hout2con.shape)
+        self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
         self.concept_layer.scatter_(-1, argmax, 1.0)
-        output = self.c2o(self.concept_layer)
+        self.concept_layer=self.concept_layer+wta_noise*torch.rand(self.concept_layer.shape).to(self.device)
+        if self.block_mode:
+            output = self.c2o(self.concept_layer)
+        else:
+            hout2con_masked=hout2con*self.concept_layer
+            hout2con_masked=hout2con_masked/torch.norm(hout2con_masked,2,-1,keepdim=True)
+            self.hout2con_masked=hout2con_masked
+            output = self.c2o(hout2con_masked)
 
         if add_logit is not None:
             output=output+add_logit

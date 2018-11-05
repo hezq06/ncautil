@@ -1863,7 +1863,7 @@ class WTA_AE_MAX(torch.nn.Module):
     def forward(self, input,iter=5):
         hidden=self.i2h(input)
         argmax=torch.argmax(hidden,dim=-1,keepdim=True)
-        self.wtalayer = torch.zeros(hidden.shape)
+        self.wtalayer = torch.zeros(hidden.shape) # Gradient blocked !!!
         self.wtalayer.scatter_(-1, argmax, 1.0)
         output=self.h2o(self.wtalayer)
         return output
