@@ -518,7 +518,7 @@ def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
 
     for iis in range(step):
         x= x.type(torch.FloatTensor)
-        output, hidden, hout = rnn(x, hidden)    ############ rnn
+        output, hidden = rnn(x, hidden)    ############ rnn
         ynp = output.data.numpy().reshape(lsize_out)
         rndp = np.random.rand()
         pii = logp(ynp).reshape(-1)
@@ -531,7 +531,7 @@ def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
         xword = id_to_word[dig]
         outputl.append(dig)
         outwrdl.append(xword)
-        hiddenl.append(hout.cpu().data.numpy().reshape(-1))
+        # hiddenl.append(hout.cpu().data.numpy().reshape(-1))
         if prior is None:
             outpl.append(pii[0:200])
         else:
@@ -648,13 +648,15 @@ def do_eval_p(dataset,lsize,rnn, id_2_vec=None, prior=None):
     print("Time used in evaluation:", endt - startt)
     return perpls
 
-def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None):
+def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqeval=False):
     """
     General evaluation function using stochastic batch evaluation on GPU
     :param dataset:
     :param lsize:
     :param rnn:
     :return:
+    ### Data definition
+    perpl: 1-D list of calculated perplexity
     """
     print("Start Evaluation ...")
     startt = time.time()
@@ -685,8 +687,9 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None):
 
     lossc = torch.nn.CrossEntropyLoss()
     perpl=[]
-    hiddenl=[]
     outlabl=[]
+    conceptl=[]
+    outputll=[]
 
     for iis in range(step):
 
@@ -710,28 +713,63 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None):
 
 
         # LSTM/GRU provided whole sequence training
-        vec1m = None
-        for iib in range(batch):
-            vec1 = databpt[int(rstartv[iib]):int(rstartv[iib]) + window, :]
-            if type(vec1m) == type(None):
-                vec1m = vec1.view(window, 1, -1)
-            else:
-                vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
-        x = vec1m  #
-        x = x.type(torch.FloatTensor)
-        if gpuavail:
-            outlab = outlab.to(device)
-            x = x.to(device)
-        output, hidden, hout = rnn(x, hidden)
-        loss = lossc(output.permute(1,2,0), outlab)
+        if seqeval:
+            vec1m = None
+            for iib in range(batch):
+                vec1 = databpt[int(rstartv[iib]):int(rstartv[iib]) + window, :]
+                if type(vec1m) == type(None):
+                    vec1m = vec1.view(window, 1, -1)
+                else:
+                    vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
+            x = vec1m  #
+            x = x.type(torch.FloatTensor)
+            if gpuavail:
+                outlab = outlab.to(device)
+                x = x.to(device)
+            outputl, hidden = rnn(x, hidden)
+            outlabl.append(outlab.transpose(0,1).cpu().data.numpy())
+            # try:
+            #     conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            # except:
+            #     pass
+            # conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            # conceptl.append(rnn.hout2con_masked.cpu().data.numpy())
+            outputll.append(outputl.cpu().data.numpy())
+            conceptl.append(rnn.hout.cpu().data.numpy())
+        else:
+            outputl = None
+            for iiss in range(window):
+                vec1m = None
+                vec2m = None
+                for iib in range(batch):
+                    vec1 = databpt[(int(rstartv[iib]) + iiss), :]
+                    vec2 = databpt[(int(rstartv[iib]) + iiss + 1), :]
+                    if vec1m is None:
+                        vec1m = vec1.view(1, -1)
+                        vec2m = vec2.view(1, -1)
+                    else:
+                        vec1m = torch.cat((vec1m, vec1.view(1, -1)), dim=0)
+                        vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=0)
+                # One by one guidance training ####### error can propagate due to hidden state
+                x = Variable(vec1m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)  #
+                y = Variable(vec2m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)
+                x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+                if gpuavail:
+                    outlab = outlab.to(device)
+                    x, y = x.to(device), y.to(device)
+                output, hidden = rnn(x, hidden)
+                if type(outputl) == type(None):
+                    outputl = output.view(1, batch,lsize_out)
+                else:
+                    outputl = torch.cat((outputl.view(-1, batch, lsize_out), output.view(1, batch,lsize_out)), dim=0)
+
+        loss = lossc(outputl.permute(1,2,0), outlab)
         perpl.append(loss.item())
-        hiddenl.append(hout.cpu().data.numpy())
-        outlabl.append(outlab.cpu().data.numpy())
 
     print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
     endt = time.time()
     print("Time used in evaluation:", endt - startt)
-    return perpl,hiddenl,outlabl
+    return perpl,outputll,conceptl,outlabl
 
 def lossf_rms(output, target):
     """
@@ -867,11 +905,11 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     def custom_KNWLoss(outputl, outlab, model, cstep):
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
-        # logith2o = model.h2o.weight+model.h2o.bias.view(-1)
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        l1_reg = model.h2o.weight.norm(1)
-        return loss1 + 0.002 * l1_reg #* cstep / step + 0.005 * lossh2o * cstep / step  # +0.3*lossz+0.3*lossn #
+        logith2o = model.h2o.weight
+        pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        l1_reg = model.h2o.weight.norm(2)
+        return loss1  + 0.01 * l1_reg + 0.05 * lossh2o
 
     optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
 
@@ -941,7 +979,8 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                 elif coopseq is not None:
                     output, hidden = rnn(x, hidden, add_logit=veccoopm)
                 else:
-                    output, hidden = rnn(x, hidden, add_logit=None)
+                    # output, hidden = rnn(x, hidden,wta_noise=1.0+0.0*(1.0-iis/step))
+                    output, hidden = rnn(x, hidden)
                 if type(outputl) == type(None):
                     outputl = output.view(batch, lsize_out, 1)
                 else:
@@ -969,7 +1008,8 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             if gpuavail:
                 outlab = outlab.to(device)
                 x, y = x.to(device), y.to(device)
-            output, hidden, hout = rnn(x, hidden)
+            output, hidden = rnn(x, hidden)
+            # output, hidden = rnn(x, hidden, wta_noise=0.2 * (1.0 - iis / step))
             loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
             # if gpuavail:
             #     del x,y,outlab
@@ -1001,6 +1041,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             plt.savefig(save)
             plt.gcf().clear()
         else:
+            plt.ylim((0, 2000))
             plt.show()
     except:
         pass

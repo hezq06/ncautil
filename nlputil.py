@@ -1369,7 +1369,7 @@ class RNN_PDC_LSTM_NLP(torch.nn.Module):
     PyTorch LSTM PDC for Audio
     """
     def __init__(self, input_size, hidden_size, pipe_size, context_size, output_size,num_layers=1):
-        super(RNN_PDC_LSTM_NLP, self).__init__()
+        super(self.__class__, self).__init__()
 
         self.num_layers=num_layers
 
@@ -1440,7 +1440,7 @@ class GRU_Sememe(torch.nn.Module):
         :param sememe_size: number of sememe
         :param hidden_size: GRU hidden
         """
-        super(GRU_Sememe, self).__init__()
+        super(self.__class__, self).__init__()
 
         self.sememe_size = sememe_size
         self.hidden_size = hidden_size
@@ -1491,8 +1491,8 @@ class GRU_Cell_Zoneout(torch.nn.Module):
     """
     PyTorch LSTM PDC for Audio
     """
-    def __init__(self, input_size, hidden_size, output_size, zoneout_rate=0.2):
-        super(GRU_Cell_Zoneout, self).__init__()
+    def __init__(self, input_size, hidden_size, output_size, zoneout_rate=0.0):
+        super(self.__class__, self).__init__()
 
         self.hidden_size = hidden_size
         self.input_size = input_size
@@ -1511,7 +1511,7 @@ class GRU_Cell_Zoneout(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-    def forward(self, input, hidden, batch=None):
+    def forward(self, input, hidden, add_logit=None, logit_mode=False):
         """
 
         :param input: input
@@ -1549,7 +1549,7 @@ class GRU_NLP(torch.nn.Module):
     PyTorch GRU for NLP
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1):
-        super(GRU_NLP, self).__init__()
+        super(self.__class__, self).__init__()
 
         self.hidden_size = hidden_size
         self.input_size = input_size
@@ -1863,7 +1863,7 @@ class WTA_AE_MAX(torch.nn.Module):
     def forward(self, input,iter=5):
         hidden=self.i2h(input)
         argmax=torch.argmax(hidden,dim=-1,keepdim=True)
-        self.wtalayer = torch.zeros(hidden.shape)
+        self.wtalayer = torch.zeros(hidden.shape) # Gradient blocked !!!
         self.wtalayer.scatter_(-1, argmax, 1.0)
         output=self.h2o(self.wtalayer)
         return output
