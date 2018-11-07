@@ -38,6 +38,33 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_freeseq(self,length,propl = [0.7, 0.1, 0.1, 0.1],onehot=False):
+        """
+        Free style stochastic seq
+        dig=[0,1,2] possible digit
+        prop=[0.8,0.1,0.1] possibility of each digit
+        :param length:
+        :param onehot:
+        :return:
+        """
+        reseq=[]
+        digl = [0, 1, 2, 3]
+        propl=np.array(propl)
+        propl=propl/np.sum(propl)
+        assert len(digl)==len(propl)
+        for iil in range(length):
+            rndp = np.random.rand()
+            for ii in range(len(propl)):
+                rndp = rndp - propl[ii]
+                if rndp < 0:
+                    dig = digl[ii]
+                    reseq.append(dig)
+                    break
+        if onehot:
+            reseq=self.one_hot(reseq,length=len(digl))
+            reseq = np.array(reseq)
+        return reseq
+
     def gen_higherorderdep(self,length,onehot=False):
         """
         Artifitial high order dependency seq

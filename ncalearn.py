@@ -435,6 +435,33 @@ def cal_kldiv(p,q):
     kld=np.sum(p*np.log(p/q))
     return kld
 
+def cal_kappa_stat(seq1,seq2):
+    """
+    Calculate kappa statistics of two one-hot matrix
+    from "Pruning Adaptive Boosting"
+    :param seq1:
+    :param seq2:
+    :return:
+    """
+    assert len(seq1.shape)==2
+    assert seq1.shape == seq2.shape
+    assert len(seq1)>len(seq1[0])
+    Cij=seq1.T.dot(seq2)
+    m=len(seq1)
+    L=len(seq1[0])
+    Theta1=np.trace(Cij)/m
+    Theta2=0
+    for ii in range(L):
+        t1=0
+        t2=0
+        for jj in range(L):
+            t1=t1+Cij[ii,jj]
+            t2=t2+Cij[jj,ii]
+        Theta2=Theta2+t1/m*t2/m
+    kappa=(Theta1-Theta2)/(1-Theta2)
+    print(Cij, Theta1-1/L, Theta2)
+    return kappa
+
 def genDist(N):
     """
     Generate 1D distribution vector of N entry, sum(V)=1
