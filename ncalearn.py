@@ -491,7 +491,7 @@ def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
 
     for iis in range(step):
         x= x.type(torch.FloatTensor)
-        output, hidden, hout = rnn(x, hidden)    ############ rnn
+        output, hidden = rnn(x, hidden)    ############ rnn
         ynp = output.data.numpy().reshape(lsize_out)
         rndp = np.random.rand()
         pii = logp(ynp).reshape(-1)
@@ -504,7 +504,7 @@ def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
         xword = id_to_word[dig]
         outputl.append(dig)
         outwrdl.append(xword)
-        hiddenl.append(hout.cpu().data.numpy().reshape(-1))
+        # hiddenl.append(hout.cpu().data.numpy().reshape(-1))
         if prior is None:
             outpl.append(pii[0:200])
         else:
@@ -705,9 +705,10 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
             #     conceptl.append(rnn.concept_layer.cpu().data.numpy())
             # except:
             #     pass
-            conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            # conceptl.append(rnn.concept_layer.cpu().data.numpy())
             # conceptl.append(rnn.hout2con_masked.cpu().data.numpy())
             outputll.append(outputl.cpu().data.numpy())
+            conceptl.append(rnn.hout.cpu().data.numpy())
         else:
             outputl = None
             for iiss in range(window):
@@ -877,11 +878,11 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     def custom_KNWLoss(outputl, outlab, model, cstep):
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
-        # logith2o = model.h2o.weight+model.h2o.bias.view(-1)
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        #l1_reg = model.h2o.weight.norm(1)
-        return loss1# + 0.002 * l1_reg #* cstep / step + 0.005 * lossh2o * cstep / step  # +0.3*lossz+0.3*lossn #
+        logith2o = model.h2o.weight
+        pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        l1_reg = model.h2o.weight.norm(2)
+        return loss1  + 0.01 * l1_reg + 0.05 * lossh2o
 
     optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
 
@@ -1013,6 +1014,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             plt.savefig(save)
             plt.gcf().clear()
         else:
+            plt.ylim((0, 2000))
             plt.show()
     except:
         pass

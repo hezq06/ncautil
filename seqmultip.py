@@ -406,6 +406,8 @@ class GRU_NLP(torch.nn.Module):
         gpuavail = torch.cuda.is_available()
         self.device = torch.device("cuda:0" if gpuavail else "cpu")
 
+        self.hout = None
+
         # dummy base
         # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
         # self.ones=torch.ones(50,30,1).to(self.device)
@@ -423,6 +425,8 @@ class GRU_NLP(torch.nn.Module):
         # outm=self.h2m(hout)
         # outm = self.cdrop(outm)
         # output = self.m2o(outm)
+
+        self.hout=hout
 
         if add_logit is not None:
             output=output+add_logit
