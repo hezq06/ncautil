@@ -474,12 +474,44 @@ class GRU_NLP_WTA(torch.nn.Module):
 
         gpuavail = torch.cuda.is_available()
         self.device = torch.device("cuda:0" if gpuavail else "cpu")
+        self.gpuavail=gpuavail
 
         self.block_mode=block_mode
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False,wta_noise=0.0):
+    # def forward(self, input, hidden1, add_logit=None, logit_mode=False,wta_noise=0.0, schedule=1.0):
+    #     """
+    #     Forward, GRU WTA path scheduling
+    #     :param input:
+    #     :param hidden:
+    #     :return:
+    #     """
+    #     hout, hn = self.gru(input,hidden1)
+    #     # hout = self.cdrop(hout) # dropout layer
+    #     hout2con=self.h2c(hout)
+    #     argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
+    #     self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
+    #     self.concept_layer.scatter_(-1, argmax, 1.0)
+    #     self.concept_layer=self.concept_layer+wta_noise*torch.rand(self.concept_layer.shape).to(self.device)
+    #     if self.block_mode:
+    #         hout2con_masked = self.concept_layer
+    #     else:
+    #         hout2con_masked=hout2con*self.concept_layer
+    #         hout2con_masked=hout2con_masked/torch.norm(hout2con_masked,2,-1,keepdim=True)
+    #         self.hout2con_masked=hout2con_masked
+    #
+    #     hout2con2 = hout2con / torch.norm(hout2con, 2, -1, keepdim=True)
+    #
+    #     output = self.c2o(schedule * hout2con_masked + (1 - schedule) * hout2con2)
+    #
+    #     if add_logit is not None:
+    #         output=output+add_logit
+    #     if not logit_mode:
+    #         output=self.softmax(output)
+    #     return output,hn
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False,wta_noise=0.0, schedule=1.0):
         """
-        Forward
+        Forward, GRU WTA winner percentage scheduling
         :param input:
         :param hidden:
         :return:
@@ -487,17 +519,24 @@ class GRU_NLP_WTA(torch.nn.Module):
         hout, hn = self.gru(input,hidden1)
         # hout = self.cdrop(hout) # dropout layer
         hout2con=self.h2c(hout)
-        argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
+
+        upper_t=0.3
+        Nind=int((1.0-schedule)*(self.concept_size-2)*upper_t)+1 # Number of Nind largest number kept
+        if self.gpuavail:
+            nphout2con=hout2con.cpu().data.numpy()
+        else:
+            nphout2con = hout2con.data.numpy()
+        argmax=np.argsort(-nphout2con,axis=-1)[:,:,0:Nind]
+        argmax=torch.from_numpy(argmax).to(self.device)
         self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
         self.concept_layer.scatter_(-1, argmax, 1.0)
         self.concept_layer=self.concept_layer+wta_noise*torch.rand(self.concept_layer.shape).to(self.device)
-        if self.block_mode:
-            output = self.c2o(self.concept_layer)
-        else:
-            hout2con_masked=hout2con*self.concept_layer
-            hout2con_masked=hout2con_masked/torch.norm(hout2con_masked,2,-1,keepdim=True)
-            self.hout2con_masked=hout2con_masked
-            output = self.c2o(hout2con_masked)
+
+        hout2con_masked=hout2con*self.concept_layer
+        hout2con_masked=hout2con_masked/torch.norm(hout2con_masked,2,-1,keepdim=True)
+
+        output = self.c2o(hout2con_masked)
+        self.hout2con_masked = hout2con_masked
 
         if add_logit is not None:
             output=output+add_logit
@@ -513,6 +552,120 @@ class GRU_NLP_WTA(torch.nn.Module):
 
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
+
+class FF_NLP_WTA(torch.nn.Module):
+    """
+        PyTorch GRU for NLP, with winner takes all output layer to form concept cluster
+        """
+
+    def __init__(self, input_size, hidden_size, concept_size, output_size, block_mode=True):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.concept_size = concept_size
+        self.input_size = input_size
+
+        self.i2h = torch.nn.Linear(input_size, hidden_size)
+        self.h2c = torch.nn.Linear(hidden_size, concept_size)
+        self.c2o = torch.nn.Linear(concept_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.relu=torch.nn.ReLU()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        # dropout
+        # self.cdrop = torch.nn.Dropout(p=0.5)
+
+        # mid result storing
+        self.concept_layer = None
+        self.hout2con_masked = None
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        self.block_mode = block_mode
+
+    # def forward(self, input, hid=None, wta_noise=0.0):
+    #     """
+    #     Forward
+    #     :param input:
+    #     :param hid: no use
+    #     :return:
+    #     """
+    #     hidden1 = self.i2h(input)
+    #     hidden1 = self.relu(hidden1)
+    #     hout2con = self.h2c(hidden1)
+    #     argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
+    #     self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
+    #     self.concept_layer.scatter_(-1, argmax, 1.0)
+    #     self.concept_layer = self.concept_layer + wta_noise * torch.rand(self.concept_layer.shape).to(self.device)
+    #     if self.block_mode:
+    #         output = self.c2o(self.concept_layer)
+    #     else:
+    #         hout2con_masked = hout2con * self.concept_layer
+    #         hout2con_masked = hout2con_masked / torch.norm(hout2con_masked, 2, -1, keepdim=True)
+    #         self.hout2con_masked = hout2con_masked
+    #         output = self.c2o(hout2con_masked)
+    #
+    #     output=self.softmax(output)
+    #
+    #     return output, hid
+
+    def forward(self, input, hid=None, wta_noise=0.0, schedule=1.0):
+        """
+        Forward, path transfer scheduling
+        :param input:
+        :param hid: no use
+        :return:
+        """
+        hidden1 = self.i2h(input)
+        hidden1 = self.relu(hidden1)
+        hout2con = self.h2c(hidden1)
+        hout2con=self.relu(hout2con)
+
+        argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
+        self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
+        self.concept_layer.scatter_(-1, argmax, 1.0)
+        self.concept_layer = self.concept_layer + wta_noise * torch.rand(self.concept_layer.shape).to(self.device)
+        if self.block_mode:
+            hout2con_masked=self.concept_layer
+        else:
+            hout2con_masked = hout2con * self.concept_layer
+            hout2con_masked = hout2con_masked / torch.norm(hout2con_masked, 2, -1, keepdim=True)
+        self.hout2con_masked = hout2con_masked
+
+        hout2con2=hout2con/torch.norm(hout2con,2,-1,keepdim=True)
+
+        output = self.c2o(schedule*hout2con_masked+(1-schedule)*hout2con2)
+        output=self.softmax(output)
+
+        return output, hid
+
+    # def forward(self, input, hid=None, wta_noise=0.0):
+    #     """
+    #     Forward
+    #     :param input:
+    #     :param hid: no use
+    #     :return:
+    #     """
+    #     hidden1 = self.i2h(input)
+    #     hidden1 = self.relu(hidden1)
+    #     hout2con = self.h2c(hidden1)
+    #     hout2con=self.relu(hout2con)
+    #     output=self.c2o(hout2con)
+    #     output=self.softmax(output)
+    #
+    #     return output, hid
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
+
+    def initHidden_eval(self):
+        return None
+
 
 class GRU_NLP_CLU(torch.nn.Module):
     """

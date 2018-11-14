@@ -728,14 +728,9 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
                 x = x.to(device)
             outputl, hidden = rnn(x, hidden)
             outlabl.append(outlab.transpose(0,1).cpu().data.numpy())
-            # try:
-            #     conceptl.append(rnn.concept_layer.cpu().data.numpy())
-            # except:
-            #     pass
-            # conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            conceptl.append(rnn.concept_layer.cpu().data.numpy())
             # conceptl.append(rnn.hout2con_masked.cpu().data.numpy())
             outputll.append(outputl.cpu().data.numpy())
-            conceptl.append(rnn.hout.cpu().data.numpy())
         else:
             outputl = None
             for iiss in range(window):
@@ -900,16 +895,16 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     rnn.train()
 
     if coop is not None:
-        coop.eval()
+        coop.eval() # Not ensured to work !!!
 
     def custom_KNWLoss(outputl, outlab, model, cstep):
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
-        logith2o = model.h2o.weight
-        pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        l1_reg = model.h2o.weight.norm(2)
-        return loss1  + 0.01 * l1_reg + 0.05 * lossh2o
+        # logith2o = model.h2o.weight
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1  #+ 0.01 * l1_reg + 0.05 * lossh2o
 
     optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
 
@@ -1008,7 +1003,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             if gpuavail:
                 outlab = outlab.to(device)
                 x, y = x.to(device), y.to(device)
-            output, hidden = rnn(x, hidden)
+            output, hidden = rnn(x, hidden, schedule=iis / step)
             # output, hidden = rnn(x, hidden, wta_noise=0.2 * (1.0 - iis / step))
             loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
             # if gpuavail:
