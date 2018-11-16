@@ -688,6 +688,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
     lossc = torch.nn.CrossEntropyLoss()
     perpl=[]
     outlabl=[]
+    inputlabl = []
     conceptl=[]
     outputll=[]
 
@@ -715,12 +716,15 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
         # LSTM/GRU provided whole sequence training
         if seqeval:
             vec1m = None
+            inputlabsub=[]
             for iib in range(batch):
                 vec1 = databpt[int(rstartv[iib]):int(rstartv[iib]) + window, :]
                 if type(vec1m) == type(None):
                     vec1m = vec1.view(window, 1, -1)
                 else:
                     vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
+                inputlab = dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+                inputlabsub.append(inputlab)
             x = vec1m  #
             x = x.type(torch.FloatTensor)
             if gpuavail:
@@ -728,7 +732,9 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
                 x = x.to(device)
             outputl, hidden = rnn(x, hidden)
             outlabl.append(outlab.transpose(0,1).cpu().data.numpy())
-            conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            inputlabl.append(np.array(inputlabsub).T)
+            # conceptl.append(rnn.concept_layer.cpu().data.numpy())
+            conceptl.append(rnn.concept_layer_i.cpu().data.numpy())
             # conceptl.append(rnn.hout2con_masked.cpu().data.numpy())
             outputll.append(outputl.cpu().data.numpy())
         else:
@@ -764,7 +770,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
     print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
     endt = time.time()
     print("Time used in evaluation:", endt - startt)
-    return perpl,outputll,conceptl,outlabl
+    return perpl,outputll,conceptl,np.array(inputlabl)
 
 def lossf_rms(output, target):
     """
@@ -1036,7 +1042,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             plt.savefig(save)
             plt.gcf().clear()
         else:
-            plt.ylim((0, 2000))
+            # plt.ylim((0, 2000))
             plt.show()
     except:
         pass

@@ -412,7 +412,7 @@ class GRU_NLP(torch.nn.Module):
         # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
         # self.ones=torch.ones(50,30,1).to(self.device)
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False):
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
         Forward
         :param input:
@@ -437,6 +437,39 @@ class GRU_NLP(torch.nn.Module):
         # output=self.softmax(output)
         # return output,hn
 
+    def forward_concept_ext(self, input, hidden1, npM_ext,add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward function for concept extend to full output with possbility extension matrix M_ext
+        (P_N= M_ext.dot(Pc)
+        :param input:
+        :param hidden:
+        :return:
+        """
+        hout, hn = self.gru(input,hidden1)
+        # hout = self.cdrop(hout) # dropout layer
+        output = self.h2o(hout)
+        # outm=self.h2m(hout)
+        # outm = self.cdrop(outm)
+        # output = self.m2o(outm)
+
+        self.hout=hout
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+
+        p_output = torch.exp(output) / torch.sum(torch.exp(output,-1,keepdim=True))
+        M_ext=torch.from_numpy(np.array(npM_ext))
+        M_ext=M_ext.type(torch.FloatTensor)
+        N_p_output=torch.matmul(p_output, M_ext)
+        output_ext=torch.log(N_p_output)
+        return output_ext,hn
+        # output=torch.matmul(self.ones,self.dummy)
+        # output=self.softmax(output)
+        # return output,hn
+
+
     def initHidden(self,batch):
         return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
 
@@ -455,6 +488,7 @@ class GRU_NLP_WTA(torch.nn.Module):
         self.hidden_size = hidden_size
         self.concept_size = concept_size
         self.input_size = input_size
+        self.output_size=output_size
         self.num_layers = num_layers
 
         self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers)
@@ -552,6 +586,141 @@ class GRU_NLP_WTA(torch.nn.Module):
 
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
+
+
+class GRU_NLP_WTA_2(torch.nn.Module):
+    """
+    PyTorch GRU for NLP, with winner takes all output layer to form concept cluster, both input and output WTA bottleneck added
+    """
+
+    def __init__(self, input_size, hidden_size, concept_size, output_size, num_layers=1, block_mode=True):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.concept_size = concept_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+        self.output_size = output_size
+
+        self.i2g = torch.nn.Linear(input_size, concept_size)
+        self.gru = torch.nn.GRU(concept_size, hidden_size, num_layers=num_layers)
+        self.h2c = torch.nn.Linear(hidden_size, concept_size)
+        self.c2o = torch.nn.Linear(concept_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        # dropout
+        # self.cdrop = torch.nn.Dropout(p=0.5)
+
+        # mid result storing
+        self.concept_layer_i = None
+        self.concept_layer_o = None
+        self.hout2con_masked = None
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+        self.gpuavail = gpuavail
+
+        self.block_mode = block_mode
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, wta_noise=0.0, schedule=1.0):
+        """
+        Forward, GRU WTA winner percentage scheduling
+        :param input:
+        :param hidden:
+        :return:
+        """
+        upper_t = 0.3
+        Nind = int((1.0 - schedule) * (self.concept_size - 2) * upper_t) + 1  # Number of Nind largest number kept
+
+        # First WTA scheduling of input
+        ginput = self.i2g(input)
+        if self.gpuavail:
+            npginput = ginput.cpu().data.numpy()
+        else:
+            npginput = ginput.data.numpy()
+        argmax_i = np.argsort(-npginput, axis=-1)[:, :, 0:Nind]
+        argmax_i = torch.from_numpy(argmax_i).to(self.device)
+        self.concept_layer_i = torch.zeros(ginput.shape).to(self.device)
+        self.concept_layer_i.scatter_(-1, argmax_i, 1.0)
+        self.concept_layer_i = self.concept_layer_i + wta_noise * torch.rand(self.concept_layer_i.shape).to(self.device)
+
+        ginput_masked = ginput * self.concept_layer_i
+        ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+
+        # GRU part
+
+        hout, hn = self.gru(ginput_masked, hidden1)
+        # hout = self.cdrop(hout) # dropout layer
+        hout2con = self.h2c(hout)
+
+        # # Second WTA scheduling of output
+        # if self.gpuavail:
+        #     nphout2con = hout2con.cpu().data.numpy()
+        # else:
+        #     nphout2con = hout2con.data.numpy()
+        # argmax_o = np.argsort(-nphout2con, axis=-1)[:, :, 0:Nind]
+        # argmax_o = torch.from_numpy(argmax_o).to(self.device)
+        # self.concept_layer_o = torch.zeros(hout2con.shape).to(self.device)
+        # self.concept_layer_o.scatter_(-1, argmax_o, 1.0)
+        # self.concept_layer_o = self.concept_layer_o + wta_noise * torch.rand(self.concept_layer_o.shape).to(self.device)
+        #
+        # hout2con_masked = hout2con * self.concept_layer_o
+        # hout2con_masked = hout2con_masked / torch.norm(hout2con_masked, 2, -1, keepdim=True)
+
+        # output = self.c2o(hout2con_masked)
+        # self.hout2con_masked = hout2con_masked
+
+        output = self.c2o(hout2con)
+
+        if add_logit is not None:
+            output = output + add_logit
+        if not logit_mode:
+            output = self.softmax(output)
+        return output, hn
+
+    def initHidden(self, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
+    def initHidden_eval(self):
+        return torch.zeros(self.num_layers, 1, self.hidden_size)
+
+    def build_concept_vec(self,id_2_vec,prior):
+        # Build concept mapping
+        hidden = self.initHidden_cuda(self.device, 1)
+        inputl = []
+        dim = self.input_size
+        for ii in range(self.output_size):
+            vec = id_2_vec[ii]
+            inputl.append(vec)
+        inputx = torch.from_numpy(np.array(inputl)).view(-1, 1, dim)
+        inputx = inputx.type(torch.FloatTensor)
+        _ = self.forward(inputx.to(self.device), hidden)
+        print(self.concept_layer_i.cpu().shape)
+        np_con = self.concept_layer_i.cpu().data.numpy()
+        id_2_con = []
+        for ii in range(self.output_size):
+            id_2_con.append(np.argmax(np_con[ii, 0, :]))
+        # sort concept id according to its importance
+        importance_dict=dict([])
+        for conid in set(id_2_con):
+            importance_dict[conid]=0.0
+        for wrdid in range(len(id_2_con)):
+            importance_dict[id_2_con[wrdid]]=importance_dict[id_2_con[wrdid]]+prior[wrdid]
+        sorted_imp_l=sorted(importance_dict.items(), key=lambda x: (-x[1], x[0]))
+        # swap concept id according to sorted important list
+        swapdict=dict([])
+        for iiord in range(len(sorted_imp_l)):
+            swapdict[sorted_imp_l[iiord][0]]=iiord
+        id_2_con_s=[]
+        print(sorted_imp_l,swapdict)
+        for iicon in id_2_con:
+            id_2_con_s.append(swapdict[iicon])
+        return id_2_con_s
 
 class FF_NLP_WTA(torch.nn.Module):
     """
