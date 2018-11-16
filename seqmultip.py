@@ -459,10 +459,12 @@ class GRU_NLP(torch.nn.Module):
         if not logit_mode:
             output=self.softmax(output)
 
-        p_output = torch.exp(output) / torch.sum(torch.exp(output,-1,keepdim=True))
+        p_output = torch.exp(output) / torch.sum(torch.exp(output),-1,keepdim=True)
         M_ext=torch.from_numpy(np.array(npM_ext))
         M_ext=M_ext.type(torch.FloatTensor)
-        N_p_output=torch.matmul(p_output, M_ext)
+        if torch.cuda.is_available():
+            M_ext.to(self.device)
+        N_p_output=torch.matmul(p_output.to(self.device), M_ext.to(self.device))
         output_ext=torch.log(N_p_output)
         return output_ext,hn
         # output=torch.matmul(self.ones,self.dummy)

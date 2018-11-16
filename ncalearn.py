@@ -648,12 +648,13 @@ def do_eval_p(dataset,lsize,rnn, id_2_vec=None, prior=None):
     print("Time used in evaluation:", endt - startt)
     return perpls
 
-def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqeval=False):
+def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqeval=False, extend_mode=None):
     """
     General evaluation function using stochastic batch evaluation on GPU
     :param dataset:
     :param lsize:
     :param rnn:
+    :param extend_mode: for concept to word extension mode, extend_mode[0] is extension dataset, extend_mode[1] is extension matrix.
     :return:
     ### Data definition
     perpl: 1-D list of calculated perplexity
@@ -702,11 +703,15 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
             hidden = rnn.initHidden(batch)
 
         # Generating output label
+        if extend_mode is None:
+            extdataset=dataset
+        else:
+            extdataset = extend_mode[0]
         yl = []
         for iiss in range(window):
             ylb = []
             for iib in range(batch):
-                wrd = dataset[(int(rstartv[iib]) + iiss + 1)]
+                wrd = extdataset[(int(rstartv[iib]) + iiss + 1)]
                 ylb.append(wrd)
             yl.append(np.array(ylb))
         outlab = torch.from_numpy(np.array(yl).T)
@@ -730,11 +735,15 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
             if gpuavail:
                 outlab = outlab.to(device)
                 x = x.to(device)
-            outputl, hidden = rnn(x, hidden)
+            if extend_mode is None:
+                outputl, hidden = rnn(x, hidden)
+            else:
+                npM_ext=extend_mode[1]
+                outputl, hidden = rnn.forward_concept_ext(x, hidden, npM_ext)
             outlabl.append(outlab.transpose(0,1).cpu().data.numpy())
             inputlabl.append(np.array(inputlabsub).T)
             # conceptl.append(rnn.concept_layer.cpu().data.numpy())
-            conceptl.append(rnn.concept_layer_i.cpu().data.numpy())
+            # conceptl.append(rnn.concept_layer_i.cpu().data.numpy())
             # conceptl.append(rnn.hout2con_masked.cpu().data.numpy())
             outputll.append(outputl.cpu().data.numpy())
         else:
