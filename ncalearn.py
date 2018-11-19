@@ -21,6 +21,11 @@ from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 import matplotlib.ticker as ticker
 
+from wordcloud import WordCloud
+import operator
+from PIL import Image
+from PIL import ImageDraw
+
 def cluster(data,n_clusters,mode="kmeans"):
     """
     Do clustering
@@ -380,6 +385,62 @@ def plot_mat(data,start=0,range=1000):
     plt.imshow(img, cmap='seismic',clim=(-np.amax(data), np.amax(data)))
     plt.colorbar()
     plt.show()
+
+def pl_conceptbubblecloud(id_to_con,id_to_word,prior):
+    """
+    Visualize concept using bubble word cloud
+    :param id_to_con: [con for wrd0, con for wrd1, ...]
+    :param id_to_word: dict[0:wrd0, 1:wrd1,...]
+    :param prior:
+    :return:
+    """
+    # step 1: data collection by concept : [[0,[wrds for con0],[priors for con0]]]
+
+    Nwrd=1000
+    img1 = Image.new('RGBA', size=(100, 100), color=(255, 255, 255, 255))
+    for con_id in set(id_to_con):
+        conwrdcol=[]
+        conprcol=[]
+        for iter_ii in range(len(id_to_con)):
+            if id_to_con[iter_ii] == con_id:
+                conwrdcol.append(id_to_word[iter_ii])
+                conprcol.append(prior[iter_ii])
+        # step 2: generate word cloud by concept
+        text = ""
+        for wrd_ii in range(len(conwrdcol)):
+            text=text+(str(conwrdcol[wrd_ii])+" ")*Nwrd*conprcol[wrd_ii]
+        circle = Image.new('RGBA', size=(200, 200), color=(255, 255, 255, 255))
+        draw = ImageDraw.Draw(circle)
+        draw.ellipse((100 - 80, 100 - 80, 100 + 80, 100 + 80), fill=(0, 0, 0, 255))
+        circle2 = Image.new('RGBA', size=(200, 200), color=(0, 0, 0, 0))
+        draw = ImageDraw.Draw(circle2)
+        draw.ellipse((100 - 100, 100 - 100, 100 + 100, 100 + 100), fill=(0, 0, 0, 255))
+
+        wordcloud = WordCloud(mask=np.array(circle), background_color="white").generate(text)
+        data2 = wordcloud.to_array()
+        img2 = Image.fromarray(data2, 'RGB')
+        img2 = img2.convert("RGBA")
+        shift = (np.random.rand()*500, np.random.rand()*500)
+        nw, nh = map(max, map(operator.add, img2.size, shift), img1.size)
+
+        # paste img1 on top of img2
+        newimg1 = Image.new('RGBA', size=(nw, nh), color=(255, 255, 255, 255))
+        newimg1.paste(img2, shift, circle2)
+        newimg1.paste(img1, (0, 0))
+
+        # paste img2 on top of img1
+        newimg2 = Image.new('RGBA', size=(nw, nh), color=(255, 255, 255, 255))
+        newimg2.paste(img1, (0, 0))
+        newimg2.paste(img2, shift, circle2)
+
+        # blend with alpha=0.5
+        img1 = Image.blend(newimg1, newimg2, alpha=0.5)
+
+    plt.imshow(img1, interpolation='bilinear')
+    plt.axis("off")
+    plt.margins(x=0, y=0)
+    plt.show()
+
 
 def cal_cosdist(v1,v2):
     """
