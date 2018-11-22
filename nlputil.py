@@ -263,6 +263,16 @@ class NLPutil(object):
             plt.show()
 
     def plot_textshade(self,text,data,start=0,length=100,cper_line=100,gamma=0.3):
+        """
+        Plot text with shaded back ground of data
+        :param text:
+        :param data:
+        :param start:
+        :param length:
+        :param cper_line:
+        :param gamma:
+        :return:
+        """
         data = np.array(data)
         assert len(data.shape) == 1
         # assert len(data) == len(text)

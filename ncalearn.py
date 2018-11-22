@@ -177,7 +177,6 @@ def ppca_proj(data,D,dataT=None):
         res = pM.dot(dataT)
     return res, pM
 
-
 def ica(data,LR=1e-2,step=1e4,show_step=1e2):
     """
     Independent component analysis using Amari's learning rule
@@ -212,19 +211,21 @@ def ica(data,LR=1e-2,step=1e4,show_step=1e2):
     plt.show()
     return Xh,W
 
-def pltsne(data):
+def pltsne(data,D=2,perp=1):
     """
     Plot 2D w2v graph with tsne
     Referencing part of code from: Basic word2vec example tensorflow
     :param numpt: number of points
     :return: null
     """
-    tsnetrainer = TSNE(perplexity=50, n_components=2, init='pca', n_iter=5000, method='exact')
+    tsnetrainer = TSNE(perplexity=perp, n_components=D, init='pca', n_iter=5000, method='exact')
     tsne = tsnetrainer.fit_transform(data)
+    plt.figure()
     for i in range(len(data)):
         x, y = tsne[i, :]
         plt.scatter(x, y)
     plt.show()
+    return tsnetrainer
 
 
 def pl_eig_pca(data):
@@ -386,7 +387,7 @@ def plot_mat(data,start=0,range=1000):
     plt.colorbar()
     plt.show()
 
-def pl_conceptbubblecloud(id_to_con,id_to_word,prior):
+def pl_conceptbubblecloud(id_to_con,id_to_word,prior,word_to_vec, pM=None):
     """
     Visualize concept using bubble word cloud
     :param id_to_con: [con for wrd0, con for wrd1, ...]
@@ -395,49 +396,246 @@ def pl_conceptbubblecloud(id_to_con,id_to_word,prior):
     :return:
     """
     # step 1: data collection by concept : [[0,[wrds for con0],[priors for con0]]]
-
-    Nwrd=1000
-    img1 = Image.new('RGBA', size=(100, 100), color=(255, 255, 255, 255))
+    dict_conwrdcol=dict([])
+    dict_conprcol=dict([])
+    dict_cen_wvec=dict([])
+    dict_text_freq=dict([])
+    dict_con_freq=dict([])
+    list_cen_vec=[]
+    con_freq_max=0
     for con_id in set(id_to_con):
         conwrdcol=[]
         conprcol=[]
+        con_freq=0
         for iter_ii in range(len(id_to_con)):
             if id_to_con[iter_ii] == con_id:
                 conwrdcol.append(id_to_word[iter_ii])
-                conprcol.append(prior[iter_ii])
+                conprcol.append(np.log(prior[iter_ii]))
+                con_freq=con_freq+prior[iter_ii]
         # step 2: generate word cloud by concept
-        text = ""
+        text_freq = dict([])
+        cen_vec=np.zeros(len(word_to_vec[conwrdcol[0]]))
+        prbsum=np.sum(np.exp(np.array(conprcol)))
         for wrd_ii in range(len(conwrdcol)):
-            text=text+(str(conwrdcol[wrd_ii])+" ")*Nwrd*conprcol[wrd_ii]
-        circle = Image.new('RGBA', size=(200, 200), color=(255, 255, 255, 255))
-        draw = ImageDraw.Draw(circle)
-        draw.ellipse((100 - 80, 100 - 80, 100 + 80, 100 + 80), fill=(0, 0, 0, 255))
-        circle2 = Image.new('RGBA', size=(200, 200), color=(0, 0, 0, 0))
-        draw = ImageDraw.Draw(circle2)
-        draw.ellipse((100 - 100, 100 - 100, 100 + 100, 100 + 100), fill=(0, 0, 0, 255))
+            text_freq[str(conwrdcol[wrd_ii])]=conprcol[wrd_ii]
+            cen_vec=cen_vec+np.exp(conprcol[wrd_ii])/prbsum*word_to_vec[conwrdcol[wrd_ii]]
+            # cen_vec = cen_vec + word_to_vec[conwrdcol[wrd_ii]]
+        # cen_vec=cen_vec/len(conwrdcol)
+        dict_conwrdcol[con_id]= conwrdcol
+        dict_conprcol[con_id] = conprcol
+        dict_cen_wvec[con_id] = cen_vec
+        list_cen_vec.append(cen_vec)
+        dict_text_freq[con_id]=text_freq
+        dict_con_freq[con_id]=con_freq
+        if con_freq>con_freq_max:
+            con_freq_max=con_freq
 
-        wordcloud = WordCloud(mask=np.array(circle), background_color="white").generate(text)
+    # Step 2: adjusting shift using force-field based method
+
+    # PCA projection of cen_vec
+    data=np.array(list_cen_vec).T
+    # res,pM=pca_proj(data, 2)
+    if pM is None:
+        pM=np.random.random((2,len(cen_vec)))
+    res=pM.dot(data)
+
+    size_scalex,size_scaley=400,400
+
+    dict_con_posi = dict([])
+    dict_con_radius = dict([])
+    for con_id in set(id_to_con):
+        cen_vec = dict_cen_wvec[con_id]
+        cen_posi = [pM.dot(cen_vec)[0] * size_scalex / 2, (pM.dot(cen_vec)[1]) * size_scaley / 2]
+        dict_con_posi[con_id] = np.array(cen_posi)
+        radius = min(size_scalex, size_scaley) / 2 * np.sqrt(dict_con_freq[con_id] / con_freq_max)
+        dict_con_radius[con_id]=radius
+
+    def cal_con_posi_stack(dict_con_radius,dist_margin=10):
+        """
+        Using random attaching algorithm
+        :param dict_con_radius:
+        :param dist_margin:
+        :return:
+        """
+        res_con_posi = dict([])
+        far_dist=100000
+        for con_id_ii in set(id_to_con):
+            if bool(res_con_posi):
+                rnddir=np.random.random(2)-0.5
+                rnddir=rnddir/np.linalg.norm(rnddir)
+                start_vec=far_dist*rnddir
+                min_dist=2*far_dist
+                min_id=None
+                for con_id_jj,posi in res_con_posi.items():
+                    dist=np.linalg.norm(start_vec-posi)
+                    if dist<min_dist:
+                        min_dist=dist
+                        min_id=con_id_jj
+                cal_vec=start_vec-res_con_posi[min_id]
+                cal_vec=cal_vec/np.linalg.norm(cal_vec)
+                cal_vec=cal_vec*(dict_con_radius[min_id]+dict_con_radius[con_id_ii]+dist_margin)+res_con_posi[min_id]
+                res_con_posi[con_id_ii]=cal_vec
+            else:
+                res_con_posi[con_id_ii] = np.zeros(2)
+
+        ####### KEY BUG !!!!! center of circle is different from edge of square
+        for con_id_ii in set(id_to_con):
+            res_con_posi[con_id_ii]=res_con_posi[con_id_ii]-dict_con_radius[con_id_ii]
+
+        return res_con_posi
+
+
+
+    # def cal_con_posi_stack(dict_con_radius,dist_margin=10):
+    #     """
+    #     Using stacking method to calculate con_posi
+    #     :param dict_con_radius:
+    #     :return:
+    #     """
+    #     res_con_posi=dict([])
+    #     BoundaryL=[]
+    #     for con_id_ii in set(id_to_con):
+    #         if not bool(res_con_posi) and not bool(BoundaryL): # All empty, step 1
+    #             res_con_posi[id_to_con]=np.zeros(2)
+    #             first_con_id=con_id_ii
+    #         elif bool(res_con_posi) and not bool(BoundaryL): # Boundary empty, step 2
+    #             BoundaryL.append((first_con_id,con_id_ii))
+    #             res_con_posi[id_to_con] = np.array([dict_con_radius[first_con_id]+dict_con_radius[con_id_ii]+dist_margin,0])
+    #         else:
+    #             # Pick a random boundary
+    #             pkid=int(np.ramdom.rand()*len(BoundaryL))
+    #             bound=BoundaryL[pkid]
+    #             cen1=res_con_posi[bound[0]]
+    #             cen2 = res_con_posi[bound[1]]
+    #
+    #
+    #         # Move to center
+    #         tot_cen=np.zeros(2)
+    #         totN=0
+    #         for cen in res_con_posi.values():
+    #             tot_cen=tot_cen+cen
+    #             totN=totN+1
+    #         tot_cen=tot_cen/totN
+    #         for con in res_con_posi.keys():
+    #             res_con_posi[con]=res_con_posi[con]-tot_cen
+
+
+    def cal_con_posi(init_con_posi,dict_con_radius,attr=0.01,rep=2.0,dist_margin=10,fxoy=1.0,iter=10000):
+        """
+        Calculate updated concept position using graviy field
+        :param init_con_posi:
+        :param dict_con_radius:
+        :param attr: attraction
+        :param rep: repulsion
+        :param dist_margin: distance margin between two concepts
+        :param fxoy: x over y aspect ratio
+        :return: cal_con_posi
+        """
+        res_con_posi=init_con_posi
+        # Expand to remove overlap
+        expansion_ratio=2.0
+        # for con_id_ii in set(id_to_con):
+        #     for con_id_jj in set(id_to_con):
+        #         if con_id_jj != con_id_ii:
+        #             # Global constant attraction
+        #             dist = np.linalg.norm (init_con_posi[con_id_jj] - init_con_posi[con_id_ii])
+        #             rsum=dict_con_radius[con_id_jj]+dict_con_radius[con_id_ii]
+        #             test_ratio=rsum/dist
+        #             if test_ratio>expansion_ratio:
+        #                 expansion_ratio=test_ratio
+        for con_id_ii in set(id_to_con):
+            res_con_posi[con_id_ii]=res_con_posi[con_id_ii]*expansion_ratio*1.1
+
+        # Move to center
+        tot_cen = np.zeros(2)
+        totN = 0
+        for cen in res_con_posi.values():
+            tot_cen = tot_cen + cen
+            totN = totN + 1
+        tot_cen = tot_cen / totN
+        for con in res_con_posi.keys():
+            res_con_posi[con] = res_con_posi[con] - tot_cen
+
+        for ii_iter in range(iter):
+            conlist=list(set(id_to_con))
+            pick=int(np.random.rand()*len(conlist))
+            con_id_ii=conlist[pick]
+
+            for con_id_jj in set(id_to_con):
+                if con_id_jj!=con_id_ii:
+
+                    diffvec=init_con_posi[con_id_jj]- init_con_posi[con_id_ii]
+                    dir_vec=diffvec/np.linalg.norm(diffvec)
+
+                    rd=np.linalg.norm(diffvec)
+                    rjj=dict_con_radius[con_id_jj]
+                    rii=dict_con_radius[con_id_ii]
+                    dist_val=rd-rjj-rii
+
+                    res_con_posi[con_id_ii] = res_con_posi[con_id_ii] + attr * (dist_val-dist_margin) * dir_vec
+
+                    if dist_val < dist_margin:
+                        res_con_posi[con_id_ii] = res_con_posi[con_id_ii] - 1.1 *(dist_margin-dist_val)*diffvec/np.linalg.norm(diffvec)
+
+        ####### KEY BUG !!!!! center of circle is different from edge of square
+        for con_id_ii in set(id_to_con):
+            res_con_posi[con_id_ii] = res_con_posi[con_id_ii] - dict_con_radius[con_id_ii]
+
+        return res_con_posi
+
+
+    res_con_posi=cal_con_posi(dict_con_posi, dict_con_radius)
+    # res_con_posi = cal_con_posi_stack(dict_con_radius)
+    # res_con_posi=dict_con_posi
+    # Move to center
+    # tot_cen = np.zeros(2)
+    # totN = 0
+    # for cen in res_con_posi.values():
+    #     tot_cen = tot_cen + cen
+    #     totN = totN + 1
+    # tot_cen = tot_cen / totN
+    # for con in res_con_posi.keys():
+    #     res_con_posi[con] = res_con_posi[con] - tot_cen
+    minx=0
+    miny=0
+    for con_id in set(id_to_con):
+        if res_con_posi[con_id][0]<minx:
+            minx=res_con_posi[con_id][0]
+        if res_con_posi[con_id][1]<miny:
+            miny=res_con_posi[con_id][1]
+
+    # Step 3: actually draw the figure
+
+    img1 = Image.new('RGBA', size=(1,1), color=(255, 255, 255, 255))
+    for con_id in set(id_to_con):
+        print(con_id)
+        radius = dict_con_radius[con_id]
+        circle = Image.new('RGBA', size=(int(2*radius),int(2*radius)), color=(255, 255, 255, 255))
+        draw = ImageDraw.Draw(circle)
+        draw.ellipse((0, 0, 2*radius, 2*radius), fill=(0, 0, 0, 255))
+        circle2 = Image.new('RGBA', size=(int(2*radius),int(2*radius)), color=(0, 0, 0, 0))
+        draw = ImageDraw.Draw(circle2)
+        draw.ellipse((0, 0, 2*radius, 2*radius), fill=(0, 0, 0, 255))
+        text_freq=dict_text_freq[con_id]
+        wordcloud = WordCloud(mask=np.array(circle), background_color="white").generate_from_frequencies(text_freq)
         data2 = wordcloud.to_array()
         img2 = Image.fromarray(data2, 'RGB')
         img2 = img2.convert("RGBA")
-        shift = (np.random.rand()*500, np.random.rand()*500)
+        shift=tuple((res_con_posi[con_id]-np.array([minx,miny])).astype(int))
         nw, nh = map(max, map(operator.add, img2.size, shift), img1.size)
 
-        # paste img1 on top of img2
-        newimg1 = Image.new('RGBA', size=(nw, nh), color=(255, 255, 255, 255))
-        newimg1.paste(img2, shift, circle2)
-        newimg1.paste(img1, (0, 0))
-
-        # paste img2 on top of img1
-        newimg2 = Image.new('RGBA', size=(nw, nh), color=(255, 255, 255, 255))
-        newimg2.paste(img1, (0, 0))
-        newimg2.paste(img2, shift, circle2)
+        newimg = Image.new('RGBA', size=(nw, nh), color=(255, 255, 255, 255))
+        newimg.paste(img1, (0, 0))
+        newimg.paste(img2, shift, circle2)
 
         # blend with alpha=0.5
-        img1 = Image.blend(newimg1, newimg2, alpha=0.5)
+        # img1 = Image.blend(newimg1, newimg2, alpha=0.5)
+        img1=newimg
+
+        print(shift)
 
     plt.imshow(img1, interpolation='bilinear')
-    plt.axis("off")
+    plt.axis("on")
     plt.margins(x=0, y=0)
     plt.show()
 
