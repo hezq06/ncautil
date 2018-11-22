@@ -24,7 +24,7 @@ import matplotlib.ticker as ticker
 from wordcloud import WordCloud
 import operator
 from PIL import Image
-from PIL import ImageDraw
+from PIL import ImageDraw,ImageFont
 
 def cluster(data,n_clusters,mode="kmeans"):
     """
@@ -607,6 +607,7 @@ def pl_conceptbubblecloud(id_to_con,id_to_word,prior,word_to_vec, pM=None):
     # Step 3: actually draw the figure
 
     img1 = Image.new('RGBA', size=(1,1), color=(255, 255, 255, 255))
+
     for con_id in set(id_to_con):
         print(con_id)
         radius = dict_con_radius[con_id]
@@ -621,6 +622,12 @@ def pl_conceptbubblecloud(id_to_con,id_to_word,prior,word_to_vec, pM=None):
         data2 = wordcloud.to_array()
         img2 = Image.fromarray(data2, 'RGB')
         img2 = img2.convert("RGBA")
+        txt = Image.new('RGBA', img2.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(txt)
+        font = ImageFont.truetype("/usr/share/fonts/gnu-free/FreeSerif.ttf", int(radius))
+        w, h = font.getsize(str(con_id))
+        draw.text((radius-w/2, radius-h/2), str(con_id), (0, 0, 0, 128), font=font)
+        img2 = Image.alpha_composite(img2, txt)
         shift=tuple((res_con_posi[con_id]-np.array([minx,miny])).astype(int))
         nw, nh = map(max, map(operator.add, img2.size, shift), img1.size)
 
