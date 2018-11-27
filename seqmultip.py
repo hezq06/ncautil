@@ -898,7 +898,7 @@ class GRU_TWO(torch.nn.Module):
     PyTorch GRU for NLP, two GRU working together
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1):
-        super(GRU_TWO, self).__init__()
+        super(self.__class__, self).__init__()
 
         self.hidden_size = hidden_size
         self.input_size = input_size
@@ -931,6 +931,161 @@ class GRU_TWO(torch.nn.Module):
 
     def initHidden_cuda(self,device, batch):
         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
+class GRU_KNW_CRYSTAL(torch.nn.Module):
+    """
+    Cystalized GRU for knowledge distilling
+    """
+    def __init__(self, input_size, hidden_size, output_size, prior_vec=None):
+        """
+
+        :param input_size:
+        :param hidden_size:
+        :param output_size:
+        :param prior_vec: logit of prior knowledge
+        """
+        super(self.__class__, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+
+        # self.Wiz = torch.nn.Linear(input_size, hidden_size)
+        # self.Whz = torch.nn.Linear(hidden_size, hidden_size)
+        # self.Win = torch.nn.Linear(input_size, hidden_size)
+        # self.Whn = torch.nn.Linear(hidden_size, hidden_size)
+
+        self.in2ga = torch.nn.Linear(input_size, hidden_size)
+        self.in2gb = torch.nn.Linear(input_size, hidden_size)
+        self.in2gc = torch.nn.Linear(input_size, hidden_size)
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size,bias=True)
+
+        if type(prior_vec)!=type(None):
+            self.prior_vec=torch.from_numpy(np.array(prior_vec))
+            self.prior_vec = self.prior_vec.type(torch.FloatTensor)
+        else:
+            self.prior_vec = torch.zeros(output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.gate_layer=None
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+        self.gpuavail = gpuavail
+
+    def forward(self, input, hidden, schedule=None):
+        """
+        Forward, GRU WTA path scheduling
+        :param input:
+        :param hidden:
+        :return:
+        """
+        # hout, hn = self.gru(input,hidden1)
+        # # hout = self.cdrop(hout) # dropout layer
+        # hout2con=self.h2c(hout)
+        # argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
+        # self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
+        # self.concept_layer.scatter_(-1, argmax, 1.0)
+        # self.concept_layer=self.concept_layer+wta_noise*torch.rand(self.concept_layer.shape).to(self.device)
+        # if self.block_mode:
+        #     hout2con_masked = self.concept_layer
+        # else:
+        #     hout2con_masked=hout2con*self.concept_layer
+        #     hout2con_masked=hout2con_masked/torch.norm(hout2con_masked,2,-1,keepdim=True)
+        #     self.hout2con_masked=hout2con_masked
+        #
+        # hout2con2 = hout2con / torch.norm(hout2con, 2, -1, keepdim=True)
+        #
+        # output = self.c2o(schedule * hout2con_masked + (1 - schedule) * hout2con2)
+        #
+        # if add_logit is not None:
+        #     output=output+add_logit
+        # if not logit_mode:
+        #     output=self.softmax(output)
+        # return output,hn
+
+        gate_a=self.in2ga(input)
+        gate_b = self.in2ga(input)
+        gate_c = self.in2ga(input)
+        shape=gate_a.shape
+        gate = torch.cat((gate_a.view(shape[0],shape[1],shape[2],1),gate_b.view(shape[0],shape[1],shape[2],1),
+                          gate_c.view(shape[0],shape[1],shape[2],1)),dim=-1)
+        argmax = torch.argmax(gate, dim=-1, keepdim=True)
+        self.gate_layer = torch.zeros(gate.shape).to(self.device)
+        self.gate_layer.scatter_(-1, argmax, 1.0)
+        gate_masked = gate * self.gate_layer
+        gate_masked=gate_masked/torch.norm(gate_masked,2,-1,keepdim=True)
+        gate_masked_c=gate_masked[:,:,:,2].view(shape[0],shape[1],shape[2])
+        gate_masked_a = gate_masked[:, :, :, 0].view(shape[0], shape[1], shape[2])
+        ht = hidden * gate_masked_c + (1-gate_masked_c)*gate_masked_a
+
+        output = self.h2o(ht)
+        output = self.softmax(output)
+
+        return output, ht
+
+    def forward_concept_ext(self, input, hidden, npM_ext, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward function for concept extend to full output with possbility extension matrix M_ext
+        (P_N= M_ext.dot(Pc)
+        :param input:
+        :param hidden:
+        :return:
+        """
+        gate_a = self.in2ga(input)
+        gate_b = self.in2ga(input)
+        gate_c = self.in2ga(input)
+        shape = gate_a.shape
+        gate = torch.cat((gate_a.view(shape[0], shape[1], shape[2], 1), gate_b.view(shape[0], shape[1], shape[2], 1),
+                          gate_c.view(shape[0], shape[1], shape[2], 1)), dim=-1)
+        argmax = torch.argmax(gate, dim=-1, keepdim=True)
+        self.gate_layer = torch.zeros(gate.shape).to(self.device)
+        self.gate_layer.scatter_(-1, argmax, 1.0)
+        gate_masked = gate * self.gate_layer
+        gate_masked = gate_masked / torch.norm(gate_masked, 2, -1, keepdim=True)
+        gate_masked_c = gate_masked[:, :, :, 2].view(shape[0], shape[1], shape[2])
+        gate_masked_a = gate_masked[:, :, :, 0].view(shape[0], shape[1], shape[2])
+        ht = hidden * gate_masked_c + (1 - gate_masked_c) * gate_masked_a
+
+        output = self.h2o(ht)
+        output = self.softmax(output)
+
+        p_output = torch.exp(output) / torch.sum(torch.exp(output),-1,keepdim=True)
+        M_ext=torch.from_numpy(np.array(npM_ext))
+        M_ext=M_ext.type(torch.FloatTensor)
+        if torch.cuda.is_available():
+            M_ext.to(self.device)
+        N_p_output=torch.matmul(p_output.to(self.device), M_ext.to(self.device))
+        output_ext=torch.log(N_p_output)
+        return output_ext,ht
+
+    # def forward(self, input, hidden, batch=None, add_prior=None):
+    #     """
+    #
+    #     :param input: input
+    #     :param hidden: hidden
+    #     :param result:
+    #     :return:
+    #     """
+    #     zt=self.sigmoid(self.Wiz(input)+self.Whz(hidden))
+    #     nt = self.sigmoid(self.Win(input) +  self.Whn(hidden))
+    #     ht = (1 - zt) * nt + zt * hidden
+    #
+    #     if add_prior is None:
+    #         output = self.h2o(ht)+self.prior_vec
+    #     else:
+    #         output = self.h2o(ht) + self.prior_vec + add_prior
+    #     output = self.softmax(output)
+    #     return output, ht
+
+    def initHidden(self, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
 
 class KNW_CELL(torch.nn.Module):
     """
