@@ -16,6 +16,7 @@ import copy
 
 import torch
 from torch.autograd import Variable
+from ncautil.ncalearn import *
 
 
 def one_hot(num, lsize):
@@ -1007,9 +1008,10 @@ class GRU_KNW_CRYSTAL(torch.nn.Module):
         #     output=self.softmax(output)
         # return output,hn
 
-        gate_a=self.in2ga(input)
-        gate_b = self.in2ga(input)
-        gate_c = self.in2ga(input)
+        ## WTA for gates
+        gate_a = self.in2ga(input)
+        gate_b = self.in2gb(input)
+        gate_c = self.in2gc(input)
         shape=gate_a.shape
         gate = torch.cat((gate_a.view(shape[0],shape[1],shape[2],1),gate_b.view(shape[0],shape[1],shape[2],1),
                           gate_c.view(shape[0],shape[1],shape[2],1)),dim=-1)
@@ -1021,6 +1023,20 @@ class GRU_KNW_CRYSTAL(torch.nn.Module):
         gate_masked_c=gate_masked[:,:,:,2].view(shape[0],shape[1],shape[2])
         gate_masked_a = gate_masked[:, :, :, 0].view(shape[0], shape[1], shape[2])
         ht = hidden * gate_masked_c + (1-gate_masked_c)*gate_masked_a
+
+        ## Scheduling WTA for hidden layer
+        # upper_t = 0.3
+        # Nind = int((1.0 - schedule) * (self.hidden_size - 2) * upper_t) + 1  # Number of Nind largest number kept
+        #
+        # # First WTA scheduling of input
+        # argmax_i = np.argsort(-ht, axis=-1)[:, :, 0:Nind]
+        # argmax_i = torch.from_numpy(argmax_i).to(self.device)
+        # self.concept_layer_i = torch.zeros(ginput.shape).to(self.device)
+        # self.concept_layer_i.scatter_(-1, argmax_i, 1.0)
+        #
+        # ginput_masked = ginput * self.concept_layer_i
+        # ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+
 
         output = self.h2o(ht)
         output = self.softmax(output)
@@ -1035,23 +1051,8 @@ class GRU_KNW_CRYSTAL(torch.nn.Module):
         :param hidden:
         :return:
         """
-        gate_a = self.in2ga(input)
-        gate_b = self.in2ga(input)
-        gate_c = self.in2ga(input)
-        shape = gate_a.shape
-        gate = torch.cat((gate_a.view(shape[0], shape[1], shape[2], 1), gate_b.view(shape[0], shape[1], shape[2], 1),
-                          gate_c.view(shape[0], shape[1], shape[2], 1)), dim=-1)
-        argmax = torch.argmax(gate, dim=-1, keepdim=True)
-        self.gate_layer = torch.zeros(gate.shape).to(self.device)
-        self.gate_layer.scatter_(-1, argmax, 1.0)
-        gate_masked = gate * self.gate_layer
-        gate_masked = gate_masked / torch.norm(gate_masked, 2, -1, keepdim=True)
-        gate_masked_c = gate_masked[:, :, :, 2].view(shape[0], shape[1], shape[2])
-        gate_masked_a = gate_masked[:, :, :, 0].view(shape[0], shape[1], shape[2])
-        ht = hidden * gate_masked_c + (1 - gate_masked_c) * gate_masked_a
 
-        output = self.h2o(ht)
-        output = self.softmax(output)
+        output, ht = self.forward(input,hidden)
 
         p_output = torch.exp(output) / torch.sum(torch.exp(output),-1,keepdim=True)
         M_ext=torch.from_numpy(np.array(npM_ext))
@@ -1080,6 +1081,31 @@ class GRU_KNW_CRYSTAL(torch.nn.Module):
     #         output = self.h2o(ht) + self.prior_vec + add_prior
     #     output = self.softmax(output)
     #     return output, ht
+
+    def knw_distill(self):
+        """
+        Distill knwledge from trained network
+        KNW style KNW{"setter":[0,1,2],"resetter":[3,4,5],"knw_vec":vec}
+        :return:
+        """
+        knw_list_res=[]
+        hidden = self.initHidden_cuda(self.device)
+        for knw_id in range(self.hidden_size):
+            knw_dict=dict([])
+            knw_dict["setter"]=[]
+            knw_dict["resetter"] = []
+            knw_dict["knw_vec"] = self.h2o.weight.cpu().data.numpy()[:,knw_id]
+            knw_dict["knw_entropy"] = cal_entropy(knw_dict["knw_vec"],logit=True)
+            for con_id in range(self.input_size):
+                test_in = torch.zeros([1, 1, self.input_size]).to(self.device) # !!!!!!! test_in.to(self.device) takes no effect
+                test_in[0,0,con_id]=1
+                output, ht = self.forward(test_in,hidden)
+                if self.gate_layer[0,0,knw_id,:][0]==1: # setter
+                    knw_dict["setter"].append(con_id)
+                elif self.gate_layer[0,0,knw_id,:][1]==1: # retter
+                    knw_dict["resetter"].append(con_id)
+            knw_list_res.append(knw_dict)
+        return knw_list_res
 
     def initHidden(self, batch=1):
         return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)

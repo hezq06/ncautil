@@ -670,13 +670,17 @@ def cal_pdist(data):
     dist=np.sum(np.abs(data-orin))*np.sum(np.abs(data-orin))/2
     return dist
 
-def cal_entropy(data):
+def cal_entropy(data,logit=False):
     """
     Cal entropy of a vector
     :param data:
+    :param logit: if input data is logit mode
     :return:
     """
-    data=np.array(data)+1e-9
+    if logit:
+        data=np.exp(data)
+    else:
+        data=np.array(data)+1e-9
     data=data/np.sum(data)
     assert len(data.shape) == 1
     assert np.min(data)>0
@@ -1181,11 +1185,11 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     def custom_KNWLoss(outputl, outlab, model, cstep):
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
-        # logith2o = model.h2o.weight
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-        return loss1  #+ 0.01 * l1_reg + 0.05 * lossh2o
+        logith2o = model.h2o.weight
+        pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        l1_reg = model.h2o.weight.norm(2)
+        return loss1 + 0.01 * lossh2o  + 0.01 * l1_reg
 
     optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
 
