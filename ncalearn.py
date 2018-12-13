@@ -1185,11 +1185,11 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     def custom_KNWLoss(outputl, outlab, model, cstep):
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
-        logith2o = model.h2o.weight
-        pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        l1_reg = model.h2o.weight.norm(2)
-        return loss1 + 0.01 * lossh2o  + 0.01 * l1_reg
+        # logith2o = model.h2o.weight
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1 #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
 
@@ -1260,7 +1260,8 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                     output, hidden = rnn(x, hidden, add_logit=veccoopm)
                 else:
                     # output, hidden = rnn(x, hidden,wta_noise=1.0+0.0*(1.0-iis/step))
-                    output, hidden = rnn(x, hidden)
+                    # output, hidden = rnn(x, hidden)
+                    output = rnn.pre_training(x)
                 if type(outputl) == type(None):
                     outputl = output.view(batch, lsize_out, 1)
                 else:
@@ -1399,3 +1400,214 @@ def logit_space_atransfer(seq):
         vecp = aproj(vec, basis)
         resp.append(vecp)
     return resp
+
+
+def run_training_stack(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None, seqtrain=False,
+                 coop=None, coopseq=None, id_2_vec=None):
+    """
+    General rnn training funtion for one-hot training
+    Not working yet !!!!!!
+    :param dataset:
+    :param lsize:
+    :param model:
+    :param step:
+    :param learning_rate:
+    :param batch:
+    :param window:
+    :param save:
+    :param seqtrain:
+    :param coop: a cooperational rnn unit
+    :param coopseq: a pre-calculated cooperational logit vec
+    :return:
+    """
+    if type(lsize) is list:
+        lsize_in = lsize[0]
+        lsize_out = lsize[1]
+    else:
+        lsize_in = lsize
+        lsize_out = lsize
+    prtstep = int(step / 10)
+    startt = time.time()
+    datab = []
+    if id_2_vec is None:  # No embedding, one-hot representation
+        for data in dataset:
+            datavec = np.zeros(lsize_in)
+            datavec[data] = 1
+            datab.append(datavec)
+    else:
+        for data in dataset:
+            datavec = np.array(id_2_vec[data])
+            datab.append(datavec)
+    databp = torch.from_numpy(np.array(datab))
+    if coopseq is not None:
+        coopseq = torch.from_numpy(np.array(coopseq))
+        coopseq = coopseq.type(torch.FloatTensor)
+
+    rnn.train()
+
+    if coop is not None:
+        coop.eval()  # Not ensured to work !!!
+
+    def custom_KNWLoss(outputl, outlab, model, cstep):
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        logith2o = model.h2o.weight
+        pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1  # + 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def custom_StackLoss(perpl):
+        """
+        Special cost for stack FF mode
+        :param perpl:
+        :param stackl:
+        :param input_size:
+        :return:
+        """
+        loss = torch.mean(perpl)
+        return loss
+
+    optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+
+    train_hist = []
+    his = 0
+
+    gpuavail = torch.cuda.is_available()
+    device = torch.device("cuda:0" if gpuavail else "cpu")
+    # If we are on a CUDA machine, then this should print a CUDA device:
+    print(device)
+    if gpuavail:
+        rnn.to(device)
+
+    for iis in range(step):
+
+        rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+
+        if gpuavail:
+            hidden = rnn.initHidden_cuda(device, batch)
+        else:
+            hidden = rnn.initHidden(batch)
+
+        # Generating output label
+        yl = []
+        for iiss in range(window):
+            ylb = []
+            for iib in range(batch):
+                wrd = dataset[(int(rstartv[iib]) + iiss + 1)]
+                ylb.append(wrd)
+            yl.append(np.array(ylb))
+        outlab = Variable(torch.from_numpy(np.array(yl).T))
+        outlab = outlab.type(torch.LongTensor)
+
+        # step by step training
+        if not seqtrain:
+            outputl = None
+            for iiss in range(window):
+                # print("iiss",iiss)
+            #     vec1m = None
+            #     vec2m = None
+            #     if coopseq is not None:
+            #         veccoopm = None
+            #     for iib in range(batch):
+            #         vec1 = databp[(int(rstartv[iib]) + iiss), :]
+            #         vec2 = databp[(int(rstartv[iib]) + iiss + 1), :]
+            #         if vec1m is None:
+            #             vec1m = vec1.view(1, -1)
+            #             vec2m = vec2.view(1, -1)
+            #         else:
+            #             vec1m = torch.cat((vec1m, vec1.view(1, -1)), dim=0)
+            #             vec2m = torch.cat((vec2m, vec2.view(1, -1)), dim=0)
+            #         if coopseq is not None:
+            #             veccoop = coopseq[(int(rstartv[iib]) + iiss + 1), :]
+            #             if veccoopm is None:
+            #                 veccoopm = veccoop.view(1, -1)
+            #             else:
+            #                 veccoopm = torch.cat((veccoopm, veccoop.view(1, -1)), dim=0)
+            #     # One by one guidance training ####### error can propagate due to hidden state
+            #     x = Variable(vec1m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)  #
+            #     y = Variable(vec2m.reshape(1, batch, lsize_in).contiguous(), requires_grad=True)
+
+                vec1m = None
+                for iib in range(batch):
+                    vec1 = databp[int(rstartv[iib]):int(rstartv[iib]) + window, :]
+                    if type(vec1m) == type(None):
+                        vec1m = vec1.view(1,window, -1)
+                    else:
+                        vec1m = torch.cat((vec1m, vec1.view(1, window, -1)), dim=0)
+                vec1m=vec1m.type(torch.FloatTensor)
+                output, hidden = rnn(vec1m, hidden)
+                if type(outputl) == type(None):
+                    try:
+                        outputl = output.view(batch, 1)
+                    except:
+                        pass
+                elif output is not None:
+                    outputl = torch.cat((outputl.view(-1), output.view(-1)), dim=-1)
+            # loss = custom_KNWLoss(outputl, outlab, rnn, iis)
+
+            # print("Before loss:",outputl)
+            loss = custom_StackLoss(outputl)
+            # if gpuavail:
+            #     del outputl,outlab
+            #     torch.cuda.empty_cache()
+        else:
+            # LSTM/GRU provided whole sequence training
+            vec1m = None
+            vec2m = None
+            for iib in range(batch):
+                vec1 = databp[int(rstartv[iib]):int(rstartv[iib]) + window, :]
+                vec2 = databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1, :]
+                if type(vec1m) == type(None):
+                    vec1m = vec1.view(window, 1, -1)
+                    vec2m = vec2.view(window, 1, -1)
+                else:
+                    vec1m = torch.cat((vec1m, vec1.view(window, 1, -1)), dim=1)
+                    vec2m = torch.cat((vec2m, vec2.view(window, 1, -1)), dim=1)
+            x = Variable(vec1m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)  #
+            y = Variable(vec2m.reshape(window, batch, lsize_in).contiguous(), requires_grad=True)
+            x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            if gpuavail:
+                outlab = outlab.to(device)
+                x, y = x.to(device), y.to(device)
+            output, hidden = rnn(x, hidden, schedule=iis / step)
+            # output, hidden = rnn(x, hidden, wta_noise=0.2 * (1.0 - iis / step))
+            loss = custom_KNWLoss(output.permute(1, 2, 0), outlab, rnn, iis)
+            # if gpuavail:
+            #     del x,y,outlab
+            #     torch.cuda.empty_cache()
+
+        if prtstep>0:
+            if int(iis / prtstep) != his:
+                print("Perlexity: ", iis, np.exp(loss.item()))
+                his = int(iis / prtstep)
+        else:
+            print("Perlexity: ", iis, np.exp(loss.item()))
+
+        train_hist.append(np.exp(loss.item()))
+
+        optimizer.zero_grad()
+
+        loss.backward()
+
+        optimizer.step()
+
+    endt = time.time()
+    print("Time used in training:", endt - startt)
+
+    x = []
+    for ii in range(len(train_hist)):
+        x.append([ii, train_hist[ii]])
+    x = np.array(x)
+    try:
+        plt.plot(x[:, 0], x[:, 1])
+        if type(save) != type(None):
+            plt.savefig(save)
+            plt.gcf().clear()
+        else:
+            # plt.ylim((0, 2000))
+            plt.show()
+    except:
+        pass
+    torch.cuda.empty_cache()
+    return rnn

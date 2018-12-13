@@ -38,6 +38,95 @@ class SeqGen(object):
     def __init__(self):
         self.vocab = dict([])
 
+    def gen_hierachical_tree_seq(self, length=50,depth_p=0.8,depth_max=3, mode_num=True):
+        """
+        Generate symbolic seqence using a set of hierachical tree rule.
+        :param length: length of top "S"
+        :param depth_p: possibility of extending a next tree
+        :param depth_max: maximum depth
+        :return:
+        """
+        wrd_2_id={
+            "S":0,
+            "A":1,
+            "V":2,
+            "D":3,
+            "J":4,
+            "B":5,
+            "P":6
+        }
+        rules={
+            # "Parent Node":["Leaf Node 1","Leaf Node 2", Strength]
+            "S": [["S", "S", 1],["A","V",1]],
+            "A":[["D","A",1],["A","A",1],["J","A",1]],
+            "V":[["B","V",1]],
+            "J":[["P","A",1]]
+        }
+        # rules = {
+        #     # "Parent Node":["Leaf Node 1","Leaf Node 2", Strength]
+        #     "S": [["A", "V", 1]],
+        #     "A": [["D", "A", 1]],
+        #     "V": [["B", "V", 1]],
+        #     "J": [["P", "A", 1]]
+        # }
+        seqres=["S"]*length
+
+        # def extend(IN,depth):
+        #     if rules.get(IN, None) is None:
+        #         OUT = IN
+        #     else:
+        #         extcheck=np.random.rand()
+        #         if extcheck>depth_p:
+        #             OUT = IN
+        #         elif depth>depth_max:
+        #             OUT = IN
+        #         else:
+        #             # We should extend syntax tree here
+        #             pickrules=rules[IN]
+        #             tot_str=np.sum(np.array([itemr[2] for itemr in pickrules]))
+        #             pick_rule_rnd=np.random.rand()
+        #             for ii_rule in pickrules:
+        #                 pick_rule_rnd=pick_rule_rnd-ii_rule[2]/tot_str
+        #                 if pick_rule_rnd<=0:
+        #                     # Do ii_rule
+        #                     OUT=[extend(ii_rule[0],depth+1),extend(ii_rule[1],depth+1)]
+        #                     break
+        #     return OUT
+        #
+        # seqout=[]
+        # for iit in range(len(seqres)):
+        #     seqout.append(extend(seqres[iit],0))
+
+
+        for extii in range(depth_max):
+            for iit in range(len(seqres)):
+                item = seqres[iit]
+                if rules.get(item,None) is None:
+                    pass
+                else:
+                    extcheck=np.random.rand()
+                    if extcheck>depth_p:
+                        pass
+                    else:
+                        # We should extend syntax tree here
+                        pickrules=rules[item]
+                        tot_str=np.sum(np.array([itemr[2] for itemr in pickrules]))
+                        pick_rule_rnd=np.random.rand()
+                        for ii_rule in pickrules:
+                            pick_rule_rnd=pick_rule_rnd-ii_rule[2]/tot_str
+                            if pick_rule_rnd<=0:
+                                # Do ii_rule
+                                seqres[iit]=[ii_rule[0],ii_rule[1]]
+                                break
+            # Flatten seqres
+            seqres_flat = [item for sublist in seqres for item in sublist]
+            # print("Layer:",extii,seqres)
+            seqres=seqres_flat
+        if mode_num:
+            seqres=[wrd_2_id[wrd] for wrd in seqres]
+
+        return seqres
+
     def gen_freeseq(self,length,propl = [0.7, 0.1, 0.1, 0.1],onehot=False):
         """
         Free style stochastic seq

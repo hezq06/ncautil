@@ -482,6 +482,309 @@ class GRU_NLP(torch.nn.Module):
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
 
+class FF_NLP(torch.nn.Module):
+    """
+    PyTorch GRU for NLP
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+
+        self.i2h = torch.nn.Linear(input_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        self.hout = None
+
+        # dummy base
+        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
+        # self.ones=torch.ones(50,30,1).to(self.device)
+
+    def forward(self, input, hidden1=None, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        hidden = self.i2h(input)
+        hidden = self.tanh(hidden)
+        output = self.h2o(hidden)
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,None
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)
+
+class RECURSIVE_AUTOENCODER(torch.nn.Module):
+    """
+    Recursive auto-encoder
+    """
+    def __init__(self,input_size):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.ff = torch.nn.Linear(input_size, input_size)
+        self.ffknw_in = torch.nn.Linear(2 * input_size, input_size)
+        self.ffknw_outl = torch.nn.Linear(input_size, input_size)  # Auto-encoder kind
+        self.ffknw_outr = torch.nn.Linear(input_size, input_size)
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def pre_training(self,input):
+        predvec = self.ff(input)
+        predvec = self.softmax(predvec)
+        return predvec
+
+    def forward(self, input):
+        """
+        One step
+        :param input:
+        :return:
+        """
+        pass
+
+
+class STACK_FF_NLP(torch.nn.Module):
+    """
+    Stack augmented FF network for handling explanatory hierachical binary sequence
+    Not working yet !!!!!!!!!!
+    """
+    def __init__(self, input_size, hidden_size, output_size):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+
+        self.ff = torch.nn.Linear(input_size, input_size)
+        self.ffgate = torch.nn.Linear(1, 2) # Gate should link with perp
+        # self.ffgate = torch.nn.Linear(2 * input_size , 2)
+        self.ffknw_in = torch.nn.Linear(2 * input_size, input_size)
+        self.ffknw_outh = torch.nn.Linear(input_size, input_size) # Auto-encoder kind
+        self.ffknw_outi = torch.nn.Linear(input_size, input_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.max_depth=6 # 5+1
+        self.window_size=10
+
+    def wta_layer(self,l_input,Nind=1,wta_noise=0.0):
+        np_input=l_input.data.numpy()
+        argmax_i = np.argsort(-np_input, axis=-1)[:, :, 0:Nind]
+        argmax_i = torch.from_numpy(argmax_i)
+        concept_layer_i = torch.zeros(l_input.shape)
+        concept_layer_i.scatter_(-1, argmax_i, 1.0)
+        concept_layer_i = concept_layer_i + wta_noise * torch.rand(concept_layer_i.shape)
+
+        ginput_masked = l_input * concept_layer_i
+        ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+        return ginput_masked
+
+    def pre_training(self,input):
+        predvec = self.ff(input)
+        predvec = self.softmax(predvec)
+        return predvec
+
+    def fknw(self,invec,hvec):
+        inp_cat = torch.cat((invec.view(1, 1, -1), hvec.view(1, 1, -1)), dim=-1)
+        new_inp = self.ffknw_in(inp_cat)
+        new_inp = torch.exp(self.softmax(new_inp))
+        # new_inp = self.wta_layer(new_inp)
+        return new_inp
+
+    def forward(self, input, stackl):
+
+        """
+        Forward
+        :param input:
+        :param stackl: [stack,pointer]
+        :return:
+        """
+        # for param in self.ff.parameters():
+        #     param.requires_grad = False
+
+        stack=stackl[0]
+        stack_pointer = stackl[1]
+        input_pointer = stackl[2]
+        # print("init,",input_pointer)
+        rprepush = 1.0 # total push prob until now
+        resperp = torch.tensor(0.0)
+
+        def push(vec,stack,pointer):
+            """
+            Quantum push
+            :param vec:
+            :param stack: a mixed quantum stack
+            :param pointer: a quantum pointer
+            :return:
+            """
+            stack=stack*(1-pointer).view(pointer.shape[0],pointer.shape[1],1)+torch.matmul(pointer.view(pointer.shape[0],pointer.shape[1],1),vec)
+            pointer_new = torch.cat((torch.tensor(0.0).view(pointer.shape[0], 1),pointer[:, :-1]),dim=-1)
+            return stack, pointer_new
+
+        def pop(stack,pointer):
+            """
+            Quantum pop
+            :param stack:
+            :param pointer:
+            :return:
+            """
+            pointer_new = torch.cat((pointer[:,1:], torch.tensor(0.0).view(pointer.shape[0],1)),dim=-1)
+            if torch.sum(pointer_new, -1) > 0:
+                outvec = torch.matmul(pointer_new/torch.sum(pointer_new, -1),stack)
+            else:
+                outvec = torch.matmul(pointer_new, stack)
+            stack_new=(1-pointer_new).view(pointer_new.shape[0],pointer_new.shape[1],1)*stack
+            addvec=torch.zeros(pointer_new.shape)
+            addvec[:,0]=1
+            pointer_new=pointer_new+addvec*pointer[:,0] # pointer[:,0] is invalid for pop
+            return outvec, stack_new, pointer_new
+
+        def read(stack,pointer):
+            """
+            Quantum read
+            :param stack:
+            :param pointer:
+            :return:
+            """
+            outvec = torch.matmul(pointer,stack)
+            return outvec
+
+        def get(input,pointer):
+            """
+            Quantum get
+            :param input:
+            :param pointer:
+            :return:
+            """
+            outvec = torch.matmul(pointer[:,:-1],input)
+            pointer_new = torch.cat((torch.tensor(0.0).view(pointer.shape[0], 1), pointer[:, :-1]), dim=-1)
+            pointer_new[:,-1]=pointer_new[:,-1]+pointer[:,-1]
+            return outvec, pointer_new
+
+        def cal_kldiv_torch(p, q):
+            """
+            Cal KL divergence of p over q
+            :param data:
+            :return:
+            """
+            p = p + 1e-9
+            q = q + 1e-9
+            p = p / torch.sum(p)
+            q = q / torch.sum(q)
+            kld = torch.sum(p * torch.log(p / q))
+            return kld
+
+        def calforward(invec,hvec):
+
+            # print("calforward 1,", invec, hvec)
+            predvec = self.ff(hvec)
+            predvec = self.softmax(predvec)
+            # perp_pred = -torch.sum(invec * predvec) + torch.log(torch.sum(torch.exp(predvec)))
+            perp_pred=cal_kldiv_torch(predvec, invec)
+
+            new_inp = self.fknw(invec,hvec)
+            proj_hvec = self.ffknw_outh(new_inp)
+            proj_hvec=torch.exp(self.softmax(proj_hvec))
+            proj_invec = self.ffknw_outi(new_inp)
+            proj_invec=torch.exp(self.softmax(proj_invec))
+
+            perp_invec = cal_kldiv_torch(proj_invec, invec)
+            perp_hvec = cal_kldiv_torch(proj_hvec, hvec)
+            perp=perp_pred+perp_invec/2+perp_hvec/2
+
+            # inp_cat = torch.cat((invec.view(1, 1, -1), hvec.view(1, 1, -1)), dim=-1)
+            # gatevec = self.ffgate(inp_cat)
+            gatevec = self.ffgate(perp_pred.view(-1))
+            gatevec = torch.exp(self.softmax(gatevec))  # gatevec [PUSP prop, POP prob]
+            gatevec=gatevec.view(-1)
+
+            if torch.sum(hvec, -1) == 0: # No hvec means PUSH
+                gatevec=torch.from_numpy(np.array([1.0,0.0]))
+                gatevec=gatevec.type(torch.FloatTensor)
+            elif torch.sum(invec, -1) == 0: # No invec means POP
+                # print("POP")
+                gatevec=torch.from_numpy(np.array([0.0,1.0]))
+                gatevec=gatevec.type(torch.FloatTensor)
+            # print("calforward 2,", gatevec, perp, invec)
+            return gatevec,perp,new_inp
+
+        new_input_pointer = torch.zeros(self.window_size+1)
+        new_stack_pointer = torch.zeros(self.hidden_size)
+        new_stack = torch.zeros(stack.shape)
+        stackmem=[]
+        stack_pointermem=[]
+        input_pointermem=[]
+        wldlprobmem=torch.zeros(self.max_depth)
+        perpmem=torch.zeros(self.max_depth)
+        for ii_wrdl in range(self.max_depth): # different world line
+            if ii_wrdl == 0: # POP POPC PUSH
+                invec,stack_new_1, stack_pointer_1 = pop(stack, stack_pointer)
+                hvec, stack_new_1, stack_pointer_1 = pop(stack_new_1, stack_pointer_1)
+                gatevec, perp , new_inp= calforward(invec,hvec)
+                perpmem[ii_wrdl]=perpmem[ii_wrdl]+perp
+                stack_new_1,stack_pointer_1=push(new_inp,stack_new_1,stack_pointer_1)
+                stackmem.append(stack_new_1)
+                stack_pointermem.append(stack_pointer_1)
+                input_pointermem.append(input_pointer)
+                wldlprobmem[ii_wrdl]=wldlprobmem[ii_wrdl]+gatevec[1]
+                # print("cal ii_wrdl1 ", ii_wrdl, gatevec, resperp, rprepush,stack_pointer_1,new_stack_pointer)
+            elif ii_wrdl >= 1:
+                # print("ii_wrdl:", ii_wrdl)
+                input_pointer_2=input_pointer
+                stack_new_2=stack
+                stack_pointer_2=stack_pointer
+                for ii_push in range(ii_wrdl-1):
+                    invec, input_pointer_2 = get(input,input_pointer_2)
+                    hvec = read(stack,stack_pointer_2)
+                    stack_new_2, stack_pointer_2 = push(invec, stack_new_2, stack_pointer_2)
+                invec, input_pointer_2 = get(input, input_pointer_2)
+                hvec, stack_new_2, stack_pointer_2 = pop(stack_new_2, stack_pointer_2)
+                gatevec, perp, new_inp = calforward(invec, hvec)
+                stack_new_2, stack_pointer_2 = push(new_inp, stack_new_2, stack_pointer_2)
+                stackmem.append(stack_new_2)
+                stack_pointermem.append(stack_pointer_2)
+                input_pointermem.append(input_pointer_2)
+                input_avail=1-input_pointer_2[:,-1]
+                wldlprobmem[ii_wrdl] = wldlprobmem[ii_wrdl] + (1.0-wldlprobmem[ii_wrdl-1]) * gatevec[1]*input_avail
+                perpmem[ii_wrdl] = perpmem[ii_wrdl] + perp
+
+        wldlprobmem=wldlprobmem/torch.sum(wldlprobmem)
+        # print("perpmem",perpmem)
+        resperp=torch.sum(wldlprobmem*perpmem)
+        # print("resperp", resperp)
+        for ii_wrdl in range(self.max_depth):
+            new_input_pointer=new_input_pointer+wldlprobmem[ii_wrdl]*input_pointermem[ii_wrdl]
+            new_stack_pointer=new_stack_pointer+wldlprobmem[ii_wrdl]*stack_pointermem[ii_wrdl]
+            new_stack=new_stack+wldlprobmem[ii_wrdl]*stackmem[ii_wrdl]
+        if torch.sum(new_stack_pointer, -1)>0:
+            new_stack_pointer = new_stack_pointer / torch.sum(new_stack_pointer, -1, keepdim=True)
+        if torch.sum(new_input_pointer, -1)>0:
+            new_input_pointer = new_input_pointer / torch.sum(new_input_pointer, -1, keepdim=True)
+        # print("End,",new_stack_pointer,new_input_pointer)
+        return resperp,[new_stack, new_stack_pointer, new_input_pointer]
+
+    def initHidden(self,batch):
+        # Initialization of stack,stack_pointer,input_pointer
+        stack_pointer=torch.zeros(batch, self.hidden_size)
+        stack_pointer[:,0]=1
+        # Adding an extra space of "running out of input" for input_pointer
+        input_pointer=torch.zeros(batch, self.window_size+1)
+        input_pointer[:, 0] = 1
+        return [Variable(torch.zeros(batch, self.hidden_size,self.input_size), requires_grad=True),stack_pointer,input_pointer]
+
 class GRU_NLP_WTA(torch.nn.Module):
     """
     PyTorch GRU for NLP, with winner takes all output layer to form concept cluster
@@ -730,15 +1033,15 @@ class FF_NLP_WTA(torch.nn.Module):
         PyTorch GRU for NLP, with winner takes all output layer to form concept cluster
         """
 
-    def __init__(self, input_size, hidden_size, concept_size, output_size, block_mode=True):
+    def __init__(self, input_size, hidden_size, concept_size, output_size, block_mode=False):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.concept_size = concept_size
         self.input_size = input_size
 
-        self.i2h = torch.nn.Linear(input_size, hidden_size)
-        self.h2c = torch.nn.Linear(hidden_size, concept_size)
-        self.c2o = torch.nn.Linear(concept_size, output_size)
+        self.i2m = torch.nn.Linear(input_size, hidden_size)
+        self.m2h = torch.nn.Linear(hidden_size, concept_size)
+        self.h2o = torch.nn.Linear(concept_size, output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.relu=torch.nn.ReLU()
@@ -752,8 +1055,8 @@ class FF_NLP_WTA(torch.nn.Module):
         self.concept_layer = None
         self.hout2con_masked = None
 
-        gpuavail = torch.cuda.is_available()
-        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+        self.gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
 
         self.block_mode = block_mode
 
@@ -783,35 +1086,73 @@ class FF_NLP_WTA(torch.nn.Module):
     #
     #     return output, hid
 
-    def forward(self, input, hid=None, wta_noise=0.0, schedule=1.0):
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, wta_noise=0.0, schedule=1.0):
         """
-        Forward, path transfer scheduling
+        Forward, GRU WTA winner percentage scheduling
         :param input:
-        :param hid: no use
+        :param hidden:
         :return:
         """
-        hidden1 = self.i2h(input)
+        upper_t = 0.3
+        Nind = int((1.0 - schedule) * (self.concept_size - 2) * upper_t) + 1  # Number of Nind largest number kept
+
+        hidden1 = self.i2m(input)
         hidden1 = self.relu(hidden1)
-        hout2con = self.h2c(hidden1)
+        hout2con = self.m2h(hidden1)
         hout2con=self.relu(hout2con)
 
-        argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
-        self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
-        self.concept_layer.scatter_(-1, argmax, 1.0)
-        self.concept_layer = self.concept_layer + wta_noise * torch.rand(self.concept_layer.shape).to(self.device)
-        if self.block_mode:
-            hout2con_masked=self.concept_layer
+        if self.gpuavail:
+            npginput = hout2con.cpu().data.numpy()
         else:
-            hout2con_masked = hout2con * self.concept_layer
-            hout2con_masked = hout2con_masked / torch.norm(hout2con_masked, 2, -1, keepdim=True)
-        self.hout2con_masked = hout2con_masked
+            npginput = hout2con.data.numpy()
+        argmax_i = np.argsort(-npginput, axis=-1)[:, :, 0:Nind]
+        argmax_i = torch.from_numpy(argmax_i).to(self.device)
+        self.concept_layer_i = torch.zeros(hout2con.shape).to(self.device)
+        self.concept_layer_i.scatter_(-1, argmax_i, 1.0)
+        self.concept_layer_i = self.concept_layer_i + wta_noise * torch.rand(self.concept_layer_i.shape).to(self.device)
 
-        hout2con2=hout2con/torch.norm(hout2con,2,-1,keepdim=True)
+        hout2con_masked = hout2con * self.concept_layer_i
+        hout2con_masked = hout2con_masked / torch.norm(hout2con_masked, 2, -1, keepdim=True)
 
-        output = self.c2o(schedule*hout2con_masked+(1-schedule)*hout2con2)
-        output=self.softmax(output)
+        # GRU part
 
-        return output, hid
+        output = self.h2o(hout2con_masked)
+
+        if add_logit is not None:
+            output = output + add_logit
+        if not logit_mode:
+            output = self.softmax(output)
+        return output, None
+
+    # def forward(self, input, hid=None, wta_noise=0.0, schedule=1.0):
+    #     """
+    #     Forward, path transfer scheduling
+    #     :param input:
+    #     :param hid: no use
+    #     :return:
+    #     """
+    #     hidden1 = self.i2m(input)
+    #     hidden1 = self.relu(hidden1)
+    #     hout2con = self.m2h(hidden1)
+    #     hout2con=self.relu(hout2con)
+    #
+    #     argmax = torch.argmax(hout2con, dim=-1, keepdim=True)
+    #     self.concept_layer = torch.zeros(hout2con.shape).to(self.device)
+    #     self.concept_layer.scatter_(-1, argmax, 1.0)
+    #     self.concept_layer = self.concept_layer + wta_noise * torch.rand(self.concept_layer.shape).to(self.device)
+    #     if self.block_mode:
+    #         hout2con_masked=self.concept_layer
+    #     else:
+    #         hout2con_masked = hout2con * self.concept_layer
+    #         hout2con_masked = hout2con_masked / torch.norm(hout2con_masked, 2, -1, keepdim=True)
+    #     self.hout2con_masked = hout2con_masked
+    #
+    #     hout2con2=hout2con/torch.norm(hout2con,2,-1,keepdim=True)
+    #
+    #     output = self.h2o(schedule*hout2con_masked+(1-schedule)*hout2con2)
+    #     output=self.softmax(output)
+    #
+    #     return output, None
 
     # def forward(self, input, hid=None, wta_noise=0.0):
     #     """
