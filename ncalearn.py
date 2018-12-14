@@ -1572,7 +1572,9 @@ def run_training_stack(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, 
                 x, y = x.to(device), y.to(device)
             output, hidden = rnn(x, hidden, schedule=iis / step)
             # output, hidden = rnn(x, hidden, wta_noise=0.2 * (1.0 - iis / step))
-            loss = custom_KNWLoss(output.permute(1, 2, 0), outlab, rnn, iis)
+            # loss = custom_KNWLoss(output.permute(1, 2, 0), outlab, rnn, iis)
+            loss = output
+
             # if gpuavail:
             #     del x,y,outlab
             #     torch.cuda.empty_cache()

@@ -548,13 +548,115 @@ class RECURSIVE_AUTOENCODER(torch.nn.Module):
         predvec = self.softmax(predvec)
         return predvec
 
-    def forward(self, input):
+    def fknw(self,vecl,vecr,schedule=1.0):
+        vecm = self.ffknw_in(torch.cat((vecl, vecr), dim=-1))
+        vecm = torch.exp(self.softmax(vecm))
+        # vecm = self.wta_layer(vecm, schedule=schedule)
+        return vecm
+
+    def fknw_test(self,vecl,vecr,schedule=1.0):
+        vecm = self.ffknw_in(torch.cat((vecl, vecr), dim=-1))
+        vecm = torch.exp(self.softmax(vecm))
+
+        np_input = vecm.data.numpy()
+        argmax_i = np.argsort(-np_input, axis=-1)[0]
+        argmax_i = torch.from_numpy(np.array(argmax_i))
+        concept_layer_i = torch.zeros(vecm.shape)
+        concept_layer_i.scatter_(-1, argmax_i, 1.0)
+        concept_layer_i = concept_layer_i
+
+        ginput_masked = vecm * concept_layer_i
+        ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+
+        return ginput_masked
+
+    def wta_layer(self,l_input,schedule=1,wta_noise=0.0):
+        upper_t = 0.3
+        Nind = int((1.0 - schedule) * (self.input_size - 2) * upper_t) + 1
+        np_input=l_input.data.numpy()
+        argmax_i = np.argsort(-np_input, axis=-1)[ :, 0:Nind]
+        argmax_i = torch.from_numpy(argmax_i)
+        concept_layer_i = torch.zeros(l_input.shape)
+        concept_layer_i.scatter_(-1, argmax_i, 1.0)
+        concept_layer_i = concept_layer_i + wta_noise * torch.rand(concept_layer_i.shape)
+
+        ginput_masked = l_input * concept_layer_i
+        ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+        return ginput_masked
+
+
+    def forward(self, input, hidden=None, schedule=1.0):
         """
-        One step
+        One step All to All forward input[Seq,batch,l_size]
         :param input:
         :return:
         """
-        pass
+        # def cal_perp_torch(predvec,invec):
+        #     perp = -torch.sum(invec * predvec, dim=-1) + torch.log(torch.sum(torch.exp(predvec), dim=-1))
+        #     return perp
+
+        def cal_kldiv_torch(p, q):
+            """
+            Cal KL divergence of p over q
+            :param data:
+            :return:
+            """
+            p = p + 1e-9
+            q = q + 1e-9
+            p = p / torch.sum(p, dim=-1, keepdim=True)
+            q = q / torch.sum(q, dim=-1, keepdim=True)
+            kld = torch.sum(p * torch.log(p / q), dim=-1)
+            return kld
+
+        def cal_autoencode(vecl,vecr):
+            vecm = self.fknw(vecl, vecr, schedule=schedule)
+            recvecl = self.ffknw_outl(vecm)
+            recvecl = torch.exp(self.softmax(recvecl))
+            recvecr = self.ffknw_outr(vecm)
+            recvecr = torch.exp(self.softmax(recvecr))
+            perpl = cal_kldiv_torch(recvecl, vecl)
+            perpr = cal_kldiv_torch(recvecr, vecr)
+            resperp = perpl + perpr
+            return vecm,resperp
+
+        def step_forward(input,argmax_i):
+            seql=[]
+            seqr = []
+            for ii in range(len(argmax_i)):
+                seql.append(input[argmax_i[ii],ii,:])
+                seqr.append(input[argmax_i[ii]+1,ii,:])
+            vecl = torch.stack(seql,0)
+            vecr = torch.stack(seqr, 0)
+            vecm, resperp = cal_autoencode(vecl,vecr)
+            resout=[]
+            length=len(input)
+            for ii in range(len(argmax_i)):
+                ind=argmax_i[ii]
+                if ind>0 and ind<length-2:
+                    resout.append(torch.cat((input[:ind,ii,:], vecm[ii,:].view(1,-1),input[ind+2:,ii,:]), dim=0))
+                elif ind==0 and ind<length-2:
+                    resout.append(torch.cat((vecm[ii, :].view(1, -1), input[ind + 2:, ii, :]),dim=0))
+                elif ind>0 and ind==length-2:
+                    resout.append(torch.cat((input[:ind, ii, :], vecm[ii, :].view(1, -1))))
+                else:
+                    resout.append(vecm[ii, :].view(1, -1))
+            resout=torch.stack(resout, 0)
+            resout=resout.permute((1,0,2))
+            return resout,resperp/2
+
+        length=input.shape[0]
+        batch=input.shape[1]
+
+        tot_perp=torch.zeros(1)
+        for ii in range(length-1): # Looping over tree buidling
+            vecm, perp = cal_autoencode(input[:-1,:,:],input[1:,:,:])
+            argmax_i = torch.argmax(perp,dim=0)
+            input,perp_rec=step_forward(input,argmax_i)
+            tot_perp=tot_perp+torch.sum(perp_rec)/batch
+        return tot_perp/length, None
+
+    def initHidden(self,batch):
+        return None
 
 
 class STACK_FF_NLP(torch.nn.Module):
