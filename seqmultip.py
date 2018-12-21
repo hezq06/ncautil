@@ -343,7 +343,7 @@ class PAIR_NET(torch.nn.Module):
 
 class LSTM_NLP(torch.nn.Module):
     """
-    PyTorch GRU for NLP
+    PyTorch LSTM for NLP
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1):
         super(self.__class__, self).__init__()
@@ -358,7 +358,7 @@ class LSTM_NLP(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False):
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
         Forward
         :param input:
@@ -371,7 +371,7 @@ class LSTM_NLP(torch.nn.Module):
             output=output+add_logit
         if not logit_mode:
             output=self.softmax(output)
-        return output,hn,hout.permute(1,0,2)
+        return output,hn
 
     def initHidden(self,batch):
         return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
@@ -385,13 +385,13 @@ class GRU_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, cuda_flag=True):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.num_layers = num_layers
 
-        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers)
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,dropout=0.0)
         self.h2o = torch.nn.Linear(hidden_size, output_size)
 
         # self.h2m = torch.nn.Linear(hidden_size, 150)
@@ -404,8 +404,12 @@ class GRU_NLP(torch.nn.Module):
         # dropout
         # self.cdrop = torch.nn.Dropout(p=0.5)
 
-        gpuavail = torch.cuda.is_available()
-        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+        if cuda_flag:
+            gpuavail = torch.cuda.is_available()
+            self.device = torch.device("cuda:0" if gpuavail else "cpu")
+        else:
+            gpuavail = False
+            self.device = torch.device("cpu")
 
         self.hout = None
 
@@ -481,6 +485,89 @@ class GRU_NLP(torch.nn.Module):
 
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
+
+class GRU_TwoLayerCon(torch.nn.Module):
+    """
+    A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
+    Layer 1 is a pre-trained layer like GRU over POS which freezes.
+    Layer 2 is a projecction perpendicular to layer 1
+    Attention Gating is used to choose plitable information to two layers
+    """
+    def __init__(self, gru_l1, input_size, hidden_size, output_size, num_layers=1):
+        """
+        init
+        :param gru_l1: gru_l1 [GRU, input_size, output_size]
+        :param input_size:
+        :param hidden_size:
+        :param output_size:
+        :param num_layers:
+        """
+        super(self.__class__, self).__init__()
+        self.rnn = gru_l1[0]
+        for param in self.rnn.parameters():
+            param.requires_grad = False
+        self.gru_input_size = gru_l1[1]
+        self.gru_output_size = gru_l1[2]
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.i2s = torch.nn.Linear(input_size, self.gru_input_size) # input to sigmoid
+        self.s2g= torch.nn.Linear(self.gru_input_size, self.gru_input_size) # sigmoid to GRU input
+        self.g2o = torch.nn.Linear(self.gru_output_size, output_size) # GRU output to output
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.infer_pos = None
+
+        self.pre_trained = False
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        if self.pre_trained:
+            for param in self.i2s.parameters():
+                param.requires_grad = False
+        sig_gru=self.i2s(input)
+        # sig_gru=self.sigmoid(sig_gru)
+        # input_gru=self.s2g(sig_gru)
+        # self.infer_pos =torch.exp(self.softmax(sig_gru))
+        self.infer_pos = wta_layer(sig_gru,schedule=schedule)
+        hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
+        output = self.g2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def pre_training(self,input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+
+        :param input:
+        :param hidden1:
+        :param add_logit:
+        :param logit_mode:
+        :param schedule:
+        :return:
+        """
+        self.pre_trained = True
+        sig_gru = self.i2s(input)
+        output = self.softmax(sig_gru)
+        return output, None
+
+    def initHidden(self,batch):
+        return self.rnn.initHidden(batch)
+
+    def initHidden_cuda(self,device, batch):
+        return self.rnn.initHidden_cuda(device, batch)
 
 class FF_NLP(torch.nn.Module):
     """
@@ -1039,23 +1126,27 @@ class GRU_NLP_WTA_2(torch.nn.Module):
         :param hidden:
         :return:
         """
-        upper_t = 0.3
-        Nind = int((1.0 - schedule) * (self.concept_size - 2) * upper_t) + 1  # Number of Nind largest number kept
 
         # First WTA scheduling of input
         ginput = self.i2g(input)
-        if self.gpuavail:
-            npginput = ginput.cpu().data.numpy()
-        else:
-            npginput = ginput.data.numpy()
-        argmax_i = np.argsort(-npginput, axis=-1)[:, :, 0:Nind]
-        argmax_i = torch.from_numpy(argmax_i).to(self.device)
-        self.concept_layer_i = torch.zeros(ginput.shape).to(self.device)
-        self.concept_layer_i.scatter_(-1, argmax_i, 1.0)
-        self.concept_layer_i = self.concept_layer_i + wta_noise * torch.rand(self.concept_layer_i.shape).to(self.device)
 
-        ginput_masked = ginput * self.concept_layer_i
-        ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+        # if self.gpuavail:
+        #     npginput = ginput.cpu().data.numpy()
+        # else:
+        #     npginput = ginput.data.numpy()
+        #
+        # upper_t = 0.3
+        # Nind = int((1.0 - schedule) * (self.concept_size - 2) * upper_t) + 1  # Number of Nind largest number kept
+        # argmax_i = np.argsort(-npginput, axis=-1)[:, :, 0:Nind]
+        # argmax_i = torch.from_numpy(argmax_i).to(self.device)
+        # self.concept_layer_i = torch.zeros(ginput.shape).to(self.device)
+        # self.concept_layer_i.scatter_(-1, argmax_i, 1.0)
+        # self.concept_layer_i = self.concept_layer_i + wta_noise * torch.rand(self.concept_layer_i.shape).to(self.device)
+        #
+        # ginput_masked = ginput * self.concept_layer_i
+        # ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+
+        ginput_masked =  wta_layer(ginput,schedule=schedule)
 
         # GRU part
 

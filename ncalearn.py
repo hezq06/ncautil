@@ -750,6 +750,33 @@ def relu(x):
     res=(x+np.abs(x))/2
     return res
 
+def wta_layer(l_input,schedule=1.0,wta_noise=0.0,upper_t = 0.3, schshift=0.2):
+
+    concept_size = l_input.shape[-1]
+    schedule=schedule+schshift
+    if schedule>=1.0:
+        schedule=1.0
+    Nindr = (1.0 - np.sqrt(schedule)) * (concept_size - 2) * upper_t + 1  # Number of Nind largest number kept
+    # Nindr = (1.0 - schedule) * (concept_size - 2) * upper_t + 1  # Number of Nind largest number kept
+    smooth=Nindr-int(Nindr)
+    Nind=int(Nindr)
+    np_input=l_input.cpu().data.numpy()
+    npargmax_i = np.argsort(-np_input, axis=-1)
+    argmax_i = torch.from_numpy(npargmax_i).narrow(-1, 0, Nind)
+    outer=torch.from_numpy(npargmax_i).narrow(-1, Nind, 1)
+    concept_layer_i = torch.zeros(l_input.shape)
+    concept_layer_i.scatter_(-1, argmax_i, 1.0)
+    concept_layer_i.scatter_(-1, outer, smooth)
+    concept_layer_i = concept_layer_i + wta_noise * torch.rand(concept_layer_i.shape)
+
+    if l_input.is_cuda:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        concept_layer_i=concept_layer_i.to(device)
+
+    ginput_masked = l_input * concept_layer_i
+    ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+    return ginput_masked
+
 def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
     """
     Free generation
@@ -918,7 +945,7 @@ def do_eval_p(dataset,lsize,rnn, id_2_vec=None, prior=None):
     print("Time used in evaluation:", endt - startt)
     return perpls
 
-def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqeval=False, extend_mode=None):
+def do_eval_rnd(dataset,lsize, rnn, step, window=30, batch=20, id_2_vec=None, para=None):
     """
     General evaluation function using stochastic batch evaluation on GPU
     :param dataset:
@@ -931,6 +958,21 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
     """
     print("Start Evaluation ...")
     startt = time.time()
+
+    if para is None:
+        para=dict([])
+    seqeval = para.get("seqeval", False)
+    extend_mode= para.get("extend_mode", None)
+    supervise_mode = para.get("supervise_mode", False)
+    pre_training = para.get("pre_training", False)
+
+    if (type(dataset) is dict) != supervise_mode:
+        raise Exception("Supervise mode Error.")
+
+    if supervise_mode:
+        label=dataset["label"]
+        dataset=dataset["dataset"]
+
     if type(lsize) is list:
         lsize_in=lsize[0]
         lsize_out = lsize[1]
@@ -938,6 +980,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
         lsize_in = lsize
         lsize_out = lsize
     datab=[]
+
     if id_2_vec is None: # No embedding, one-hot representation
         for data in dataset:
             datavec=np.zeros(lsize_in)
@@ -947,6 +990,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
         for data in dataset:
             datavec=np.array(id_2_vec[data])
             datab.append(datavec)
+
     databpt=torch.from_numpy(np.array(datab))
     databpt = databpt.type(torch.FloatTensor)
 
@@ -972,21 +1016,32 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
         else:
             hidden = rnn.initHidden(batch)
 
-        # Generating output label
-        if extend_mode is None:
-            extdataset=dataset
-        else:
-            extdataset = extend_mode[0]
-        yl = []
-        for iiss in range(window):
-            ylb = []
-            for iib in range(batch):
-                wrd = extdataset[(int(rstartv[iib]) + iiss + 1)]
-                ylb.append(wrd)
-            yl.append(np.array(ylb))
-        outlab = torch.from_numpy(np.array(yl).T)
-        outlab = outlab.type(torch.LongTensor)
 
+        if not supervise_mode:
+            # Generating output label
+            if extend_mode is None:
+                extdataset = dataset
+            else:
+                extdataset = extend_mode[0]
+            yl = []
+            for iiss in range(window):
+                ylb = []
+                for iib in range(batch):
+                    wrd = extdataset[(int(rstartv[iib]) + iiss + 1)]
+                    ylb.append(wrd)
+                yl.append(np.array(ylb))
+            outlab = torch.from_numpy(np.array(yl).T)
+            outlab = outlab.type(torch.LongTensor)
+        else:
+            yl = []
+            for iiss in range(window):
+                ylb = []
+                for iib in range(batch):
+                    wrd = label[(int(rstartv[iib]) + iiss)]
+                    ylb.append(wrd)
+                yl.append(np.array(ylb))
+            outlab = torch.from_numpy(np.array(yl).T)
+            outlab = outlab.type(torch.LongTensor)
 
         # LSTM/GRU provided whole sequence training
         if seqeval:
@@ -1006,13 +1061,21 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
                 outlab = outlab.to(device)
                 x = x.to(device)
             if extend_mode is None:
-                outputl, hidden = rnn(x, hidden)
+                if pre_training:
+                    outputl, hidden = rnn.pre_training(x, hidden, schedule=1.0)
+                    conceptl.append(outputl.cpu().data.numpy())
+                else:
+                    outputl, hidden = rnn(x, hidden, schedule=1.0)
+                    try:
+                        conceptl.append(rnn.infer_pos.cpu().data.numpy())
+                    except:
+                        pass
             else:
                 npM_ext=extend_mode[1]
                 outputl, hidden = rnn.forward_concept_ext(x, hidden, npM_ext)
+
             outlabl.append(outlab.transpose(0,1).cpu().data.numpy())
             inputlabl.append(np.array(inputlabsub).T)
-            # conceptl.append(rnn.concept_layer.cpu().data.numpy())
             # conceptl.append(rnn.concept_layer_i.cpu().data.numpy())
             # conceptl.append(rnn.hout2con_masked.cpu().data.numpy())
             outputll.append(outputl.cpu().data.numpy())
@@ -1037,7 +1100,10 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
                 if gpuavail:
                     outlab = outlab.to(device)
                     x, y = x.to(device), y.to(device)
-                output, hidden = rnn(x, hidden)
+                if pre_training:
+                    output, hidden = rnn.pre_training(x, hidden, schedule=iis / step)
+                else:
+                    output, hidden = rnn(x, hidden, schedule=iis / step)
                 if type(outputl) == type(None):
                     outputl = output.view(1, batch,lsize_out)
                 else:
@@ -1049,7 +1115,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window, batch=20, id_2_vec=None, seqev
     print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
     endt = time.time()
     print("Time used in evaluation:", endt - startt)
-    return perpl,outputll,conceptl,np.array(inputlabl)
+    return perpl,outputll,np.array(conceptl),np.array(inputlabl),np.array(outlabl)
 
 def lossf_rms(output, target):
     """
@@ -1138,7 +1204,7 @@ def run_training_univ(dataset,lsize, model, lossf,step,learning_rate=1e-2, batch
     return model
 
 
-def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, save=None,seqtrain=False,coop=None,coopseq=None, id_2_vec=None):
+def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, id_2_vec=None, para=None):
     """
     General rnn training funtion for one-hot training
     :param dataset:
@@ -1154,6 +1220,18 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     :param coopseq: a pre-calculated cooperational logit vec
     :return:
     """
+    if para is None:
+        para=dict([])
+    save= para.get("save",None)
+    seqtrain = para.get("seqtrain", False)
+    supervise_mode = para.get("supervise_mode", False)
+    coop= para.get("coop", None)
+    coopseq = para.get("coopseq", None)
+    cuda_flag = para.get("cuda_flag", True)
+    invec_noise=para.get("invec_noise", 0.0)
+    pre_training=para.get("pre_training",False)
+    loss_clip=para.get("loss_clip",0.0)
+
     if type(lsize) is list:
         lsize_in=lsize[0]
         lsize_out = lsize[1]
@@ -1163,10 +1241,18 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     prtstep = int(step / 10)
     startt = time.time()
     datab=[]
+
+    if (type(dataset) is dict) != supervise_mode:
+        raise Exception("Supervise mode Error.")
+
+    if supervise_mode:
+        label=dataset["label"]
+        dataset=dataset["dataset"]
+
     if id_2_vec is None: # No embedding, one-hot representation
         for data in dataset:
             datavec=np.zeros(lsize_in)
-            datavec[data]=1
+            datavec[data]=1.0
             datab.append(datavec)
     else:
         for data in dataset:
@@ -1189,15 +1275,20 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        return loss1 #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1 #+ 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
-    optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0)
+    optimizer = torch.optim.Adam(rnn.parameters(), lr=learning_rate, weight_decay=0.0)
+    # optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
 
     train_hist = []
     his = 0
 
-    gpuavail = torch.cuda.is_available()
-    device = torch.device("cuda:0" if gpuavail else "cpu")
+    if cuda_flag:
+        gpuavail = torch.cuda.is_available()
+        device = torch.device("cuda:0" if gpuavail else "cpu")
+    else:
+        gpuavail=False
+        device = torch.device("cpu")
     # If we are on a CUDA machine, then this should print a CUDA device:
     print(device)
     if gpuavail:
@@ -1212,16 +1303,28 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
         else:
             hidden = rnn.initHidden(batch)
 
-        # Generating output label
-        yl = []
-        for iiss in range(window):
-            ylb = []
-            for iib in range(batch):
-                wrd = dataset[(int(rstartv[iib]) + iiss + 1)]
-                ylb.append(wrd)
-            yl.append(np.array(ylb))
-        outlab = Variable(torch.from_numpy(np.array(yl).T))
-        outlab = outlab.type(torch.LongTensor)
+        if not supervise_mode:
+            # Generating output label
+            yl = []
+            for iiss in range(window):
+                ylb = []
+                for iib in range(batch):
+                    wrd = dataset[(int(rstartv[iib]) + iiss + 1)]
+                    ylb.append(wrd)
+                yl.append(np.array(ylb))
+            outlab = torch.from_numpy(np.array(yl).T)
+            outlab = outlab.type(torch.LongTensor)
+        else:
+            yl = []
+            for iiss in range(window):
+                ylb = []
+                for iib in range(batch):
+                    wrd = label[(int(rstartv[iib]) + iiss)]
+                    ylb.append(wrd)
+                yl.append(np.array(ylb))
+            outlab = torch.from_numpy(np.array(yl).T)
+            outlab = outlab.type(torch.LongTensor)
+
 
         # step by step training
         if not seqtrain:
@@ -1260,8 +1363,8 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                     output, hidden = rnn(x, hidden, add_logit=veccoopm)
                 else:
                     # output, hidden = rnn(x, hidden,wta_noise=1.0+0.0*(1.0-iis/step))
-                    # output, hidden = rnn(x, hidden)
-                    output = rnn.pre_training(x)
+                    output, hidden = rnn(x, hidden)
+                    # output = rnn.pre_training(x)
                 if type(outputl) == type(None):
                     outputl = output.view(batch, lsize_out, 1)
                 else:
@@ -1275,7 +1378,10 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             vec1m = None
             vec2m = None
             for iib in range(batch):
-                vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
+                vec1_raw = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
+                vec1_rnd=torch.rand(vec1_raw.shape)
+                vec1_add=torch.mul((1.0-vec1_raw)*invec_noise,vec1_rnd.double())
+                vec1=vec1_raw+vec1_add
                 vec2 = databp[int(rstartv[iib])+1:int(rstartv[iib])+window+1, :]
                 if type(vec1m) == type(None):
                     vec1m = vec1.view(window, 1, -1)
@@ -1289,7 +1395,11 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             if gpuavail:
                 outlab = outlab.to(device)
                 x, y = x.to(device), y.to(device)
-            output, hidden = rnn(x, hidden, schedule=iis / step)
+            if pre_training:
+                output, hidden = rnn.pre_training(x, hidden, schedule=iis / step)
+            else:
+                scheduled= iis / step
+                output, hidden = rnn(x, hidden, schedule=scheduled)
             # output, hidden = rnn(x, hidden, wta_noise=0.2 * (1.0 - iis / step))
             loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
             # if gpuavail:
@@ -1322,11 +1432,13 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             plt.savefig(save)
             plt.gcf().clear()
         else:
-            # plt.ylim((0, 2000))
+            if loss_clip>0:
+                plt.ylim((0, loss_clip))
             plt.show()
     except:
         pass
-    torch.cuda.empty_cache()
+    if gpuavail:
+        torch.cuda.empty_cache()
     return rnn
 
 ####### Section Logit Dynamic study
