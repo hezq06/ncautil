@@ -18,6 +18,9 @@ import torch
 from torch.autograd import Variable
 from ncautil.ncalearn import *
 
+# from torchnlp.nn import WeightDrop
+from awd_lstm_lm.weight_drop import WeightDrop
+
 
 def one_hot(num, lsize):
     if type(num) == type(1) or type(num) == np.int32:
@@ -345,14 +348,18 @@ class LSTM_NLP(torch.nn.Module):
     """
     PyTorch LSTM for NLP
     """
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.num_layers = num_layers
 
-        self.gru=torch.nn.LSTM(input_size,hidden_size,num_layers=num_layers)
         self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers)
+
+        if weight_dropout>0:
+            self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.lstm = WeightDrop(self.lstm, ['weight_hh_l0'], dropout=weight_dropout)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -365,7 +372,7 @@ class LSTM_NLP(torch.nn.Module):
         :param hidden:
         :return:
         """
-        hout, hn = self.gru(input,hidden1)
+        hout, hn = self.lstm(input,hidden1)
         output = self.h2o(hout)
         if add_logit is not None:
             output=output+add_logit

@@ -32,6 +32,9 @@ from scipy.optimize import minimize
 import torch
 from torch.autograd import Variable
 
+from torchnlp.word_to_vector import GloVe
+from torchnlp.datasets import simple_qa_dataset
+
 from ncautil.ncalearn import pca_proj,cal_entropy,cal_kldiv
 
 __author__ = "Harry He"
@@ -83,6 +86,9 @@ class NLPutil(object):
         elif corpus=="selfgen" and data is not None:
             self.corpus=data
             self.sub_corpus=data
+        elif corpus=="simple_qa_dataset":
+            self.corpus = simple_qa_dataset(train=True)
+            self.sub_corpus = self.corpus
         else:
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/'+str(corpus))
             f = open(file)
@@ -151,7 +157,7 @@ class NLPutil(object):
         print(self.id_to_word)
         return self.word_to_id, self.id_to_word
 
-    def build_w2v(self,mode="gensim",Nvac=10000):
+    def build_w2v(self,mode="torchnlp",Nvac=10000):
         """
         Build word to vector lookup table
         :param mode: "pickle"
@@ -175,12 +181,17 @@ class NLPutil(object):
                 file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/GoogleNews-vectors-negative300.bin')
                 model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
                 return model
+            elif mode=="torchnlp":
+                model = GloVe()
             self.w2v_dict = dict([])
             skip = []
             for ii in range(Nvac):
                 try:
                     word = self.id_to_word[ii]
-                    vec = model[word]
+                    if mode=="torchnlp":
+                        vec = model[word].data.numpy()
+                    else:
+                        vec = model[word]
                     self.w2v_dict[word] = vec
                 except:
                     vec = np.zeros(len(model[self.id_to_word[10]]))

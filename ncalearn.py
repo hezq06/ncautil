@@ -959,12 +959,15 @@ def do_eval_rnd(dataset,lsize, rnn, step, window=30, batch=20, id_2_vec=None, pa
     print("Start Evaluation ...")
     startt = time.time()
 
+    rnn.eval()
+
     if para is None:
         para=dict([])
     seqeval = para.get("seqeval", False)
     extend_mode= para.get("extend_mode", None)
     supervise_mode = para.get("supervise_mode", False)
     pre_training = para.get("pre_training", False)
+    cuda_flag = para.get("cuda_flag", True)
 
     if (type(dataset) is dict) != supervise_mode:
         raise Exception("Supervise mode Error.")
@@ -994,8 +997,12 @@ def do_eval_rnd(dataset,lsize, rnn, step, window=30, batch=20, id_2_vec=None, pa
     databpt=torch.from_numpy(np.array(datab))
     databpt = databpt.type(torch.FloatTensor)
 
-    gpuavail = torch.cuda.is_available()
-    device = torch.device("cuda:0" if gpuavail else "cpu")
+    if cuda_flag:
+        gpuavail = torch.cuda.is_available()
+        device = torch.device("cuda:0" if gpuavail else "cpu")
+    else:
+        gpuavail=False
+        device = torch.device("cpu")
     # If we are on a CUDA machine, then this should print a CUDA device:
     print(device)
     rnn=rnn.to(device)
@@ -1532,6 +1539,7 @@ def run_training_stack(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, 
     :param coopseq: a pre-calculated cooperational logit vec
     :return:
     """
+    rnn.train()
     if type(lsize) is list:
         lsize_in = lsize[0]
         lsize_out = lsize[1]
