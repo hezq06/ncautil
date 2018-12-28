@@ -352,6 +352,7 @@ class LSTM_NLP(torch.nn.Module):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
+        self.output_size = output_size
         self.num_layers = num_layers
 
         self.h2o = torch.nn.Linear(hidden_size, output_size)
@@ -493,14 +494,15 @@ class GRU_NLP(torch.nn.Module):
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
 
-class GRU_TwoLayerCon(torch.nn.Module):
+class GRU_TwoLayerCon_DataEnhanceVer(torch.nn.Module):
     """
     A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
     Layer 1 is a pre-trained layer like GRU over POS which freezes.
     Layer 2 is a projecction perpendicular to layer 1
     Attention Gating is used to choose plitable information to two layers
+    Data enhancement version is used.
     """
-    def __init__(self, gru_l1, input_size, hidden_size, output_size, num_layers=1):
+    def __init__(self, rnn, input_size, hidden_size, output_size, num_layers=1):
         """
         init
         :param gru_l1: gru_l1 [GRU, input_size, output_size]
@@ -510,11 +512,221 @@ class GRU_TwoLayerCon(torch.nn.Module):
         :param num_layers:
         """
         super(self.__class__, self).__init__()
-        self.rnn = gru_l1[0]
+        self.rnn = rnn
         for param in self.rnn.parameters():
             param.requires_grad = False
-        self.gru_input_size = gru_l1[1]
-        self.gru_output_size = gru_l1[2]
+        self.gru_input_size = self.rnn.input_size
+        self.gru_output_size = self.rnn.output_size
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.i2s1 = torch.nn.Linear(input_size, hidden_size) # input to sigmoid
+        self.i2s2 = torch.nn.Linear(hidden_size, hidden_size)  # input to sigmoid
+        self.i2s3 = torch.nn.Linear(hidden_size, self.gru_input_size)  # input to sigmoid
+
+        self.g2o = torch.nn.Linear(self.gru_output_size, output_size) # GRU output to output
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.relu=torch.nn.ReLU()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.infer_pos = None
+
+        self.pre_trained = False
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        if self.pre_trained:
+            for param in self.i2s.parameters():
+                param.requires_grad = False
+        sig_gru1=self.i2s1(input)
+        sig_gru1 = self.relu(sig_gru1)
+        sig_gru2 = self.i2s2(sig_gru1)
+        sig_gru2 = self.relu(sig_gru2)
+        sig_gru3 = self.i2s3(sig_gru2)
+        self.infer_pos = self.sigmoid(sig_gru3)
+        # sig_gru=self.sigmoid(sig_gru)
+        # input_gru=self.s2g(sig_gru)
+        # self.infer_pos =torch.exp(self.softmax(sig_gru))
+        # self.infer_pos = wta_layer(sig_gru,schedule=schedule)
+        hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
+        hout=logit_sampling_layer(hout)
+        output = self.g2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def pre_training(self,input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+
+        :param input:
+        :param hidden1:
+        :param add_logit:
+        :param logit_mode:
+        :param schedule:
+        :return:
+        """
+        self.pre_trained = True
+        sig_gru = self.i2s(input)
+        output = self.softmax(sig_gru)
+        return output, None
+
+    def initHidden(self,batch):
+        return self.rnn.initHidden(batch)
+
+    def initHidden_cuda(self,device, batch):
+        return self.rnn.initHidden_cuda(device, batch)
+
+class GRU_TwoLayerCon_TwoStepVersion(torch.nn.Module):
+    """
+    A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
+    Layer 1 is a pre-trained layer like GRU over POS which freezes.
+    Layer 2 is a projecction perpendicular to layer 1
+    Attention Gating is used to choose plitable information to two layers
+    Two step: 1, Normal training, 2, auto-encode aligning.
+    """
+    def __init__(self, rnn, input_size, hidden_size, output_size, num_layers=1):
+        """
+        init
+        :param gru_l1: gru_l1 [GRU, input_size, output_size]
+        :param input_size:
+        :param hidden_size:
+        :param output_size:
+        :param num_layers:
+        """
+        super(self.__class__, self).__init__()
+        self.rnn = rnn
+        for param in self.rnn.parameters():
+            param.requires_grad = False
+        self.gru_input_size = self.rnn.input_size
+        self.gru_output_size = self.rnn.output_size
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.i2s1 = torch.nn.Linear(input_size, hidden_size)  # input to sigmoid
+        self.i2s2 = torch.nn.Linear(hidden_size, hidden_size)  # input to sigmoid
+        self.i2s3 = torch.nn.Linear(hidden_size, self.gru_input_size)  # input to sigmoid
+
+        self.g2o = torch.nn.Parameter(torch.rand(self.gru_output_size,output_size),requires_grad=True)  # Parameter Matrix of concept to output
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.relu=torch.nn.ReLU()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax=torch.nn.Softmax(dim=-1)
+
+        self.infer_pos = None
+
+        self.pre_trained = False
+
+    def auto_encode(self,input,schedule=None):
+        """
+        Parameter sharing auto-encoder
+        :param input:
+        :return:
+        """
+        sig_gru1 = self.i2s1(input)
+        sig_gru1 = self.relu(sig_gru1)
+        sig_gru2 = self.i2s2(sig_gru1)
+        sig_gru2 = self.relu(sig_gru2)
+        sig_gru3 = self.i2s3(sig_gru2)
+        infer_pos = wta_layer(sig_gru3, schedule=schedule)
+        output = torch.log(torch.matmul(infer_pos,self.nsoftmax(self.g2o))+1e-9)
+        if torch.isnan(output).any():
+            save_data(infer_pos, file="data_output1.pickle")
+            data2=self.nsoftmax(self.g2o)
+            save_data(data2, file="data_output2.pickle")
+            raise Exception("NaN Error")
+        return output
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        # if self.pre_trained:
+        #     for param in self.i2s.parameters():
+        #         param.requires_grad = False
+        sig_gru1 = self.i2s1(input)
+        sig_gru1 = self.relu(sig_gru1)
+        sig_gru2 = self.i2s2(sig_gru1)
+        sig_gru2 = self.relu(sig_gru2)
+        sig_gru3 = self.i2s3(sig_gru2)
+        # self.infer_pos = self.sigmoid(sig_gru3)
+        # sig_gru=self.sigmoid(sig_gru)
+        # input_gru=self.s2g(sig_gru)
+        # self.infer_pos =torch.exp(self.softmax(sig_gru))
+        self.infer_pos = wta_layer(sig_gru3,schedule=schedule)
+        hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
+        output = torch.log(torch.matmul(torch.exp(hout), self.nsoftmax(self.g2o)))
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def pre_training(self,input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+
+        :param input:
+        :param hidden1:
+        :param add_logit:
+        :param logit_mode:
+        :param schedule:
+        :return:
+        """
+        self.pre_trained = True
+        sig_gru1 = self.i2s1(input)
+        sig_gru1 = self.relu(sig_gru1)
+        sig_gru2 = self.i2s2(sig_gru1)
+        sig_gru2 = self.relu(sig_gru2)
+        sig_gru3 = self.i2s3(sig_gru2)
+        output = self.softmax(sig_gru3)
+        return output, None
+
+    def initHidden(self,batch):
+        return self.rnn.initHidden(batch)
+
+    def initHidden_cuda(self,device, batch):
+        return self.rnn.initHidden_cuda(device, batch)
+
+class GRU_TwoLayerCon(torch.nn.Module):
+    """
+    A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
+    Layer 1 is a pre-trained layer like GRU over POS which freezes.
+    Layer 2 is a projecction perpendicular to layer 1
+    Attention Gating is used to choose plitable information to two layers
+    """
+    def __init__(self, rnn, input_size, hidden_size, output_size, num_layers=1):
+        """
+        init
+        :param gru_l1: gru_l1 [GRU, input_size, output_size]
+        :param input_size:
+        :param hidden_size:
+        :param output_size:
+        :param num_layers:
+        """
+        super(self.__class__, self).__init__()
+        self.rnn = rnn
+        for param in self.rnn.parameters():
+            param.requires_grad = False
+        self.gru_input_size = self.rnn.input_size
+        self.gru_output_size = self.rnn.output_size
 
         self.hidden_size = hidden_size
         self.input_size = input_size

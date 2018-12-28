@@ -11,7 +11,7 @@ from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.linalg as la
-import time
+import time, os, pickle
 
 import torch
 import copy
@@ -25,6 +25,8 @@ from wordcloud import WordCloud
 import operator
 from PIL import Image
 from PIL import ImageDraw,ImageFont
+
+from tqdm import tqdm
 
 def cluster(data,n_clusters,mode="kmeans"):
     """
@@ -750,6 +752,23 @@ def relu(x):
     res=(x+np.abs(x))/2
     return res
 
+# def softmax(x,dim=-1):
+#     NAN error
+#     xdown=(torch.sum(torch.exp(x),keepdim=True,dim=dim)+1e-9)
+#     res=torch.exp(x)/xdown
+#     if torch.isnan(res).any():
+#         save_data(x, file="data_output1.pickle")
+#         save_data(xdown, file="data_output2.pickle")
+#         raise Exception("NaN Error 1")
+#     return res
+
+def softmax(x,dim=-1):
+    sfm=torch.nn.Softmax(dim=dim)
+    res=sfm(x)
+    if torch.isnan(res).any():
+        raise Exception("NaN Error 1")
+    return res
+
 def wta_layer(l_input,schedule=1.0,wta_noise=0.0,upper_t = 0.3, schshift=0.2):
 
     concept_size = l_input.shape[-1]
@@ -775,7 +794,56 @@ def wta_layer(l_input,schedule=1.0,wta_noise=0.0,upper_t = 0.3, schshift=0.2):
 
     ginput_masked = l_input * concept_layer_i
     ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+    # ginput_masked=softmax(ginput_masked)
     return ginput_masked
+
+def roll(tensor, shift, axis):
+    if shift == 0:
+        return tensor
+
+    if axis < 0:
+        axis += tensor.dim()
+
+    dim_size = tensor.size(axis)
+    after_start = dim_size - shift
+    if shift < 0:
+        after_start = -shift
+        shift = dim_size - abs(shift)
+
+    before = tensor.narrow(axis, 0, dim_size - shift)
+    after = tensor.narrow(axis, after_start, shift)
+    return torch.cat([after, before], axis)
+
+def logit_sampling_layer(l_input):
+    """
+    A sampling layer over logit input
+    Input logit layer, output possibility based 1-hot sampling
+    :param l_input:
+    :return:
+    """
+    concept_size = l_input.shape[-1]
+    prob=torch.exp(l_input)
+    matint=torch.triu(torch.ones((concept_size,concept_size))) # Upper triangular matrix for integration purpose
+    if l_input.is_cuda:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    int_layer=torch.matmul(prob,matint.to(device))
+    randm=torch.rand(prob.shape[:-1]).to(device)
+    # print(int_layer,randm)
+    adj_layer=int_layer-randm.view(list(randm.shape)+[1])
+    absplus=torch.abs(adj_layer)+adj_layer
+    lastonevec = torch.zeros(concept_size).to(device)
+    lastonevec[-1] = 1.0
+    endadj = torch.zeros(prob.shape).to(device) + lastonevec
+    absminus=torch.abs(adj_layer)-adj_layer+endadj
+    rollabsminus=roll(absminus,1,-1)
+    pickmat=rollabsminus*absplus
+    maxind=torch.argmax(pickmat,dim=-1,keepdim=True).to(device)
+    pick_layer_i = torch.zeros(prob.shape).to(device)
+    pick_layer_i.scatter_(-1, maxind, 1.0)
+    pick_layer_i=pick_layer_i.to(device)
+    l_output=prob*pick_layer_i
+    l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
+    return l_output_masked
 
 def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
     """
@@ -968,6 +1036,7 @@ def do_eval_rnd(dataset,lsize, rnn, step, window=30, batch=20, id_2_vec=None, pa
     supervise_mode = para.get("supervise_mode", False)
     pre_training = para.get("pre_training", False)
     cuda_flag = para.get("cuda_flag", True)
+    digit_input = para.get("digit_input", True)
 
     if (type(dataset) is dict) != supervise_mode:
         raise Exception("Supervise mode Error.")
@@ -983,16 +1052,18 @@ def do_eval_rnd(dataset,lsize, rnn, step, window=30, batch=20, id_2_vec=None, pa
         lsize_in = lsize
         lsize_out = lsize
     datab=[]
-
-    if id_2_vec is None: # No embedding, one-hot representation
-        for data in dataset:
-            datavec=np.zeros(lsize_in)
-            datavec[data]=1
-            datab.append(datavec)
+    if digit_input:
+        if id_2_vec is None: # No embedding, one-hot representation
+            for data in dataset:
+                datavec=np.zeros(lsize_in)
+                datavec[data]=1
+                datab.append(datavec)
+        else:
+            for data in dataset:
+                datavec=np.array(id_2_vec[data])
+                datab.append(datavec)
     else:
-        for data in dataset:
-            datavec=np.array(id_2_vec[data])
-            datab.append(datavec)
+        datab = dataset
 
     databpt=torch.from_numpy(np.array(datab))
     databpt = databpt.type(torch.FloatTensor)
@@ -1238,6 +1309,8 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
     invec_noise=para.get("invec_noise", 0.0)
     pre_training=para.get("pre_training",False)
     loss_clip=para.get("loss_clip",0.0)
+    digit_input=para.get("digit_input",True)
+    two_step_training = para.get("two_step_training", False)
 
     if type(lsize) is list:
         lsize_in=lsize[0]
@@ -1256,15 +1329,18 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
         label=dataset["label"]
         dataset=dataset["dataset"]
 
-    if id_2_vec is None: # No embedding, one-hot representation
-        for data in dataset:
-            datavec=np.zeros(lsize_in)
-            datavec[data]=1.0
-            datab.append(datavec)
-    else:
-        for data in dataset:
-            datavec=np.array(id_2_vec[data])
-            datab.append(datavec)
+    if digit_input:
+        if id_2_vec is None: # No embedding, one-hot representation
+            for data in dataset:
+                datavec=np.zeros(lsize_in)
+                datavec[data]=1.0
+                datab.append(datavec)
+        else:
+            for data in dataset:
+                datavec=np.array(id_2_vec[data])
+                datab.append(datavec)
+    else: # if not digit input, raw data_set is used
+        datab=dataset
     databp=torch.from_numpy(np.array(datab))
     if coopseq is not None:
         coopseq=torch.from_numpy(np.array(coopseq))
@@ -1389,6 +1465,7 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
                 vec1_rnd=torch.rand(vec1_raw.shape)
                 vec1_add=torch.mul((1.0-vec1_raw)*invec_noise,vec1_rnd.double())
                 vec1=vec1_raw+vec1_add
+                # vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
                 vec2 = databp[int(rstartv[iib])+1:int(rstartv[iib])+window+1, :]
                 if type(vec1m) == type(None):
                     vec1m = vec1.view(window, 1, -1)
@@ -1407,11 +1484,16 @@ def run_training(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window
             else:
                 scheduled= iis / step
                 output, hidden = rnn(x, hidden, schedule=scheduled)
+            if two_step_training:
+                output_twostep=rnn.auto_encode(y, schedule=scheduled)
             # output, hidden = rnn(x, hidden, wta_noise=0.2 * (1.0 - iis / step))
             loss = custom_KNWLoss(output.permute(1,2,0), outlab, rnn, iis)
             # if gpuavail:
             #     del x,y,outlab
             #     torch.cuda.empty_cache()
+            if two_step_training:
+                loss_twostep = custom_KNWLoss(output_twostep.permute(1, 2, 0), outlab, rnn, iis)
+                loss=0.8*loss+0.2*loss_twostep
 
 
         if int(iis / prtstep) != his:
@@ -1733,3 +1815,14 @@ def run_training_stack(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, 
         pass
     torch.cuda.empty_cache()
     return rnn
+
+def save_data(data,file="data_output.pickle"):
+    filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), file)
+    pickle.dump(data, open(filepath, "wb"))
+    print("Data saved to ", filepath)
+
+def load_data(file="data_output.pickle"):
+    filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), file)
+    data = pickle.load(open(filepath, "rb"))
+    print("Data load from ", filepath)
+    return data
