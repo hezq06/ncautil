@@ -359,6 +359,7 @@ class LSTM_NLP(torch.nn.Module):
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers)
 
         if weight_dropout>0:
+            print("Be careful, only GPU works for now.")
             self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
             self.lstm = WeightDrop(self.lstm, ['weight_hh_l0'], dropout=weight_dropout)
 
@@ -558,7 +559,7 @@ class GRU_TwoLayerCon_DataEnhanceVer(torch.nn.Module):
         # self.infer_pos =torch.exp(self.softmax(sig_gru))
         # self.infer_pos = wta_layer(sig_gru,schedule=schedule)
         hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
-        hout=logit_sampling_layer(hout)
+        # hout=logit_sampling_layer(hout)
         output = self.g2o(hout)
         if add_logit is not None:
             output=output+add_logit
@@ -705,6 +706,71 @@ class GRU_TwoLayerCon_TwoStepVersion(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return self.rnn.initHidden_cuda(device, batch)
 
+class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
+    """
+    A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
+    Layer 1 is a pre-trained layer like GRU over POS which freezes.
+    Layer 2 is a projecction perpendicular to layer 1
+    Attention Gating is used to choose plitable information to two layers
+    Shared association scheme is used to ensure item-concept alignment
+    """
+    def __init__(self, rnn, input_size, hidden_size, num_layers=1):
+        """
+        init
+        :param gru_l1: gru_l1 [GRU, input_size, output_size]
+        :param input_size:
+        :param hidden_size:
+        :param output_size: equal input_size
+        :param num_layers:
+        """
+        super(self.__class__, self).__init__()
+        self.rnn = rnn
+        for param in self.rnn.parameters():
+            param.requires_grad = False
+        self.rnn.eval()
+        self.gru_input_size = self.rnn.input_size
+        self.gru_output_size = self.rnn.output_size
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.icmat=torch.nn.Parameter(torch.rand(input_size,self.gru_input_size), requires_grad=True)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.infer_pos = None
+
+        self.pre_trained = False
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        sig_gru=torch.matmul(input,self.icmat)
+        self.infer_pos = wta_layer(sig_gru,schedule=schedule)
+        hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
+        hout=logit_sampling_layer(hout)
+
+        output = torch.matmul(hout, torch.t(self.icmat))
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return self.rnn.initHidden(batch)
+
+    def initHidden_cuda(self,device, batch):
+        return self.rnn.initHidden_cuda(device, batch)
+
 class GRU_TwoLayerCon(torch.nn.Module):
     """
     A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
@@ -725,6 +791,7 @@ class GRU_TwoLayerCon(torch.nn.Module):
         self.rnn = rnn
         for param in self.rnn.parameters():
             param.requires_grad = False
+        # self.rnn.eval()
         self.gru_input_size = self.rnn.input_size
         self.gru_output_size = self.rnn.output_size
 
@@ -760,6 +827,7 @@ class GRU_TwoLayerCon(torch.nn.Module):
         # self.infer_pos =torch.exp(self.softmax(sig_gru))
         self.infer_pos = wta_layer(sig_gru,schedule=schedule)
         hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
+        hout=logit_sampling_layer(hout)
         output = self.g2o(hout)
         if add_logit is not None:
             output=output+add_logit

@@ -793,7 +793,7 @@ def wta_layer(l_input,schedule=1.0,wta_noise=0.0,upper_t = 0.3, schshift=0.2):
         concept_layer_i=concept_layer_i.to(device)
 
     ginput_masked = l_input * concept_layer_i
-    ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+    # ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
     # ginput_masked=softmax(ginput_masked)
     return ginput_masked
 
@@ -825,25 +825,29 @@ def logit_sampling_layer(l_input):
     prob=torch.exp(l_input)
     matint=torch.triu(torch.ones((concept_size,concept_size))) # Upper triangular matrix for integration purpose
     if l_input.is_cuda:
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    int_layer=torch.matmul(prob,matint.to(device))
-    randm=torch.rand(prob.shape[:-1]).to(device)
+        cpu=torch.device("cpu")
+        prob=prob.to(cpu)
+    int_layer=torch.matmul(prob,matint)
+    randm=torch.rand(prob.shape[:-1])
     # print(int_layer,randm)
     adj_layer=int_layer-randm.view(list(randm.shape)+[1])
     absplus=torch.abs(adj_layer)+adj_layer
-    lastonevec = torch.zeros(concept_size).to(device)
+    lastonevec = torch.zeros(concept_size)
     lastonevec[-1] = 1.0
-    endadj = torch.zeros(prob.shape).to(device) + lastonevec
+    endadj = torch.zeros(prob.shape) + lastonevec
     absminus=torch.abs(adj_layer)-adj_layer+endadj
     rollabsminus=roll(absminus,1,-1)
     pickmat=rollabsminus*absplus
-    maxind=torch.argmax(pickmat,dim=-1,keepdim=True).to(device)
-    pick_layer_i = torch.zeros(prob.shape).to(device)
+    maxind=torch.argmax(pickmat,dim=-1,keepdim=True)
+    pick_layer_i = torch.zeros(prob.shape)
     pick_layer_i.scatter_(-1, maxind, 1.0)
-    pick_layer_i=pick_layer_i.to(device)
-    l_output=prob*pick_layer_i
-    l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
-    return l_output_masked
+    pick_layer_i=pick_layer_i
+    if l_input.is_cuda:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        pick_layer_i=pick_layer_i.to(device)
+    l_output=l_input*pick_layer_i
+    # l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
+    return l_output
 
 def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
     """
@@ -910,6 +914,7 @@ def free_gen(step,lsize,rnn, id_2_vec=None, id_to_word=None,prior=None):
 
 def do_eval(dataset,lsize,rnn, id_2_vec=None, seqeval=False):
     print("Start Evaluation ...")
+    rnn.eval()
     startt = time.time()
     if type(lsize) is list:
         lsize_in=lsize[0]
@@ -974,6 +979,7 @@ def do_eval_p(dataset,lsize,rnn, id_2_vec=None, prior=None):
     :return:
     """
     print("Start Evaluation ...")
+    rnn.eval()
     startt = time.time()
     if type(lsize) is list:
         lsize_in=lsize[0]
@@ -1816,13 +1822,11 @@ def run_training_stack(dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, 
     torch.cuda.empty_cache()
     return rnn
 
-def save_data(data,file="data_output.pickle"):
-    filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), file)
-    pickle.dump(data, open(filepath, "wb"))
-    print("Data saved to ", filepath)
+def save_data(data,file):
+    pickle.dump(data, open(file, "wb"))
+    print("Data saved to ", file)
 
-def load_data(file="data_output.pickle"):
-    filepath = os.path.join(os.path.dirname(os.path.realpath(__file__)), file)
-    data = pickle.load(open(filepath, "rb"))
-    print("Data load from ", filepath)
+def load_data(file):
+    data = pickle.load(open(file, "rb"))
+    print("Data load from ", file)
     return data

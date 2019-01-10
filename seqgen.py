@@ -614,23 +614,149 @@ class SeqGen(object):
         nB = len(cB)
         nC = len(cC)
         res = []
+        hlres=[]
         for ii in range(length):
             if ii % 6 in [0,1] :
                 # pick from class A
                 id = int(np.floor(np.random.rand() * nA))
                 pknum = cA[id]
                 res.append(pknum)
+                hlres.append(0)
             elif ii % 6 in [2,3] :
                 # pick from class B
                 id = int(np.floor(np.random.rand() * nB))
                 pknum = cB[id]
                 res.append(pknum)
+                hlres.append(1)
             else:
                 # pick from class C
                 id = int(np.floor(np.random.rand() * nC))
                 pknum = cC[id]
                 res.append(pknum)
-        return res
+                hlres.append(2)
+        return res,hlres
+
+    def gen_ABBCCCCseq(self, length):
+        """
+        Generate AABBseq one hot
+        :param length:
+        :return:
+        """
+        cA = [2, 3, 5, 7, 11, 13]
+        cB = [0, 1, 4, 8, 9]
+        cC = [6, 10, 12, 14, 15]
+        self.vocab["cA"] = cA
+        self.vocab["cB"] = cB
+        self.vocab["cC"] = cC
+
+        nA = len(cA)
+        nB = len(cB)
+        nC = len(cC)
+        res = []
+        hlres=[]
+        for ii in range(length):
+            if ii % 7 in [0] :
+                # pick from class A
+                id = int(np.floor(np.random.rand() * nA))
+                pknum = cA[id]
+                res.append(pknum)
+                hlres.append(0)
+            elif ii % 7 in [1,2] :
+                # pick from class B
+                id = int(np.floor(np.random.rand() * nB))
+                pknum = cB[id]
+                res.append(pknum)
+                hlres.append(1)
+            else:
+                # pick from class C
+                id = int(np.floor(np.random.rand() * nC))
+                pknum = cC[id]
+                res.append(pknum)
+                hlres.append(2)
+        return res,hlres
+
+    def gen_ABBACCCseq(self, length):
+        """
+        Generate AABBseq one hot
+        :param length:
+        :return:
+        """
+        cA = [2, 3, 5, 7, 11, 13]
+        cB = [0, 1, 4, 8, 9]
+        cC = [6, 10, 12, 14, 15]
+        self.vocab["cA"] = cA
+        self.vocab["cB"] = cB
+        self.vocab["cC"] = cC
+
+        nA = len(cA)
+        nB = len(cB)
+        nC = len(cC)
+        res = []
+        hlres=[]
+        for ii in range(length):
+            if ii % 7 in [0,3] :
+                # pick from class A
+                id = int(np.floor(np.random.rand() * nA))
+                pknum = cA[id]
+                res.append(pknum)
+                hlres.append(0)
+            elif ii % 7 in [1,2] :
+                # pick from class B
+                id = int(np.floor(np.random.rand() * nB))
+                pknum = cB[id]
+                res.append(pknum)
+                hlres.append(1)
+            else:
+                # pick from class C
+                id = int(np.floor(np.random.rand() * nC))
+                pknum = cC[id]
+                res.append(pknum)
+                hlres.append(2)
+        return res,hlres
+
+    def gen_ABBCCCDDDDseq(self, length):
+        """
+        Generate AABBseq one hot
+        :param length:
+        :return:
+        """
+        cA = [2, 3, 5 ]
+        cB = [7, 11, 13]
+        cC = [0, 1, 4, 8, 9]
+        cD = [6, 10, 12, 14, 15]
+
+        nA = len(cA)
+        nB = len(cB)
+        nC = len(cC)
+        nD = len(cD)
+        res = []
+        hlres=[]
+        for ii in range(length):
+            if ii % 10 in [0] :
+                # pick from class A
+                id = int(np.floor(np.random.rand() * nA))
+                pknum = cA[id]
+                res.append(pknum)
+                hlres.append(0)
+            elif ii % 10 in [1,2] :
+                # pick from class B
+                id = int(np.floor(np.random.rand() * nB))
+                pknum = cB[id]
+                res.append(pknum)
+                hlres.append(1)
+            elif ii % 10 in [3,4,5] :
+                # pick from class B
+                id = int(np.floor(np.random.rand() * nC))
+                pknum = cC[id]
+                res.append(pknum)
+                hlres.append(2)
+            else:
+                # pick from class C
+                id = int(np.floor(np.random.rand() * nD))
+                pknum = cD[id]
+                res.append(pknum)
+                hlres.append(3)
+        return res,hlres
 
     def gen_ABCseq(self, length):
         """
