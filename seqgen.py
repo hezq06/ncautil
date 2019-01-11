@@ -636,7 +636,7 @@ class SeqGen(object):
                 hlres.append(2)
         return res,hlres
 
-    def gen_ABBCCCCseq(self, length):
+    def gen_ABBCCCCseq(self, length, seg=False):
         """
         Generate AABBseq one hot
         :param length:
@@ -654,25 +654,37 @@ class SeqGen(object):
         nC = len(cC)
         res = []
         hlres=[]
-        for ii in range(length):
-            if ii % 7 in [0] :
-                # pick from class A
-                id = int(np.floor(np.random.rand() * nA))
-                pknum = cA[id]
-                res.append(pknum)
-                hlres.append(0)
-            elif ii % 7 in [1,2] :
-                # pick from class B
-                id = int(np.floor(np.random.rand() * nB))
-                pknum = cB[id]
-                res.append(pknum)
-                hlres.append(1)
-            else:
-                # pick from class C
-                id = int(np.floor(np.random.rand() * nC))
-                pknum = cC[id]
-                res.append(pknum)
-                hlres.append(2)
+        if seg:
+            res_seg=[]
+            hlres_seg=[]
+        for iil in range(length):
+            for ii in range(7):
+                if ii % 7 in [0] :
+                    # pick from class A
+                    id = int(np.floor(np.random.rand() * nA))
+                    pknum = cA[id]
+                    res.append(pknum)
+                    hlres.append(0)
+                elif ii % 7 in [1,2] :
+                    # pick from class B
+                    id = int(np.floor(np.random.rand() * nB))
+                    pknum = cB[id]
+                    res.append(pknum)
+                    hlres.append(1)
+                else:
+                    # pick from class C
+                    id = int(np.floor(np.random.rand() * nC))
+                    pknum = cC[id]
+                    res.append(pknum)
+                    hlres.append(2)
+            if seg:
+                res_seg.append(res)
+                hlres_seg.append(hlres)
+                res = []
+                hlres = []
+        if seg:
+            res=res_seg
+            hlres=hlres_seg
         return res,hlres
 
     def gen_ABBACCCseq(self, length):

@@ -727,7 +727,7 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
         self.rnn = rnn
         for param in self.rnn.parameters():
             param.requires_grad = False
-        self.rnn.eval()
+        # self.rnn.eval()
         self.gru_input_size = self.rnn.input_size
         self.gru_output_size = self.rnn.output_size
 

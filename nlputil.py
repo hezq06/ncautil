@@ -34,6 +34,7 @@ from torch.autograd import Variable
 
 from torchnlp.word_to_vector import GloVe
 from torchnlp.datasets import simple_qa_dataset
+from torchnlp.datasets import wikitext_2_dataset
 
 from ncautil.ncalearn import pca_proj,cal_entropy,cal_kldiv
 
@@ -88,6 +89,12 @@ class NLPutil(object):
             self.sub_corpus=data
         elif corpus=="simple_qa_dataset":
             self.corpus = simple_qa_dataset(train=True)
+            self.sub_corpus = self.corpus
+        elif corpus=="wiki":
+            tmpcorp = wikitext_2_dataset(train=True)
+            self.corpus = []
+            for item in tmpcorp:
+                self.corpus.append(item.lower())
             self.sub_corpus = self.corpus
         else:
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/'+str(corpus))

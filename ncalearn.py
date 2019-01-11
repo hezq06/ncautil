@@ -1830,3 +1830,339 @@ def load_data(file):
     data = pickle.load(open(file, "rb"))
     print("Data load from ", file)
     return data
+
+class PyTrain(object):
+    """
+    A class trying to wrap all possible training practice nicely
+    """
+    def __init__(self, dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, id_2_vec=None, para=None):
+        """
+
+        :param dataset:
+        :param lsize:
+        :param rnn:
+        :param step:
+        :param learning_rate:
+        :param batch:
+        :param window:
+        :param id_2_vec:
+        :param para:
+        """
+        if para is None:
+            para = dict([])
+        self.save = para.get("save", None)
+        self.seqtrain = para.get("seqtrain", False)
+        self.supervise_mode = para.get("supervise_mode", False)
+        self.coop = para.get("coop", None)
+        self.coopseq = para.get("coopseq", None)
+        self.cuda_flag = para.get("cuda_flag", True)
+        self.invec_noise = para.get("invec_noise", 0.0)
+        self.pre_training = para.get("pre_training", False)
+        self.loss_clip = para.get("loss_clip", 0.0)
+        self.digit_input = para.get("digit_input", True)
+        self.two_step_training = para.get("two_step_training", False)
+
+        self.data(dataset)
+
+        if type(lsize) is list:
+            self.lsize_in = lsize[0]
+            self.lsize_out = lsize[1]
+        else:
+            self.lsize_in = lsize
+            self.lsize_out = lsize
+        self.rnn=rnn
+        self.step=step
+        self.batch=batch
+        self.window=window
+        self.id_2_vec=id_2_vec
+
+        # profiler
+        self.prtstep = int(step / 10)
+        self.train_hist = []
+        self.his = 0
+
+        # optimizer
+        self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=learning_rate, weight_decay=0.0)
+        # self.optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+
+        # CUDA
+        if self.cuda_flag:
+            self.gpuavail = torch.cuda.is_available()
+            self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+        else:
+            self.gpuavail = False
+            self.device = torch.device("cpu")
+        # If we are on a CUDA machine, then this should print a CUDA device:
+        print(self.device)
+
+        self.__init_data()
+
+        # Eval data mem
+        self.inputlabl = []
+        self.conceptl = []
+        self.outputll = []
+
+    def data(self,dataset):
+        """
+        Swap dataset
+        :param dataset:
+        :return:
+        """
+        if (type(dataset) is dict) != self.supervise_mode:
+            raise Exception("Supervise mode Error.")
+        if self.supervise_mode:
+            self.label = dataset["label"]
+            self.dataset = dataset["dataset"]
+        else:
+            self.dataset = dataset
+
+
+    def __profiler(self,iis,loss):
+        if int(iis / self.prtstep) != self.his:
+            print("Perlexity: ", iis, np.exp(loss.item()))
+            self.his = int(iis / self.prtstep)
+        self.train_hist.append(np.exp(loss.item()))
+
+    def __postscript(self):
+        x = []
+        for ii in range(len(self.train_hist)):
+            x.append([ii, self.train_hist[ii]])
+        x = np.array(x)
+        try:
+            plt.plot(x[:, 0], x[:, 1])
+            if type(self.save) != type(None):
+                plt.savefig(self.save)
+                plt.gcf().clear()
+            else:
+                if self.loss_clip > 0:
+                    plt.ylim((0, self.loss_clip))
+                plt.show()
+        except:
+            pass
+
+    def __init_data(self):
+        datab = []
+        if type(self.dataset[0]) != list:
+            if self.digit_input:
+                if self.id_2_vec is None:  # No embedding, one-hot representation
+                    for data in self.dataset:
+                        datavec = np.zeros(self.lsize_in)
+                        datavec[data] = 1.0
+                        datab.append(datavec)
+                else:
+                    for data in self.dataset:
+                        datavec = np.array(self.id_2_vec[data])
+                        datab.append(datavec)
+            else:  # if not digit input, raw data_set is used
+                datab = self.dataset
+            self.databp = torch.from_numpy(np.array(datab))
+        else: # we assume sentence structure
+            self.databp=[]
+            if self.digit_input:
+                if self.id_2_vec is None:  # No embedding, one-hot representation
+                    for sent in self.dataset:
+                        datab_sent=[]
+                        for data in sent:
+                            datavec = np.zeros(self.lsize_in)
+                            datavec[data] = 1.0
+                            datab_sent.append(datavec)
+                        datab_sent = torch.from_numpy(np.array(datab_sent))
+                        self.databp.append(datab_sent)
+                else:
+                    for sent in self.dataset:
+                        datab_sent = []
+                        for data in sent:
+                            datavec = np.array(self.id_2_vec[data])
+                            datab_sent.append(datavec)
+                        datab_sent=torch.from_numpy(np.array(datab_sent))
+                        self.databp.append(datab_sent)
+            else:  # if not digit input, raw data_set is used
+                for sent in self.dataset:
+                    datab_sent = torch.from_numpy(np.array(sent))
+                    self.databp.append(datab_sent)
+
+    def __get_data_continous(self):
+
+        rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset) - self.window - 1))
+
+        if not self.supervise_mode:
+            # Generating output label
+            yl = []
+            xl = []
+            for iib in range(self.batch):
+                xl.append(np.array(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]))
+                yl.append(np.array(self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]))
+            inlab = torch.from_numpy(np.array(xl))
+            inlab = inlab.type(torch.LongTensor)
+            outlab = torch.from_numpy(np.array(yl))
+            outlab = outlab.type(torch.LongTensor)
+
+        else:
+            yl = []
+            xl = []
+            for iib in range(self.batch):
+                xl.append(np.array(self.label[int(rstartv[iib]):int(rstartv[iib]) + self.window]))
+                yl.append(np.array(self.label[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1]))
+            inlab = torch.from_numpy(np.array(xl))
+            inlab = inlab.type(torch.LongTensor)
+            outlab = torch.from_numpy(np.array(yl))
+            outlab = outlab.type(torch.LongTensor)
+
+        vec1m = None
+        vec2m = None
+        for iib in range(self.batch):
+            vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            vec1_rnd = torch.rand(vec1_raw.shape)
+            vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
+            vec1 = vec1_raw + vec1_add
+            # vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
+            vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
+            if type(vec1m) == type(None):
+                vec1m = vec1.view(self.window, 1, -1)
+                vec2m = vec2.view(self.window, 1, -1)
+            else:
+                vec1m = torch.cat((vec1m, vec1.view(self.window, 1, -1)), dim=1)
+                vec2m = torch.cat((vec2m, vec2.view(self.window, 1, -1)), dim=1)
+        x = Variable(vec1m.reshape(self.window, self.batch, self.lsize_in).contiguous(), requires_grad=True)  #
+        y = Variable(vec2m.reshape(self.window, self.batch, self.lsize_in).contiguous(), requires_grad=True)
+        x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+
+        if self.gpuavail:
+            inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            x, y = x.to(self.device), y.to(self.device)
+
+        return x, y, inlab, outlab
+
+    def __get_data_sentence(self):
+
+        rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset)))
+
+        if self.supervise_mode:
+            raise Exception("Not supported")
+
+        else:
+            # Generating output label
+            yl = []
+            xl = []
+            for iib in range(self.batch):
+                sentN = int(rstartv[iib])
+                xl.append(np.array(self.dataset[sentN][0:-1]))
+                yl.append(np.array(self.dataset[sentN][1:]))
+            inlab = torch.from_numpy(np.array(xl))
+            inlab = inlab.type(torch.LongTensor)
+            outlab = torch.from_numpy(np.array(yl))
+            outlab = outlab.type(torch.LongTensor)
+
+        vec1m = None
+        vec2m = None
+        length=len(self.dataset[0])-1
+        for iib in range(self.batch):
+            sentN = int(rstartv[iib])
+            vec1 = self.databp[sentN][:-1]
+            if self.invec_noise>0:
+                raise Exception("Not supported")
+            # vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
+            vec2 = self.databp[sentN][1:]
+            if type(vec1m) == type(None):
+                vec1m = vec1.view(length, 1, -1)
+                vec2m = vec2.view(length, 1, -1)
+            else:
+                vec1m = torch.cat((vec1m, vec1.view(length, 1, -1)), dim=1)
+                vec2m = torch.cat((vec2m, vec2.view(length, 1, -1)), dim=1)
+        x = Variable(vec1m.reshape(length, self.batch, self.lsize_in).contiguous(), requires_grad=True)  #
+        y = Variable(vec2m.reshape(length, self.batch, self.lsize_in).contiguous(), requires_grad=True)
+        x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+
+        if self.gpuavail:
+            outlab = outlab.to(self.device)
+            x, y = x.to(self.device), y.to(self.device)
+
+        return x, y, inlab, outlab
+
+    def __get_data(self):
+
+        if type(self.dataset[0]) != list:
+            x, y, inlab, outlab=self.__get_data_continous()
+        else:
+            x, y, inlab, outlab=self.__get_data_sentence()
+
+        return x,y,inlab, outlab
+
+    def custom_KNWLoss(self, outputl, outlab, model, cstep):
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # logith2o = model.h2o.weight
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+
+    def run_training(self):
+
+        startt = time.time()
+        self.rnn.train()
+        if self.gpuavail:
+            self.rnn.to(self.device)
+        for iis in range(self.step):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x,y,inlab,outlab=self.__get_data()
+            if self.pre_training:
+                output, hidden = self.rnn.pre_training(x, hidden, schedule=iis / self.step)
+            else:
+                output, hidden = self.rnn(x, hidden, schedule=iis / self.step)
+            if self.two_step_training:
+                output_twostep = self.rnn.auto_encode(y, schedule=iis / self.step)
+            loss = self.custom_KNWLoss(output.permute(1, 2, 0), outlab, self.rnn, iis)
+            if self.two_step_training:
+                loss_twostep = self.custom_KNWLoss(output_twostep.permute(1, 2, 0), outlab, self.rnn, iis)
+                loss = 0.8 * loss + 0.2 * loss_twostep
+            self.__profiler(iis,loss)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+        endt = time.time()
+        print("Time used in training:", endt - startt)
+        self.__postscript()
+        if self.gpuavail:
+            torch.cuda.empty_cache()
+
+    def do_eval(self,step_eval=300):
+
+        self.inputlabl = []
+        self.conceptl = []
+        self.outputll = []
+
+        print("Start Evaluation ...")
+        startt = time.time()
+        self.rnn.eval()
+        perpl=[]
+        for iis in range(step_eval):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x, y, inlab, outlab = self.__get_data()
+            self.inputlabl.append(inlab.cpu().data.numpy().T)
+            if self.pre_training:
+                outputl, hidden = self.rnn.pre_training(x, hidden, schedule=1.0)
+            else:
+                outputl, hidden = self.rnn(x, hidden, schedule=1.0)
+
+            try:
+                self.conceptl.append(self.rnn.infer_pos.cpu().data.numpy())
+            except:
+                pass
+
+            loss = self.custom_KNWLoss(outputl.permute(1, 2, 0), outlab, self.rnn, iis)
+            perpl.append(loss.item())
+        print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
+        endt = time.time()
+        print("Time used in evaluation:", endt - startt)
+
+        self.inputlabl=np.array(self.inputlabl)
+        self.conceptl=np.array(self.conceptl)
+
