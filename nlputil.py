@@ -36,7 +36,8 @@ from torchnlp.word_to_vector import GloVe
 from torchnlp.datasets import simple_qa_dataset
 from torchnlp.datasets import wikitext_2_dataset
 
-from ncautil.ncalearn import pca_proj,cal_entropy,cal_kldiv
+from ncautil.ncalearn import *
+from ncautil.ncamath import *
 
 __author__ = "Harry He"
 

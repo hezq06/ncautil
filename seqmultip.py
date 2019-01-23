@@ -344,6 +344,50 @@ class PAIR_NET(torch.nn.Module):
     def initHidden(self,batch):
         return None
 
+class RNN_NLP(torch.nn.Module):
+    """
+    PyTorch LSTM for NLP
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.rnn = torch.nn.RNN(input_size, hidden_size, num_layers=num_layers)
+
+        # if weight_dropout>0:
+        #     print("Be careful, only GPU works for now.")
+        #     self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+        #     self.lstm = WeightDrop(self.rnn, ['weight_hh_l0'], dropout=weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        hout, hn = self.rnn(input,hidden1)
+        output = self.h2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
 class LSTM_NLP(torch.nn.Module):
     """
     PyTorch LSTM for NLP
@@ -494,6 +538,8 @@ class GRU_NLP(torch.nn.Module):
 
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
+
+
 
 class GRU_TwoLayerCon_DataEnhanceVer(torch.nn.Module):
     """
@@ -706,13 +752,10 @@ class GRU_TwoLayerCon_TwoStepVersion(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return self.rnn.initHidden_cuda(device, batch)
 
-class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
+class GRU_SerialCon_SharedAssociation(torch.nn.Module):
     """
-    A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
-    Layer 1 is a pre-trained layer like GRU over POS which freezes.
-    Layer 2 is a projecction perpendicular to layer 1
-    Attention Gating is used to choose plitable information to two layers
-    Shared association scheme is used to ensure item-concept alignment
+    A trial of two step training stracture for trial of layered inductive bias of Natural Language.
+    Serial knowledge reusing is assumed.
     """
     def __init__(self, rnn, input_size, hidden_size, num_layers=1):
         """
@@ -727,7 +770,7 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
         self.rnn = rnn
         for param in self.rnn.parameters():
             param.requires_grad = False
-        # self.rnn.eval()
+        self.rnn.eval()
         self.gru_input_size = self.rnn.input_size
         self.gru_output_size = self.rnn.output_size
 
@@ -736,6 +779,8 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
         self.num_layers = num_layers
 
         self.icmat=torch.nn.Parameter(torch.rand(input_size,self.gru_input_size), requires_grad=True)
+        # self.icmat_bias1 = torch.nn.Parameter(torch.rand(self.gru_input_size), requires_grad=True)
+        # self.icmat_bias2 = torch.nn.Parameter(torch.rand(input_size), requires_grad=True)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -752,12 +797,12 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
         :param hidden:
         :return:
         """
-        sig_gru=torch.matmul(input,self.icmat)
+        sig_gru=torch.matmul(input,self.icmat)#+self.icmat_bias1
         self.infer_pos = wta_layer(sig_gru,schedule=schedule)
+        # self.infer_pos = logit_sampling_layer(sig_gru)
         hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
         hout=logit_sampling_layer(hout)
-
-        output = torch.matmul(hout, torch.t(self.icmat))
+        output = torch.matmul(hout, torch.t(self.icmat))#+self.icmat_bias2
 
         if add_logit is not None:
             output=output+add_logit
@@ -765,11 +810,104 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
             output=self.softmax(output)
         return output,hn
 
+    def pre_training(self,input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+
+        :param input:
+        :param hidden1:
+        :param add_logit:
+        :param logit_mode:
+        :param schedule:
+        :return:
+        """
+        sig_gru = torch.matmul(input, self.icmat)#+self.icmat_bias1
+        output = self.softmax(sig_gru)
+        return output, None
+
     def initHidden(self,batch):
         return self.rnn.initHidden(batch)
 
     def initHidden_cuda(self,device, batch):
         return self.rnn.initHidden_cuda(device, batch)
+
+class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
+    """
+    A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
+    Layer 1 is a pre-trained layer like GRU over POS which freezes.
+    Layer 2 is a projecction perpendicular to layer 1
+    Attention Gating is used to choose plitable information to two layers
+    Shared association scheme is used to ensure item-concept alignment
+    """
+    def __init__(self, rnns, input_size, hidden_size, num_layers=1):
+        """
+        init
+        :param gru_l1: gru_l1 [GRU, input_size, output_size]
+        :param input_size:
+        :param hidden_size:
+        :param output_size: equal input_size
+        :param num_layers:
+        """
+        super(self.__class__, self).__init__()
+        self.rnn0 = rnns[0]
+        self.rnn1 = rnns[1]
+        # for param in self.rnn0.parameters():
+        #     param.requires_grad = False
+        # self.rnn0.eval()
+
+        self.gru_input_size0 = self.rnn0.input_size
+        self.gru_output_size0 = self.rnn0.output_size
+
+        self.gru_input_size1 = self.rnn0.input_size
+        self.gru_output_size1 = self.rnn0.output_size
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.icmat0=torch.nn.Parameter(torch.rand(input_size,self.gru_input_size0), requires_grad=True)
+        # self.icmat_bias1 = torch.nn.Parameter(torch.rand(self.gru_input_size), requires_grad=True)
+        # self.icmat_bias2 = torch.nn.Parameter(torch.rand(input_size), requires_grad=True)
+        self.icmat1 = torch.nn.Parameter(torch.rand(input_size, self.gru_input_size1), requires_grad=True)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.infer_pos0 = None
+        self.infer_pos1 = None
+
+        self.pre_trained = False
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        sig_gru0=torch.matmul(input,self.icmat0)#+self.icmat_bias1
+        # self.infer_pos0 = wta_layer(sig_gru0,schedule=schedule)
+        self.infer_pos0 = logit_sampling_layer(sig_gru0)
+        hout0, hn0 = self.rnn0(self.infer_pos0,hidden1[0],logit_mode=True)
+        hout0=logit_sampling_layer(hout0)
+        output0 = torch.matmul(hout0, torch.t(self.icmat0))#+self.icmat_bias2
+
+        sig_gru1 = torch.matmul(input, self.icmat1)  # +self.icmat_bias1
+        # self.infer_pos1 = wta_layer(sig_gru1, schedule=schedule)
+        self.infer_pos1 = logit_sampling_layer(sig_gru1)
+        hout1, hn1 = self.rnn1(self.infer_pos1, hidden1[1], logit_mode=True)
+        hout1 = logit_sampling_layer(hout1)
+        output1 = torch.matmul(hout1, torch.t(self.icmat1))  # +self.icmat_bias2
+
+        output=self.softmax(output0+output1)
+
+        return output,[hn0,hn1]
+
+    def initHidden(self,batch):
+        return [self.rnn0.initHidden(batch),self.rnn1.initHidden(batch)]
+
+    def initHidden_cuda(self,device, batch):
+        return [self.rnn0.initHidden_cuda(device, batch),self.rnn1.initHidden_cuda(device, batch)]
 
 class GRU_TwoLayerCon(torch.nn.Module):
     """

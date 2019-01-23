@@ -14,7 +14,8 @@ import matplotlib.pyplot as plt
 from random import random
 
 from ncautil.tfnlp import TFNet
-from ncautil.ncalearn import pca_proj
+from ncautil.ncalearn import *
+from ncautil.ncamath import *
 from ncautil.nlputil import NLPutil,GRU_Cell_Zoneout
 
 
@@ -516,6 +517,58 @@ class SeqGen(object):
                 context_tracker = context_tracker + contextB
         return resseq,context_tracker
 
+    def gen_simplegrammar(self,length):
+        """
+        Generation of simple grammar
+        :param length:
+        :return:
+        """
+        rules={
+            "A":[("A",0.4),("B",0.3),("C",0.3)],
+            "B":[("B",0.5),("D",0.5)],
+            "C":[("C",0.3),("D",0.7)],
+            "D":[("D",0.5),("END",0.5)]
+        }
+        vocab={
+            "A":0,
+            "B":1,
+            "C":2,
+            "D":3,
+            "END":4
+        }
+        reshl=[]
+        for ii in range(length):
+            subres=[]
+            pointer="A"
+            subres.append(vocab[pointer])
+            while pointer!="END":
+                rset=rules[pointer]
+                rseed=np.random.random()
+                for rl in rset:
+                    rseed=rseed-rl[1]
+                    if rseed<0.0:
+                        pointer=rl[0]
+                        subres.append(vocab[pointer])
+                        break
+            reshl.append(subres)
+
+        cA = [2, 3, 5]
+        cB = [7, 11, 13]
+        cC = [0, 1, 4, 8, 9]
+        cD = [6, 10, 12, 14]
+        cEND=[15]
+        comb=[cA,cB,cC,cD,cEND]
+
+        res=[]
+        for seq in reshl:
+            seq2=[]
+            for elem in seq:
+                pickc=comb[elem]
+                dig=pickc[int(np.random.random()*len(pickc))]
+                seq2.append(dig)
+            res.append(seq2)
+        return res,reshl
+
     def gen_ABseq(self, length):
         """
         Generate ABseq one hot
@@ -687,7 +740,7 @@ class SeqGen(object):
             hlres=hlres_seg
         return res,hlres
 
-    def gen_ABBACCCseq(self, length):
+    def gen_ABBACCCseq(self, length, seg=False):
         """
         Generate AABBseq one hot
         :param length:
@@ -705,25 +758,37 @@ class SeqGen(object):
         nC = len(cC)
         res = []
         hlres=[]
-        for ii in range(length):
-            if ii % 7 in [0,3] :
-                # pick from class A
-                id = int(np.floor(np.random.rand() * nA))
-                pknum = cA[id]
-                res.append(pknum)
-                hlres.append(0)
-            elif ii % 7 in [1,2] :
-                # pick from class B
-                id = int(np.floor(np.random.rand() * nB))
-                pknum = cB[id]
-                res.append(pknum)
-                hlres.append(1)
-            else:
-                # pick from class C
-                id = int(np.floor(np.random.rand() * nC))
-                pknum = cC[id]
-                res.append(pknum)
-                hlres.append(2)
+        if seg:
+            res_seg=[]
+            hlres_seg=[]
+        for iil in range(length):
+            for ii in range(7):
+                if ii % 7 in [0,3] :
+                    # pick from class A
+                    id = int(np.floor(np.random.rand() * nA))
+                    pknum = cA[id]
+                    res.append(pknum)
+                    hlres.append(0)
+                elif ii % 7 in [1,2] :
+                    # pick from class B
+                    id = int(np.floor(np.random.rand() * nB))
+                    pknum = cB[id]
+                    res.append(pknum)
+                    hlres.append(1)
+                else:
+                    # pick from class C
+                    id = int(np.floor(np.random.rand() * nC))
+                    pknum = cC[id]
+                    res.append(pknum)
+                    hlres.append(2)
+            if seg:
+                res_seg.append(res)
+                hlres_seg.append(hlres)
+                res = []
+                hlres = []
+        if seg:
+            res=res_seg
+            hlres=hlres_seg
         return res,hlres
 
     def gen_ABBCCCDDDDseq(self, length):
@@ -803,6 +868,74 @@ class SeqGen(object):
                 id = int(np.floor(np.random.rand() * nC))
                 pknum = cC[id]
                 res.append(pknum)
+        return res
+
+    def gen_ABCoverDEF(self,length):
+        """
+        Generate two layer dynamics
+        :param length:
+        :return:
+        """
+        rulesA = {
+            "A": [("A", 0.2), ("B", 0.8)],
+            "B": [("B", 0.3), ("C", 0.7)],
+            "C": [("C", 0.4), ("A", 0.6)],
+        }
+        rulesB={
+            "D": [("D", 0.5), ("E", 0.5)],
+            "E": [("E", 0.6), ("F", 0.4)],
+            "F": [("F", 0.7), ("D", 0.3)],
+        }
+        combindex=["AD","AE","AF","BD","BE","BF","CD","CE","CF"]
+
+        def sample_next(rules,wrd):
+            rule=rules[wrd]
+            prbs=[]
+            for itm in rule:
+                prbs.append(itm[1])
+            assert np.sum(np.array(prbs))==1
+            rseed = np.random.random()
+            for rl in rule:
+                rseed = rseed - rl[1]
+                if rseed < 0.0:
+                    nitem = rl[0]
+                    break
+            return nitem
+
+        resA = ["A"]
+        resB = ["D"]
+        ptA=resA[-1]
+        ptB=resB[-1]
+        res = []
+        res.append(combindex.index(ptA+ptB))
+
+        for ii in range(length):
+            ptA=sample_next(rulesA,ptA)
+            resA.append(ptA)
+            ptB = sample_next(rulesB, ptB)
+            resB.append(ptB)
+            res.append(combindex.index(ptA + ptB))
+
+        return res,resA,resB
+
+
+    def gen_sinseq(self,length,k=1,dig=16,noise=0.0):
+        """
+        Generate sin data
+        :param length:
+        :return:
+        """
+        res = []
+        phi=0
+        for ii in range(length):
+            phi=phi+k*(1+noise*(2*np.random.rand()-1))
+            outd=(np.sin(phi)+1)/2*(dig-1)
+            outl=np.floor(outd)
+            assert outl+1<16
+            if np.random.rand()>outd-outl:
+                res.append(int(outl))
+            else:
+                res.append(int(outl)+1)
         return res
 
     def one_hot(self,num,length=16):
