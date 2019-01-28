@@ -124,6 +124,15 @@ class NLPutil(object):
             string=string+self.sub_corpus[start+ii] +" "
         print(string)
 
+    def set_corpus(self,corpus):
+        """
+        Set new corpus
+        :param corpus:
+        :return:
+        """
+        self.corpus=corpus
+        print("Corpus updated.")
+
     def build_vocab(self,corpus=None,Vsize=None):
         """
         Building vocabulary

@@ -6,6 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import time, os, pickle
+from sklearn.cluster import KMeans
+import scipy.linalg as la
+import torch
 
 def cluster(data,n_clusters,mode="kmeans"):
     """

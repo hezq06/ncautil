@@ -786,6 +786,8 @@ class GRU_SerialCon_SharedAssociation(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
+
         self.infer_pos = None
 
         self.pre_trained = False
@@ -798,17 +800,20 @@ class GRU_SerialCon_SharedAssociation(torch.nn.Module):
         :return:
         """
         sig_gru=torch.matmul(input,self.icmat)#+self.icmat_bias1
-        self.infer_pos = wta_layer(sig_gru,schedule=schedule)
+        if hidden1[1] is not None:
+            self.infer_pos = wta_layer(sig_gru*self.nsoftmax(hidden1[1]),schedule=schedule) # Containing inner feedforward loop, not effective
+        else:
+            self.infer_pos = wta_layer(sig_gru, schedule=schedule)
         # self.infer_pos = logit_sampling_layer(sig_gru)
-        hout, hn = self.rnn(self.infer_pos,hidden1,logit_mode=True)
-        hout=logit_sampling_layer(hout)
+        hout, hn = self.rnn(self.infer_pos,hidden1[0],logit_mode=True)
+        # hout=logit_sampling_layer(hout)
         output = torch.matmul(hout, torch.t(self.icmat))#+self.icmat_bias2
 
         if add_logit is not None:
             output=output+add_logit
         if not logit_mode:
             output=self.softmax(output)
-        return output,hn
+        return output,[hn,None]
 
     def pre_training(self,input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -825,10 +830,10 @@ class GRU_SerialCon_SharedAssociation(torch.nn.Module):
         return output, None
 
     def initHidden(self,batch):
-        return self.rnn.initHidden(batch)
+        return [self.rnn.initHidden(batch),None]
 
     def initHidden_cuda(self,device, batch):
-        return self.rnn.initHidden_cuda(device, batch)
+        return [self.rnn.initHidden_cuda(device, batch),None]
 
 class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
     """
@@ -838,36 +843,38 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
     Attention Gating is used to choose plitable information to two layers
     Shared association scheme is used to ensure item-concept alignment
     """
-    def __init__(self, rnns, input_size, hidden_size, num_layers=1):
+    def __init__(self, se, rnn, input_size, hidden_size, num_layers=1):
         """
-        init
-        :param gru_l1: gru_l1 [GRU, input_size, output_size]
+
+        :param se: a pre_trained GRU_SerialCon_SharedAssociation
+        :param rnn:
         :param input_size:
         :param hidden_size:
-        :param output_size: equal input_size
         :param num_layers:
         """
         super(self.__class__, self).__init__()
-        self.rnn0 = rnns[0]
-        self.rnn1 = rnns[1]
-        # for param in self.rnn0.parameters():
-        #     param.requires_grad = False
-        # self.rnn0.eval()
+        self.rnn0 = se.rnn
+        self.rnn1 = rnn
 
         self.gru_input_size0 = self.rnn0.input_size
         self.gru_output_size0 = self.rnn0.output_size
 
-        self.gru_input_size1 = self.rnn0.input_size
-        self.gru_output_size1 = self.rnn0.output_size
+        self.gru_input_size1 = self.rnn1.input_size
+        self.gru_output_size1 = self.rnn1.output_size
 
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.num_layers = num_layers
 
-        self.icmat0=torch.nn.Parameter(torch.rand(input_size,self.gru_input_size0), requires_grad=True)
+        self.icmat0=se.icmat
         # self.icmat_bias1 = torch.nn.Parameter(torch.rand(self.gru_input_size), requires_grad=True)
         # self.icmat_bias2 = torch.nn.Parameter(torch.rand(input_size), requires_grad=True)
         self.icmat1 = torch.nn.Parameter(torch.rand(input_size, self.gru_input_size1), requires_grad=True)
+
+        for param in self.rnn0.parameters():
+            param.requires_grad = False
+        self.icmat0.requires_grad = False
+        self.rnn0.eval()
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -886,22 +893,54 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
         :return:
         """
         sig_gru0=torch.matmul(input,self.icmat0)#+self.icmat_bias1
-        # self.infer_pos0 = wta_layer(sig_gru0,schedule=schedule)
-        self.infer_pos0 = logit_sampling_layer(sig_gru0)
+        self.infer_pos0 = wta_layer(sig_gru0,schedule=schedule)
         hout0, hn0 = self.rnn0(self.infer_pos0,hidden1[0],logit_mode=True)
-        hout0=logit_sampling_layer(hout0)
         output0 = torch.matmul(hout0, torch.t(self.icmat0))#+self.icmat_bias2
 
         sig_gru1 = torch.matmul(input, self.icmat1)  # +self.icmat_bias1
-        # self.infer_pos1 = wta_layer(sig_gru1, schedule=schedule)
-        self.infer_pos1 = logit_sampling_layer(sig_gru1)
+        self.infer_pos1 = wta_layer(sig_gru1, schedule=schedule)
         hout1, hn1 = self.rnn1(self.infer_pos1, hidden1[1], logit_mode=True)
-        hout1 = logit_sampling_layer(hout1)
         output1 = torch.matmul(hout1, torch.t(self.icmat1))  # +self.icmat_bias2
 
         output=self.softmax(output0+output1)
 
         return output,[hn0,hn1]
+
+    def build_concept_map(self,num,prior,device,switch=1):
+        # Build concept mapping from word id to concept id with importance
+        # num, number of words to calculate
+        hidden = self.initHidden_cuda(device, 1)
+        dim = self.input_size
+        inputt = torch.zeros((num,dim))
+        for ii in range(num):
+            inputt[ii,ii]=1.0
+        inputt = inputt.view(-1, 1, dim)
+        inputt = inputt.type(torch.FloatTensor)
+        _ = self.forward(inputt.to(device), hidden,schedule=1.0)
+        if switch==0:
+            np_con = self.infer_pos0.cpu().data.numpy()
+            print(self.infer_pos0.cpu().shape)
+        elif switch==1:
+            np_con = self.infer_pos1.cpu().data.numpy()
+            print(self.infer_pos1.cpu().shape)
+        id_2_con = []
+        for ii in range(num):
+            id_2_con.append(np.argmax(np_con[ii, 0, :]))
+        # sort concept id according to its importance
+        importance_dict=dict([])
+        for conid in set(id_2_con):
+            importance_dict[conid]=0.0
+        for wrdid in range(len(id_2_con)):
+            importance_dict[id_2_con[wrdid]]=importance_dict[id_2_con[wrdid]]+prior[wrdid]
+        sorted_imp_l=sorted(importance_dict.items(), key=lambda x: (-x[1], x[0]))
+        # swap concept id according to sorted important list
+        swapdict=dict([])
+        for iiord in range(len(sorted_imp_l)):
+            swapdict[sorted_imp_l[iiord][0]]=iiord
+        id_2_con_s=[]
+        for iicon in id_2_con:
+            id_2_con_s.append(swapdict[iicon])
+        return id_2_con_s
 
     def initHidden(self,batch):
         return [self.rnn0.initHidden(batch),self.rnn1.initHidden(batch)]

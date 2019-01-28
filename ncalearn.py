@@ -10,14 +10,12 @@ from __future__ import print_function
 
 import numpy as np
 import matplotlib.pyplot as plt
-import scipy.linalg as la
 import time, os, pickle
 
 import torch
 import copy
 from torch.autograd import Variable
 
-from sklearn.cluster import KMeans
 from sklearn.manifold import TSNE
 import matplotlib.ticker as ticker
 
@@ -411,13 +409,14 @@ def roll(tensor, shift, axis):
     after = tensor.narrow(axis, after_start, shift)
     return torch.cat([after, before], axis)
 
-def logit_sampling_layer(l_input):
+def logit_sampling_layer(l_input): ### Not seems to be working
     """
     A sampling layer over logit input
     Input logit layer, output possibility based 1-hot sampling
     :param l_input:
     :return:
     """
+    raise Exception("Not working!")
     concept_size = l_input.shape[-1]
     prob=torch.exp(l_input)
     matint=torch.triu(torch.ones((concept_size,concept_size))) # Upper triangular matrix for integration purpose
@@ -443,7 +442,7 @@ def logit_sampling_layer(l_input):
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         pick_layer_i=pick_layer_i.to(device)
     l_output=l_input*pick_layer_i
-    l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
+    # l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
     return l_output
 
 class PyTrain(object):
@@ -637,49 +636,44 @@ class PyTrain(object):
 
         if not self.supervise_mode:
             # Generating output label
-            yl = []
-            xl = []
+            yl = np.zeros((self.batch,self.window))
+            xl = np.zeros((self.batch,self.window))
             for iib in range(self.batch):
-                xl.append(np.array(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]))
-                yl.append(np.array(self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]))
-            inlab = torch.from_numpy(np.array(xl))
+                xl[iib,:]=np.array(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+                yl[iib,:]=np.array(self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1])
+            inlab = torch.from_numpy(xl)
             inlab = inlab.type(torch.LongTensor)
-            outlab = torch.from_numpy(np.array(yl))
+            outlab = torch.from_numpy(yl)
             outlab = outlab.type(torch.LongTensor)
 
         else:
-            xl = []
+            xl = np.zeros((self.batch, self.window))
             for iib in range(self.batch):
-                xl.append(np.array(self.label[int(rstartv[iib]):int(rstartv[iib]) + self.window]))
-            inlab = torch.from_numpy(np.array(xl))
+                xl[iib, :] = np.array(self.label[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+            inlab = torch.from_numpy(xl)
             inlab = inlab.type(torch.LongTensor)
             outlab = inlab
 
-        vec1m = None
-        vec2m = None
+        vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
+        # vec2m = torch.zeros(self.window, self.batch, self.lsize_in)
         for iib in range(self.batch):
             # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
             # vec1_rnd = torch.rand(vec1_raw.shape)
             # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
             # vec1 = vec1_raw + vec1_add
             vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
-            # vec1 = databp[int(rstartv[iib]):int(rstartv[iib])+window, :]
-            vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
-            if type(vec1m) == type(None):
-                vec1m = vec1.view(self.window, 1, -1)
-                vec2m = vec2.view(self.window, 1, -1)
-            else:
-                vec1m = torch.cat((vec1m, vec1.view(self.window, 1, -1)), dim=1)
-                vec2m = torch.cat((vec2m, vec2.view(self.window, 1, -1)), dim=1)
-        x = Variable(vec1m.reshape(self.window, self.batch, self.lsize_in).contiguous(), requires_grad=True)  #
-        y = Variable(vec2m.reshape(self.window, self.batch, self.lsize_in).contiguous(), requires_grad=True)
-        x, y = x.type(torch.FloatTensor), y.type(torch.FloatTensor)
+            # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
+            vec1m[:,iib,:]=vec1
+            # vec2m[:, iib, :] = vec2
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
+        # y = Variable(vec2m, requires_grad=True)
 
         if self.gpuavail:
             inlab, outlab = inlab.to(self.device), outlab.to(self.device)
-            x, y = x.to(self.device), y.to(self.device)
+            x = x.to(self.device)
 
-        return x, y, inlab, outlab
+        return x, None, inlab, outlab
+
 
     def __get_data_sentence(self,length_cluster=True):
 
@@ -746,6 +740,7 @@ class PyTrain(object):
                 vec1m = vec1.view(length, 1, -1)
                 vec2m = vec2.view(length, 1, -1)
             else:
+                raise Exception("Do not do cat.")
                 vec1m = torch.cat((vec1m, vec1.view(length, 1, -1)), dim=1)
                 vec2m = torch.cat((vec2m, vec2.view(length, 1, -1)), dim=1)
         x = Variable(vec1m.reshape(length, self.batch, self.lsize_in).contiguous(), requires_grad=True)  #
@@ -813,6 +808,7 @@ class PyTrain(object):
     def do_eval(self,step_eval=300):
 
         self.inputlabl = []
+        self.conceptl = []
         self.conceptl0 = []
         self.conceptl1 = []
         self.outputll = []
@@ -839,6 +835,10 @@ class PyTrain(object):
                 pass
             try:
                 self.conceptl1.append(self.rnn.infer_pos1.cpu().data.numpy())
+            except:
+                pass
+            try:
+                self.conceptl.append(self.rnn.infer_pos.cpu().data.numpy())
             except:
                 pass
 
