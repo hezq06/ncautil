@@ -906,6 +906,39 @@ class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
 
         return output,[hn0,hn1]
 
+    def forward0(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward using only layer0
+        :param input:
+        :param hidden:
+        :return:
+        """
+        sig_gru0=torch.matmul(input,self.icmat0)#+self.icmat_bias1
+        self.infer_pos0 = wta_layer(sig_gru0,schedule=schedule)
+        hout0, hn0 = self.rnn0(self.infer_pos0,hidden1[0],logit_mode=True)
+        output0 = torch.matmul(hout0, torch.t(self.icmat0))#+self.icmat_bias2
+
+        output=self.softmax(output0)
+
+        return output,[hn0,None]
+
+    def forward1(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward using only layer1
+        :param input:
+        :param hidden:
+        :return:
+        """
+
+        sig_gru1 = torch.matmul(input, self.icmat1)  # +self.icmat_bias1
+        self.infer_pos1 = wta_layer(sig_gru1, schedule=schedule)
+        hout1, hn1 = self.rnn1(self.infer_pos1, hidden1[1], logit_mode=True)
+        output1 = torch.matmul(hout1, torch.t(self.icmat1))  # +self.icmat_bias2
+
+        output = self.softmax(output1)
+
+        return output,[None,hn1]
+
     def build_concept_map(self,num,prior,device,switch=1):
         # Build concept mapping from word id to concept id with importance
         # num, number of words to calculate

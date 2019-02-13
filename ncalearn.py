@@ -511,12 +511,15 @@ class PyTrain(object):
         # If we are on a CUDA machine, then this should print a CUDA device:
         print(self.device)
 
+        self.data_init = True
         self.data(dataset)
 
         # Eval data mem
         self.inputlabl = []
         self.conceptl = []
         self.outputll = []
+
+        # self.lossc=torch.nn.CrossEntropyLoss()
 
     def data(self,dataset):
         """
@@ -581,58 +584,138 @@ class PyTrain(object):
         except:
             pass
 
-    def __init_data(self):
-        datab = []
-        if self.digit_input:
-            if self.id_2_vec is None: # No embedding, one-hot representation
-                self.PAD_VEC=np.zeros(self.lsize_in, dtype=np.float32)
-                self.PAD_VEC[self.SYM_PAD] = 1.0
-        if type(self.dataset[0]) != list:
+    def __init_data(self,limit=1e9):
+        if len(self.dataset)*self.lsize_in<limit:
+            datab = []
             if self.digit_input:
-                if self.id_2_vec is None:  # No embedding, one-hot representation
-                    for data in self.dataset:
-                        datavec = np.zeros(self.lsize_in)
-                        datavec[data] = 1.0
-                        datab.append(datavec)
-                else:
-                    for data in self.dataset:
-                        datavec = np.array(self.id_2_vec[data])
-                        datab.append(datavec)
-            else:  # if not digit input, raw data_set is used
-                datab = self.dataset
-            self.databp = torch.from_numpy(np.array(datab))
-            self.databp = self.databp.type(torch.FloatTensor)
-        else: # we assume sentence structure
-            self.databp=[]
-            if self.digit_input:
-                if self.id_2_vec is None:  # No embedding, one-hot representation
-                    for sent in self.dataset:
-                        datab_sent=[]
-                        for data in sent:
+                if self.id_2_vec is None: # No embedding, one-hot representation
+                    self.PAD_VEC=np.zeros(self.lsize_in, dtype=np.float32)
+                    self.PAD_VEC[self.SYM_PAD] = 1.0
+            if type(self.dataset[0]) != list:
+                if self.digit_input:
+                    if self.id_2_vec is None:  # No embedding, one-hot representation
+                        for data in self.dataset:
                             datavec = np.zeros(self.lsize_in)
                             datavec[data] = 1.0
-                            datab_sent.append(datavec)
-                        datab_sent = torch.from_numpy(np.array(datab_sent))
-                        datab_sent = datab_sent.type(torch.FloatTensor)
-                        self.databp.append(datab_sent)
-                else:
-                    for sent in self.dataset:
-                        datab_sent = []
-                        for data in sent:
+                            datab.append(datavec)
+                    else:
+                        for data in self.dataset:
                             datavec = np.array(self.id_2_vec[data])
-                            datab_sent.append(datavec)
-                        datab_sent=torch.from_numpy(np.array(datab_sent))
+                            datab.append(datavec)
+                else:  # if not digit input, raw data_set is used
+                    datab = self.dataset
+                self.databp = torch.from_numpy(np.array(datab))
+                self.databp = self.databp.type(torch.FloatTensor)
+            else: # we assume sentence structure
+                self.databp=[]
+                if self.digit_input:
+                    if self.id_2_vec is None:  # No embedding, one-hot representation
+                        for sent in self.dataset:
+                            datab_sent=[]
+                            for data in sent:
+                                datavec = np.zeros(self.lsize_in)
+                                datavec[data] = 1.0
+                                datab_sent.append(datavec)
+                            datab_sent = torch.from_numpy(np.array(datab_sent))
+                            datab_sent = datab_sent.type(torch.FloatTensor)
+                            self.databp.append(datab_sent)
+                    else:
+                        for sent in self.dataset:
+                            datab_sent = []
+                            for data in sent:
+                                datavec = np.array(self.id_2_vec[data])
+                                datab_sent.append(datavec)
+                            datab_sent=torch.from_numpy(np.array(datab_sent))
+                            datab_sent = datab_sent.type(torch.FloatTensor)
+                            self.databp.append(datab_sent)
+                else:  # if not digit input, raw data_set is used
+                    for sent in self.dataset:
+                        datab_sent = torch.from_numpy(np.array(sent))
                         datab_sent = datab_sent.type(torch.FloatTensor)
                         self.databp.append(datab_sent)
-            else:  # if not digit input, raw data_set is used
-                for sent in self.dataset:
-                    datab_sent = torch.from_numpy(np.array(sent))
-                    datab_sent = datab_sent.type(torch.FloatTensor)
-                    self.databp.append(datab_sent)
+            self.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.databp=None
+            self.data_init=False
+
+    def __build_databp(self,inlab):
+        """
+        Build databp from inlab (when dataset too large)
+        :param inlab:
+        :return:
+        """
+        if self.digit_input and self.id_2_vec is None and not self.data_init:
+            datab=np.zeros((len(inlab),self.lsize_in))
+            for ii_b in range(len(inlab)):
+                datab[ii_b,inlab[ii_b]]=1.0
+            databp = torch.from_numpy(np.array(datab))
+            # databp = databp.type(torch.FloatTensor)
+        else:
+            raise Exception("Not Implemented")
+        return databp
+
 
     def __get_data_continous(self):
 
         rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset) - self.window - 1))
+
+        if not self.supervise_mode:
+            # Generating output label
+            yl = np.zeros((self.batch,self.window))
+            xl = np.zeros((self.batch,self.window))
+            for iib in range(self.batch):
+                xl[iib,:]=self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+                yl[iib,:]=self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]
+            inlab = torch.from_numpy(xl)
+            inlab = inlab.type(torch.LongTensor)
+            outlab = torch.from_numpy(yl)
+            outlab = outlab.type(torch.LongTensor)
+
+        else:
+            xl = np.zeros((self.batch, self.window))
+            for iib in range(self.batch):
+                xl[iib, :] = self.label[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+            inlab = torch.from_numpy(xl)
+            inlab = inlab.type(torch.LongTensor)
+            outlab = inlab
+
+        vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
+        # vec2m = torch.zeros(self.window, self.batch, self.lsize_in)
+        for iib in range(self.batch):
+            # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            # vec1_rnd = torch.rand(vec1_raw.shape)
+            # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
+            # vec1 = vec1_raw + vec1_add
+            if self.data_init:
+                vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            else:
+                vec1=self.__build_databp(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+            # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
+            vec1m[:,iib,:]=vec1
+            # vec2m[:, iib, :] = vec2
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
+        # y = Variable(vec2m, requires_grad=True)
+
+        if self.gpuavail:
+            inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            x = x.to(self.device)
+
+        return x, None, inlab, outlab
+
+    def __get_data_bias(self,bias_num):
+        """
+        A data getting subroutine biased towards num
+        :param num:
+        :return:
+        """
+
+        rstartv = np.zeros(self.batch)
+        for iir in range(self.batch):
+            rrstart = np.floor(np.random.rand() * (len(self.dataset) - self.window - 1))
+            while bias_num not in set(self.dataset[int(rrstart):int(rrstart) + self.window]): # resample until ii_f found
+                rrstart = np.floor(np.random.rand() * (len(self.dataset) - self.window - 1))
+            rstartv[iir]=rrstart
 
         if not self.supervise_mode:
             # Generating output label
@@ -647,24 +730,16 @@ class PyTrain(object):
             outlab = outlab.type(torch.LongTensor)
 
         else:
-            xl = np.zeros((self.batch, self.window))
-            for iib in range(self.batch):
-                xl[iib, :] = np.array(self.label[int(rstartv[iib]):int(rstartv[iib]) + self.window])
-            inlab = torch.from_numpy(xl)
-            inlab = inlab.type(torch.LongTensor)
-            outlab = inlab
+            raise Exception("Non-implemented")
 
         vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
         # vec2m = torch.zeros(self.window, self.batch, self.lsize_in)
         for iib in range(self.batch):
-            # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
-            # vec1_rnd = torch.rand(vec1_raw.shape)
-            # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
-            # vec1 = vec1_raw + vec1_add
-            vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
-            # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
+            if self.data_init:
+                vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            else:
+                vec1=self.__build_databp(np.array(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]))
             vec1m[:,iib,:]=vec1
-            # vec2m[:, iib, :] = vec2
         x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
         # y = Variable(vec2m, requires_grad=True)
 
@@ -752,16 +827,20 @@ class PyTrain(object):
             x, y = x.to(self.device), y.to(self.device)
         return x, y, inlab, outlab
 
-    def __get_data(self):
+    def __get_data(self,bias_num=None):
 
-        if type(self.dataset[0]) != list:
-            x, y, inlab, outlab=self.__get_data_continous()
+        if bias_num is None:
+            if type(self.dataset[0]) != list:
+                x, y, inlab, outlab=self.__get_data_continous()
+            else:
+                x, y, inlab, outlab=self.__get_data_sentence()
         else:
-            x, y, inlab, outlab=self.__get_data_sentence()
+            x, y, inlab, outlab = self.__get_data_bias(bias_num)
         return x,y,inlab, outlab
 
-    def custom_KNWLoss(self, outputl, outlab, model, cstep):
-        lossc = torch.nn.CrossEntropyLoss()
+    def custom_KNWLoss(self, outputl, outlab, model=None, cstep=None):
+        lossc=torch.nn.CrossEntropyLoss()
+        # loss1 = self.lossc(outputl, outlab)
         loss1 = lossc(outputl, outlab)
         # logith2o = model.h2o.weight
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
@@ -805,7 +884,7 @@ class PyTrain(object):
         if self.gpuavail:
             torch.cuda.empty_cache()
 
-    def do_eval(self,step_eval=300):
+    def do_eval(self,step_eval=300,layer_sep_mode=None):
 
         self.inputlabl = []
         self.conceptl = []
@@ -814,6 +893,10 @@ class PyTrain(object):
         self.outputll = []
 
         print("Start Evaluation ...")
+        if layer_sep_mode == 0:
+            print("Evaluate layer 0 only ...")
+        elif layer_sep_mode==1:
+            print("Evaluate layer 1 only ...")
         startt = time.time()
         self.rnn.eval()
         perpl=[]
@@ -826,6 +909,10 @@ class PyTrain(object):
             self.inputlabl.append(inlab.cpu().data.numpy().T)
             if self.pre_training:
                 outputl, hidden = self.rnn.pre_training(x, hidden, schedule=1.0)
+            elif layer_sep_mode==0:
+                outputl, hidden = self.rnn.forward0(x, hidden, schedule=1.0)
+            elif layer_sep_mode==1:
+                outputl, hidden = self.rnn.forward1(x, hidden, schedule=1.0)
             else:
                 outputl, hidden = self.rnn(x, hidden, schedule=1.0)
 
@@ -850,6 +937,138 @@ class PyTrain(object):
 
         self.inputlabl=np.array(self.inputlabl)
         self.conceptl=np.array(self.conceptl)
+
+    def do_eval_conditioned(self,step_eval=300,layer_sep_mode=0):
+        """
+        Instead of calculating total average perplexiy, calculate perplexity conditioned over layer/word
+        outputl_shape->(seql,batch,lsize)
+        outlab_shape->(batch,seql)
+        :param step_eval:
+        :param layer_sep_mode:
+        :return:
+        """
+        print("Start Conditional Evaluation ...")
+        if layer_sep_mode == 0:
+            print("Evaluate layer 0 only ...")
+        elif layer_sep_mode == 1:
+            print("Evaluate layer 1 only ...")
+        startt = time.time()
+        self.rnn.eval()
+
+        perp_list_tot = np.zeros(self.lsize_out)
+        perp_list_cnt = np.zeros(self.lsize_out)
+
+        for iis in range(step_eval):
+            perp_array_store = [[] for ii in range(self.lsize_out)]
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x, y, inlab, outlab = self.__get_data()
+            if self.pre_training:
+                outputl, hidden = self.rnn.pre_training(x, hidden, schedule=1.0)
+            elif layer_sep_mode==0:
+                outputl, hidden = self.rnn.forward0(x, hidden, schedule=1.0)
+            elif layer_sep_mode==1:
+                outputl, hidden = self.rnn.forward1(x, hidden, schedule=1.0)
+            else:
+                outputl, hidden = self.rnn(x, hidden, schedule=1.0)
+
+            for ii_l in range(len(outputl[0])):
+                for ii_b in range(len(outputl[1])):
+                    perp_array_store[int(outlab[ii_b,ii_l])].append(outputl[ii_l,ii_b])
+
+            for ii_wrd in range(len(perp_array_store)):
+                if perp_array_store[ii_wrd]: # Not empty
+                    Nhit=len(perp_array_store[ii_wrd])
+                    perp_list_cnt[ii_wrd]=perp_list_cnt[ii_wrd]+Nhit
+                    calcrossEnt_in=torch.zeros((Nhit,self.lsize_out))
+                    for iin in range(Nhit):
+                        calcrossEnt_in[iin,:]=perp_array_store[ii_wrd][iin]
+                    calcrossEnt_C = torch.from_numpy(np.array([ii_wrd]*Nhit))
+                    calcrossEnt_C = calcrossEnt_C.type(torch.LongTensor)
+                    loss = self.custom_KNWLoss(calcrossEnt_in, calcrossEnt_C)
+                    perp_list_tot[ii_wrd]=perp_list_tot[ii_wrd]+loss.item()*Nhit
+
+        endt = time.time()
+        print("Time used in evaluation:", endt - startt)
+
+        return perp_list_tot/perp_list_cnt,perp_list_cnt
+
+    def do_eval_conditioned_ave(self,min_sh=25, max_sh=1000,layer_sep_mode=0):
+        """
+        Instead of calculating total average perplexiy, calculate perplexity conditioned over layer/word
+        a minimum encounter per word is set to remove noise
+        outputl_shape->(seql,batch,lsize)
+        outlab_shape->(batch,seql)
+        Each word has a minimum appear number >=min
+        :param step_eval:
+        :param layer_sep_mode:
+        :return:
+        """
+        print("Start Conditional Evaluation ...")
+        if layer_sep_mode == 0:
+            print("Evaluate layer 0 only ...")
+        elif layer_sep_mode == 1:
+            print("Evaluate layer 1 only ...")
+        elif layer_sep_mode is None:
+            print("Evaluate both layers ...")
+        startt = time.time()
+        self.rnn.eval()
+
+        perp_list_tot = np.zeros(self.lsize_out)
+        perp_list_cnt = np.zeros(self.lsize_out)
+
+        step_cnt=0
+        while np.min(perp_list_cnt)<min_sh:
+            bias_num=np.argmin(perp_list_cnt)
+            step_cnt=step_cnt+1
+            print("No. of step: ",step_cnt,"Focusing on: ",bias_num, "Count: ",perp_list_cnt[bias_num])
+            perp_array_store = dict([])
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x, y, inlab, outlab = self.__get_data(bias_num=bias_num)
+
+            # if bias_num==197:
+            #     print(outlab[0])
+            #     a=input("Wait:")
+
+            if self.pre_training:
+                outputl, hidden = self.rnn.pre_training(x, hidden, schedule=1.0)
+            elif layer_sep_mode==0:
+                outputl, hidden = self.rnn.forward0(x, hidden, schedule=1.0)
+            elif layer_sep_mode==1:
+                outputl, hidden = self.rnn.forward1(x, hidden, schedule=1.0)
+            else:
+                outputl, hidden = self.rnn(x, hidden, schedule=1.0)
+
+            for ii_l in range(outputl.shape[0]):
+                for ii_b in range(outputl.shape[1]):
+                    if perp_array_store.get(int(outlab[ii_b,ii_l]),None) is None:
+                        perp_array_store[int(outlab[ii_b, ii_l])]=[]
+                        perp_array_store[int(outlab[ii_b, ii_l])].append(outputl[ii_l, ii_b])
+                    else:
+                        perp_array_store[int(outlab[ii_b,ii_l])].append(outputl[ii_l,ii_b])
+
+            for ii_wrd in range(self.lsize_out):
+                if perp_array_store.get(ii_wrd,None) and perp_list_cnt[ii_wrd]<max_sh: # Not empty and not too much
+                    Nhit=len(perp_array_store[ii_wrd])
+                    perp_list_cnt[ii_wrd]=perp_list_cnt[ii_wrd]+Nhit
+                    calcrossEnt_in=torch.zeros((Nhit,self.lsize_out))
+                    for iin in range(Nhit):
+                        calcrossEnt_in[iin,:]=perp_array_store[ii_wrd][iin]
+                    calcrossEnt_C = torch.from_numpy(np.array([ii_wrd]*Nhit))
+                    calcrossEnt_C = calcrossEnt_C.type(torch.LongTensor)
+                    loss = self.custom_KNWLoss(calcrossEnt_in, calcrossEnt_C)
+                    perp_list_tot[ii_wrd]=perp_list_tot[ii_wrd]+loss.item()*Nhit
+            print("After Count: ", perp_list_cnt[bias_num])
+
+        endt = time.time()
+        print("Time used in evaluation:", endt - startt)
+
+        return perp_list_tot/perp_list_cnt,perp_list_cnt
 
     def free_gen(self, step_gen=1000,noise=0.0):
         """
