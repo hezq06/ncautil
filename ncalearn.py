@@ -848,6 +848,42 @@ class PyTrain(object):
         # l1_reg = model.h2o.weight.norm(2)
         return loss1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
+    def run_training_univ(self,step=None,lossf=None):
+        """
+        Iteration of two training subprocess
+        :param step:
+        :return:
+        """
+        if step is not None:
+            self.step=step
+
+        startt = time.time()
+        self.rnn.train()
+        if self.gpuavail:
+            self.rnn.to(self.device)
+        for iis in range(self.step):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x,y,inlab,outlab=self.__get_data()
+            output, hidden = self.rnn(x, hidden, schedule=iis / self.step)
+            if self.two_step_training:
+                output_twostep = self.rnn.auto_encode(y, schedule=iis / self.step)
+            loss = self.custom_KNWLoss(output.permute(1, 2, 0), outlab, self.rnn, iis)
+            if self.two_step_training:
+                loss_twostep = self.custom_KNWLoss(output_twostep.permute(1, 2, 0), outlab, self.rnn, iis)
+                loss = 0.8 * loss + 0.2 * loss_twostep
+            self.__profiler(iis,loss)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+        endt = time.time()
+        print("Time used in training:", endt - startt)
+        self.__postscript()
+        if self.gpuavail:
+            torch.cuda.empty_cache()
+
 
     def run_training(self,step=None):
 
@@ -1127,4 +1163,374 @@ class PyTrain(object):
         endt = time.time()
         print("Time used in generation:", endt - startt)
         return outputl
+
+
+class PyTrain_Lite(object):
+    """
+    A class trying to wrap all possible training practice nicely and litely
+    """
+
+    def __init__(self, dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, para=None):
+        """
+        A lite version of pytrain
+        :param lsize:
+        :param rnn:
+        :param step:
+        :param custom:
+        :param learning_rate:
+        :param batch:
+        :param window:
+        :param para:
+        """
+
+        self.rnn = rnn
+        self.step = step
+        self.dataset = dataset
+        self.batch = batch
+        self.window = window
+
+        if para is None:
+            para = dict([])
+        self.save = para.get("save", None)
+        self.cuda_flag = para.get("cuda_flag", True)
+        self.seqtrain = para.get("seqtrain", False)
+        self.id_2_vec = para.get("id_2_vec", None)
+        self.supervise_mode = para.get("supervise_mode", False)
+        self.coop = para.get("coop", None)
+        self.coopseq = para.get("coopseq", None)
+        self.invec_noise = para.get("invec_noise", 0.0)
+        self.pre_training = para.get("pre_training", False)
+        self.loss_clip = para.get("loss_clip", 0.0)
+        self.digit_input = para.get("digit_input", True)
+        self.two_step_training = para.get("two_step_training", False)
+        self.context_total=para.get("context_total", 1)
+        self.context_switch_step = para.get("context_switch_step", 10)
+        self.length_sorted=False
+
+        if type(lsize) is list:
+            self.lsize_in = lsize[0]
+            self.lsize_out = lsize[1]
+        else:
+            self.lsize_in = lsize
+            self.lsize_out = lsize
+
+        self.lossf = None
+
+        # profiler
+        self.prtstep = int(step / 20)
+        self.train_hist = []
+        self.his = 0
+
+        # optimizer
+        self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=learning_rate, weight_decay=0.0)
+        # self.optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+
+        # CUDA
+        self.cuda_flag = para.get("cuda_flag", True)
+        if self.cuda_flag:
+            self.gpuavail = torch.cuda.is_available()
+            self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+        else:
+            self.gpuavail = False
+            self.device = torch.device("cpu")
+        # If we are on a CUDA machine, then this should print a CUDA device:
+        print(self.device)
+
+        # Evaluation memory
+        self.evalmem= None
+
+    def run_training(self,step=None):
+
+        if step is not None:
+            self.step=step
+
+        startt = time.time()
+        self.rnn.train()
+        if self.gpuavail:
+            self.rnn.to(self.device)
+        for iis in range(self.step):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x,label=self.get_data()
+            output, hidden = self.rnn(x, hidden, schedule=iis / self.step)
+            loss = self.lossf(output, label, self.rnn, iis)
+            self.__profiler(iis,loss)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            self.while_training(iis)
+
+        endt = time.time()
+        print("Time used in training:", endt - startt)
+        self.__postscript()
+        if self.gpuavail:
+            torch.cuda.empty_cache()
+
+    def eval_mem(self,dataset):
+        pass
+
+    def do_eval(self,step_eval=300):
+        startt = time.time()
+        self.rnn.eval()
+        perpl=[]
+        for iis in range(step_eval):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x, label = self.get_data()
+            output, hidden = self.rnn(x, hidden, schedule=1.0)
+            loss = self.lossf(output, label, self.rnn, iis)
+            perpl.append(loss.cpu().item())
+            # self.eval_mem(output)
+        print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
+        endt = time.time()
+        print("Time used in evaluation:", endt - startt)
+        if self.gpuavail:
+            torch.cuda.empty_cache()
+
+    def get_data(self):
+        raise Exception("NotImplementedException")
+
+    def loss(self):
+        raise Exception("NotImplementedException")
+
+    def while_training(self,iis):
+        pass
+
+    def __profiler(self, iis, loss):
+        if int(iis / self.prtstep) != self.his:
+            print("Loss: ", iis, loss.item())
+            self.his = int(iis / self.prtstep)
+        self.train_hist.append(loss.item())
+
+    def __postscript(self):
+        x = []
+        for ii in range(len(self.train_hist)):
+            x.append([ii, self.train_hist[ii]])
+        x = np.array(x)
+        try:
+            plt.plot(x[:, 0], x[:, 1])
+            if type(self.save) != type(None):
+                plt.savefig(self.save)
+                plt.gcf().clear()
+            else:
+                if self.loss_clip > 0:
+                    plt.ylim((-self.loss_clip, self.loss_clip))
+                plt.show()
+        except:
+            pass
+
+class PyTrain_Custom(PyTrain_Lite):
+    """
+    A pytrain custom object aiding PyTrain_Lite
+    """
+    def __init__(self, dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, para=None):
+        """
+        PyTrain custom
+        :param para:
+        """
+        super(self.__class__, self).__init__(dataset, lsize, rnn, step, learning_rate=learning_rate, batch=batch, window=window, para=para)
+
+
+        # Interface to PyTrain_Lite
+        self.get_data = None
+
+        self.data_init = None
+        self.databp = None
+        self.data(dataset)
+
+        # context controller
+        self.context_id=0
+        self.context_switch(self.context_id)
+
+    def data(self,dataset):
+        """
+        Swap dataset
+        :param dataset:
+        :return:
+        """
+        limit = 1e8
+        if len(self.dataset) * self.lsize_in < limit:
+            self.data_init = True
+            self.__init_data()
+        else:
+            self.data_init = False
+            print("Warning, large dataset, not pre-processed.")
+
+        if (type(dataset) is dict) != self.supervise_mode:
+            raise Exception("Supervise mode Error.")
+
+        self.dataset = dataset
+
+    def __init_data(self):
+
+        assert self.digit_input
+        assert self.id_2_vec is not None
+        assert self.supervise_mode
+
+        dataset=self.dataset["dataset"]
+        datab=np.zeros((len(dataset),len(self.id_2_vec[0])))
+        for ii in range(len(dataset)):
+            datavec = np.array(self.id_2_vec[dataset[ii]])
+            datab[ii]=datavec
+        self.databp = torch.from_numpy(np.array(datab))
+        self.databp = self.databp.type(torch.FloatTensor)
+        self.data_init = True
+
+    def __build_databp(self,inlabs):
+        """
+        Build databp from inlab (when dataset too large)
+        :param inlab:
+        :return:
+        """
+        assert self.digit_input
+        assert self.id_2_vec is not None
+        assert self.supervise_mode
+
+        datab=np.zeros((len(inlabs),self.lsize_in))
+        for ii_b in range(len(inlabs)):
+            datab[ii_b,inlabs[ii_b]]=np.array(self.id_2_vec[inlabs[ii_b]])
+        databp = torch.from_numpy(np.array(datab))
+        return databp
+
+    def KNWLoss(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        # loss1 = self.lossc(outputl, outlab)
+        loss1 = lossc(outputl, outlab)
+        # logith2o = model.h2o.weight
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def while_training(self,iis):
+        # self.context_monitor(iis)
+        pass
+
+    def context_monitor(self,iis):
+        """Monitor progress"""
+        self.context_id=int(iis/100)%self.context_total
+        self.context_switch(self.context_id)
+
+    def context_switch(self,context_id):
+        assert context_id<self.context_total
+        self.rnn.context_id=context_id
+        if context_id==0:
+            self.lossf=self.custom_loss_pos_auto_0
+            self.get_data=self.custom_get_data_pos_auto
+        elif context_id==1:
+            self.lossf=self.custom_loss_pos_auto_1
+            self.get_data=self.custom_get_data_pos_auto
+
+
+    def custom_loss_pos_auto_0(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for pos_auto task context0
+        outputl=[output11,output12,output21,output22]
+        outlab=[poslab,autolab]
+        """
+        loss11=self.KNWLoss(outputl[0], outlab[0])
+        loss12 = self.KNWLoss(outputl[1], outlab[1])
+        loss21 = self.KNWLoss(outputl[2], outlab[0])
+        loss22 = self.KNWLoss(outputl[3], outlab[1])
+        return loss11+loss12+loss21+loss22
+
+    def custom_loss_pos_auto_1(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for pos_auto task context1
+        outputl=[output11,output12,output21,output22]
+        outlab=[poslab,autolab]
+        """
+        loss11=self.KNWLoss(outputl[0], outlab[0])
+        loss12 = self.KNWLoss(outputl[1], outlab[1])
+        loss21 = self.KNWLoss(outputl[2], outlab[0])
+        loss22 = self.KNWLoss(outputl[3], outlab[1])
+        return loss11-loss12-loss21+loss22
+
+    def custom_get_data_pos_auto(self):
+        """
+        Customed data get subroutine for both pos tag and self tag
+        :return:
+        """
+        assert self.supervise_mode
+        label=np.array(self.dataset["label"])
+        dataset = np.array(self.dataset["dataset"])
+        rstartv = np.floor(np.random.rand(self.batch) * (len(dataset) - self.window - 1))
+
+        autol = np.zeros((self.batch, self.window))
+        labell = np.zeros((self.batch, self.window))
+        for iib in range(self.batch):
+            labell[iib, :] = label[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+            autol[iib, :] = dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+        poslab = torch.from_numpy(labell)
+        poslab = poslab.type(torch.LongTensor)
+        autolab = torch.from_numpy(autol)
+        autolab = autolab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
+        for iib in range(self.batch):
+            if self.data_init:
+                vec1 = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            else:
+                vec1 = self.__build_databp(dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+            vec1m[:, iib, :] = vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if self.gpuavail:
+            x = x.to(self.device)
+            poslab = poslab.to(self.device)
+            autolab = autolab.to(self.device)
+
+        return x, [poslab,autolab]
+
+    def eval_mem(self,dataset):
+        """
+        Data archiving
+        :param dataset:
+        :return:
+        """
+        pass
+
+    def custom_loss_pos_auto_eval(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for pos_auto task context1
+        outputl=[output11,output12,output21,output22]
+        outlab=[poslab,autolab]
+        """
+        loss11=self.KNWLoss(outputl[0], outlab[0])
+        loss12 = self.KNWLoss(outputl[1], outlab[1])
+        loss21 = self.KNWLoss(outputl[2], outlab[0])
+        loss22 = self.KNWLoss(outputl[3], outlab[1])
+        return loss11,loss12,loss21,loss22
+
+    def do_eval_custom_pos_auto(self,step_eval=300):
+
+        startt = time.time()
+        self.rnn.eval()
+        perpl=[[],[],[],[]]
+        for iis in range(step_eval):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x, label = self.get_data()
+            output, hidden = self.rnn(x, hidden, schedule=1.0)
+            loss11, loss12, loss21, loss22 = self.custom_loss_pos_auto_eval(output, label, self.rnn, iis)
+            perpl[0].append(loss11.cpu().item())
+            perpl[1].append(loss12.cpu().item())
+            perpl[2].append(loss21.cpu().item())
+            perpl[3].append(loss22.cpu().item())
+            # self.eval_mem(output)
+        print("Evaluation Perplexity 11: ", np.mean(np.array(perpl[0])))
+        print("Evaluation Perplexity 12: ", np.mean(np.array(perpl[1])))
+        print("Evaluation Perplexity 21: ", np.mean(np.array(perpl[2])))
+        print("Evaluation Perplexity 22: ", np.mean(np.array(perpl[3])))
+        endt = time.time()
+        print("Time used in evaluation:", endt - startt)
+        if self.gpuavail:
+            torch.cuda.empty_cache()
 

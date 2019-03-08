@@ -362,6 +362,20 @@ class NLPutil(object):
                 res.sort(key=lambda tup:tup[1],reverse=True)
         return res
 
+    def cal_v2w_full(self,vec,numW=10,dist="cos",reverse=True):
+        """
+        Calculate leading numW nearest using cosine distance definition
+        :param vec: input vector
+        :param numW: number of words returned
+        :return: (word,dist) list, length is numW
+        """
+        res=[]
+        for (k,v) in self.w2v_dict.items():
+            dist=self.cal_cosdist(v,vec)
+            res.append((k,dist))
+        res.sort(key=lambda tup:tup[1],reverse=reverse)
+        return res[:numW]
+
 
     def write_data(self,ofile='text.txt'):
         with open(ofile,'w') as fp:

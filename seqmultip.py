@@ -1066,6 +1066,186 @@ class GRU_TwoLayerCon(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return self.rnn.initHidden_cuda(device, batch)
 
+class LSTM_AdvConNet(torch.nn.Module):
+    """
+    A trial of adversarial two step training for finding information partition.
+    A self attention gate G1 is used to partition Wordvec into two part with G1 and 1-G1 into wp1 and wp2
+    wp1 does POS task and self-modeling task with perp p11 and p12
+    wp2 does POS task and self-modeling task with perp p21 and p22
+    Train step 1 minimize p11+p12+p21+p22 with G1 fixed
+    Train step 2 minimize p11-p12-p21+p22 with ontly G1 changing
+
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+        """
+        init
+        :param input_size:
+        :param hidden_size: list
+        :param output_size: list
+        """
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.hidden_size_pos=hidden_size[0]
+        self.hidden_size_auto = hidden_size[1]
+        self.output_size_pos=output_size[0]
+        self.output_size_auto = output_size[1]
+        self.num_layers=num_layers
+
+        # self.rnn = rnn
+        # for param in self.rnn.parameters():
+        #     param.requires_grad = False
+        # self.rnn.eval()
+
+        self.context_id=0 # Training step controlling flexible part of network
+
+
+        self.i2g = torch.nn.Linear(input_size, self.input_size) # self-attention
+
+        self.lstm11 = torch.nn.LSTM(input_size, self.hidden_size_pos, num_layers=num_layers)
+        self.h2o11 = torch.nn.Linear(self.hidden_size_pos, self.output_size_pos)
+
+        self.lstm12 = torch.nn.LSTM(input_size, self.hidden_size_auto, num_layers=num_layers)
+        self.h2o12 = torch.nn.Linear(self.hidden_size_auto, self.output_size_auto)
+
+        self.lstm21 = torch.nn.LSTM(input_size, self.hidden_size_pos, num_layers=num_layers)
+        self.h2o21 = torch.nn.Linear(self.hidden_size_pos, self.output_size_pos)
+
+        self.lstm22 = torch.nn.LSTM(input_size, self.hidden_size_auto, num_layers=num_layers)
+        self.h2o22 = torch.nn.Linear(self.hidden_size_auto, self.output_size_auto)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.infer_pos = None
+
+        self.pre_trained = False
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        if self.context_id==0: # fix self attention
+            for param in self.parameters():
+                param.requires_grad = True
+            for param in self.i2g.parameters():
+                param.requires_grad = False
+        elif self.context_id==1: # train self attention
+            for param in self.parameters():
+                param.requires_grad = False
+            for param in self.i2g.parameters():
+                param.requires_grad = True
+        else:
+            raise Exception("Self.train_step not known")
+
+        self_att=self.i2g(input)
+        self_att=self.sigmoid(self_att)
+        wp1=self_att*input
+        wp2 = (1-self_att) * input
+        hidden11=hidden1[0]
+        hout11, hn11 = self.lstm11(wp1,hidden11)
+        output11 = self.h2o11(hout11)
+        hidden12 = hidden1[1]
+        hout12, hn12 = self.lstm12(wp1, hidden12)
+        output12 = self.h2o12(hout12)
+        hidden21 = hidden1[2]
+        hout21, hn21 = self.lstm21(wp2, hidden21)
+        output21 = self.h2o21(hout21)
+        hidden22 = hidden1[3]
+        hout22, hn22 = self.lstm22(wp2, hidden22)
+        output22 = self.h2o22(hout22)
+
+        output=[output11,output12,output21,output22]
+        hn=[hn11,hn12,hn21,hn22]
+
+        return output,hn
+
+    def initHidden(self,batch):
+        hd11=[Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True),
+              Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True)]
+        hd12 = [Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True)]
+        hd21 = [Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True)]
+        hd22 =  [Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True)]
+        return [hd11,hd12,hd21,hd22]
+
+    def initHidden_cuda(self, device, batch):
+        hd11 = [Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True).to(device)]
+        hd12 = [Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True).to(device)]
+        hd21 = [Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size_pos), requires_grad=True).to(device)]
+        hd22 = [Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size_auto), requires_grad=True).to(device)]
+        return [hd11, hd12, hd21, hd22]
+
+class LSTM_PJ_NLP(torch.nn.Module):
+    """
+    PyTorch LSTM for NLP with rotation and projection
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+
+        self.rotate = torch.nn.Linear(input_size, input_size)
+        self.proj_size = 200
+        self.conj_mode = False
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.lstm = torch.nn.LSTM(self.proj_size, hidden_size, num_layers=num_layers)
+        self.lstm_conj = torch.nn.LSTM(input_size-self.proj_size, hidden_size, num_layers=num_layers)
+
+        if weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.lstm = WeightDrop(self.lstm, ['weight_hh_l0'], dropout=weight_dropout)
+            self.lstm_conj = WeightDrop(self.lstm_conj, ['weight_hh_l0'], dropout=weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        rot_input = self.rotate(input)
+        if self.conj_mode:
+            proj_input = rot_input[:, :, self.proj_size:]
+            for param in self.rotate.parameters():
+                param.requires_grad = False
+            hout, hn = self.lstm_conj(proj_input, hidden1)
+        else:
+            proj_input = rot_input[:,:,:self.proj_size]
+            hout, hn = self.lstm(proj_input,hidden1)
+        output = self.h2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
+
 class FF_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
