@@ -442,8 +442,8 @@ def logit_sampling_layer(l_input): ### Not seems to be working
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         pick_layer_i=pick_layer_i.to(device)
     l_output=l_input*pick_layer_i
-    # l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
-    return l_output
+    l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
+    return l_output_masked
 
 class PyTrain(object):
     """
@@ -465,7 +465,7 @@ class PyTrain(object):
         if para is None:
             para = dict([])
         self.save = para.get("save", None)
-        self.seqtrain = para.get("seqtrain", False)
+        self.seqtrain = para.get("seqtrain", True)
         self.id_2_vec = para.get("id_2_vec", None)
         self.supervise_mode = para.get("supervise_mode", False)
         self.coop = para.get("coop", None)
@@ -896,7 +896,7 @@ class PyTrain(object):
             self.rnn.to(self.device)
         for iis in range(self.step):
             if self.gpuavail:
-                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+                    hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
             x,y,inlab,outlab=self.__get_data()
@@ -1193,7 +1193,7 @@ class PyTrain_Lite(object):
             para = dict([])
         self.save = para.get("save", None)
         self.cuda_flag = para.get("cuda_flag", True)
-        self.seqtrain = para.get("seqtrain", False)
+        self.seqtrain = para.get("seqtrain", True)
         self.id_2_vec = para.get("id_2_vec", None)
         self.supervise_mode = para.get("supervise_mode", False)
         self.coop = para.get("coop", None)
@@ -1253,10 +1253,20 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
-            x,label=self.get_data()
-            output, hidden = self.rnn(x, hidden, schedule=iis / self.step)
-            loss = self.lossf(output, label, self.rnn, iis)
-            self.__profiler(iis,loss)
+            if self.seqtrain:
+                x,label=self.get_data()
+                outputl, hidden = self.rnn(x, hidden, schedule=iis / self.step)
+            else:
+                outputl=None
+                x, label = self.get_data()
+                for iiw in range(self.window):
+                    output, hidden = self.rnn(x[iiw,:,:], hidden, schedule=iis / self.step)
+                    if outputl is None:
+                        outputl = output.view(1, self.batch, self.lsize)
+                    else:
+                        outputl = torch.cat((outputl.view(-1, self.batch, self.lsize), output.view(1, self.batch, self.lsize)), dim=0)
+            loss = self.lossf(outputl, label, self.rnn, iis)
+            self.__profiler(iis, loss)
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -1294,7 +1304,7 @@ class PyTrain_Lite(object):
     def get_data(self):
         raise Exception("NotImplementedException")
 
-    def loss(self):
+    def lossf(self):
         raise Exception("NotImplementedException")
 
     def while_training(self,iis):
@@ -1334,17 +1344,32 @@ class PyTrain_Custom(PyTrain_Lite):
         """
         super(self.__class__, self).__init__(dataset, lsize, rnn, step, learning_rate=learning_rate, batch=batch, window=window, para=para)
 
-
-        # Interface to PyTrain_Lite
-        self.get_data = None
-
         self.data_init = None
         self.databp = None
         self.data(dataset)
 
+        # Interface
+        self.get_data = None
+        self.lossf = None
+        self.__init_data = None
+
         # context controller
         self.context_id=0
-        self.context_switch(self.context_id)
+        self.context_switch(0)
+
+    def context_switch(self,context_id):
+        assert context_id<self.context_total
+        self.rnn.context_id=context_id
+        if context_id==0:
+            # self.lossf=self.custom_loss_pos_auto_0
+            # self.get_data=self.custom_get_data_pos_auto
+            self.lossf = self.KNWLoss
+            self.get_data = self.get_data_continous
+            self.__init_data =
+        # elif context_id==1:
+        #     self.lossf=self.custom_loss_pos_auto_1
+        #     self.get_data=self.custom_get_data_pos_auto
+
 
     def data(self,dataset):
         """
@@ -1352,7 +1377,8 @@ class PyTrain_Custom(PyTrain_Lite):
         :param dataset:
         :return:
         """
-        limit = 1e8
+        limit = 1e9
+        print("Data size: ",len(self.dataset) * self.lsize_in)
         if len(self.dataset) * self.lsize_in < limit:
             self.data_init = True
             self.__init_data()
@@ -1365,7 +1391,66 @@ class PyTrain_Custom(PyTrain_Lite):
 
         self.dataset = dataset
 
-    def __init_data(self):
+    def __init_data_continous(self):
+        # aaa
+        pass
+
+    def __init_data_all(self,limit=1e9):
+        if len(self.dataset)*self.lsize_in<limit:
+            datab = []
+            if self.digit_input:
+                if self.id_2_vec is None: # No embedding, one-hot representation
+                    self.PAD_VEC=np.zeros(self.lsize_in, dtype=np.float32)
+                    self.PAD_VEC[self.SYM_PAD] = 1.0
+            if type(self.dataset[0]) != list:
+                if self.digit_input:
+                    if self.id_2_vec is None:  # No embedding, one-hot representation
+                        for data in self.dataset:
+                            datavec = np.zeros(self.lsize_in)
+                            datavec[data] = 1.0
+                            datab.append(datavec)
+                    else:
+                        for data in self.dataset:
+                            datavec = np.array(self.id_2_vec[data])
+                            datab.append(datavec)
+                else:  # if not digit input, raw data_set is used
+                    datab = self.dataset
+                self.databp = torch.from_numpy(np.array(datab))
+                self.databp = self.databp.type(torch.FloatTensor)
+            else: # we assume sentence structure
+                self.databp=[]
+                if self.digit_input:
+                    if self.id_2_vec is None:  # No embedding, one-hot representation
+                        for sent in self.dataset:
+                            datab_sent=[]
+                            for data in sent:
+                                datavec = np.zeros(self.lsize_in)
+                                datavec[data] = 1.0
+                                datab_sent.append(datavec)
+                            datab_sent = torch.from_numpy(np.array(datab_sent))
+                            datab_sent = datab_sent.type(torch.FloatTensor)
+                            self.databp.append(datab_sent)
+                    else:
+                        for sent in self.dataset:
+                            datab_sent = []
+                            for data in sent:
+                                datavec = np.array(self.id_2_vec[data])
+                                datab_sent.append(datavec)
+                            datab_sent=torch.from_numpy(np.array(datab_sent))
+                            datab_sent = datab_sent.type(torch.FloatTensor)
+                            self.databp.append(datab_sent)
+                else:  # if not digit input, raw data_set is used
+                    for sent in self.dataset:
+                        datab_sent = torch.from_numpy(np.array(sent))
+                        datab_sent = datab_sent.type(torch.FloatTensor)
+                        self.databp.append(datab_sent)
+            self.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.databp=None
+            self.data_init=False
+
+    def __init_data_sup(self):
 
         assert self.digit_input
         assert self.id_2_vec is not None
@@ -1413,18 +1498,9 @@ class PyTrain_Custom(PyTrain_Lite):
 
     def context_monitor(self,iis):
         """Monitor progress"""
-        self.context_id=int(iis/100)%self.context_total
-        self.context_switch(self.context_id)
-
-    def context_switch(self,context_id):
-        assert context_id<self.context_total
-        self.rnn.context_id=context_id
-        if context_id==0:
-            self.lossf=self.custom_loss_pos_auto_0
-            self.get_data=self.custom_get_data_pos_auto
-        elif context_id==1:
-            self.lossf=self.custom_loss_pos_auto_1
-            self.get_data=self.custom_get_data_pos_auto
+        pass
+        # self.context_id=int(iis/100)%self.context_total
+        # self.context_switch(self.context_id)
 
 
     def custom_loss_pos_auto_0(self, outputl, outlab, model=None, cstep=None):
@@ -1450,6 +1526,53 @@ class PyTrain_Custom(PyTrain_Lite):
         loss21 = self.KNWLoss(outputl[2], outlab[0])
         loss22 = self.KNWLoss(outputl[3], outlab[1])
         return loss11-loss12-loss21+loss22
+
+    def get_data_continous(self):
+
+        rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset) - self.window - 1))
+
+        if not self.supervise_mode:
+            # Generating output label
+            yl = np.zeros((self.batch,self.window))
+            xl = np.zeros((self.batch,self.window))
+            for iib in range(self.batch):
+                xl[iib,:]=self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+                yl[iib,:]=self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]
+            inlab = torch.from_numpy(xl)
+            inlab = inlab.type(torch.LongTensor)
+            outlab = torch.from_numpy(yl)
+            outlab = outlab.type(torch.LongTensor)
+
+        else:
+            xl = np.zeros((self.batch, self.window))
+            for iib in range(self.batch):
+                xl[iib, :] = self.label[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+            inlab = torch.from_numpy(xl)
+            inlab = inlab.type(torch.LongTensor)
+            outlab = inlab
+
+        vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
+        # vec2m = torch.zeros(self.window, self.batch, self.lsize_in)
+        for iib in range(self.batch):
+            # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            # vec1_rnd = torch.rand(vec1_raw.shape)
+            # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
+            # vec1 = vec1_raw + vec1_add
+            if self.data_init:
+                vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            else:
+                vec1=self.__build_databp(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+            # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
+            vec1m[:,iib,:]=vec1
+            # vec2m[:, iib, :] = vec2
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
+        # y = Variable(vec2m, requires_grad=True)
+
+        if self.gpuavail:
+            inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            x = x.to(self.device)
+
+        return x, None, inlab, outlab
 
     def custom_get_data_pos_auto(self):
         """

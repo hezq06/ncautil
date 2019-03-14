@@ -34,6 +34,16 @@ def one_hot(num, lsize):
             res.append(ytemp)
     return np.array(res)
 
+def logp(vec):
+    """
+    Transfer LogSoftmax function to normal prob
+    :param vec:
+    :return:
+    """
+    vec = np.exp(vec)
+    dwn = np.sum(vec)
+    return vec / dwn
+
 def sample_onehot(prob):
     """
     Sample one hot vector
@@ -63,16 +73,6 @@ def free_gen(step,model,lsize):
     :return:
     """
 
-    def logp(vec):
-        """
-        Transfer LogSoftmax function to normal prob
-        :param vec:
-        :return:
-        """
-        vec = np.exp(vec)
-        dwn = np.sum(vec)
-        return vec / dwn
-
     res=[]
     hidden=model.initHidden(1)
     vec1=np.zeros(lsize)
@@ -94,15 +94,6 @@ def logit_gen(seq, model,lsize):
     :param model:
     :return:
     """
-    def logp(vec):
-        """
-        Transfer LogSoftmax function to normal prob
-        :param vec:
-        :return:
-        """
-        vec = np.exp(vec)
-        dwn = np.sum(vec)
-        return vec / dwn
     res=[]
     hidden = model.initHidden(1)
     for ii in range(len(seq)):
@@ -539,6 +530,85 @@ class GRU_NLP(torch.nn.Module):
     def initHidden_eval(self):
         return torch.zeros(self.num_layers, 1, self.hidden_size)
 
+class GRU_INPSEL_NLP(torch.nn.Module):
+    """
+    PyTorch GRU for NLP with selective input
+    Using idea of Batchnorm to decide dynamic range of dropping
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, id_2_vec=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.gru = torch.nn.GRU(input_size, hidden_size, num_layers=num_layers)
+
+        if weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.bn = torch.nn.BatchNorm1d(1, affine=False)
+
+        self.ci2ch=torch.nn.Linear(input_size+hidden_size, 10)
+        self.ch2co=torch.nn.Linear(10, 1)
+
+        self.id_2_vec=id_2_vec
+
+        self.gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+
+    def forward(self, inputvec, hidden1, add_logit=None, logit_mode=False, schedule=None, input_dropout=-10.0):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        assert inputvec.shape[0] == 1
+        predvec=hidden1[1]
+        predinputvec=torch.zeros(inputvec.shape)
+        predvec_npcpu = predvec.cpu().data.numpy()
+        for ii_batch in range(inputvec.shape[1]):
+            prob = logp(predvec_npcpu[0,ii_batch,:])
+            xin, dig = sample_onehot(prob)
+            predinputvec[0,ii_batch,:]=torch.from_numpy(self.id_2_vec[dig])
+        if self.gpuavail:
+            predinputvec=predinputvec.to(self.device)
+
+        cinvec=torch.cat((inputvec,hidden1),dim=-1)
+        chd=self.ci2ch(cinvec)
+        chd=self.tanh(chd)
+        coutput=self.sigmoid(chd)
+        coutput = self.bn(coutput)
+        selgate = torch.zeros(inputvec.shape)
+        for ii_batch in range(coutput.shape[1]):
+            if coutput[0,ii_batch,0]>input_dropout: # keep
+                selgate[0,ii_batch,:]=1
+
+        combinputvec=selgate*inputvec+(1-selgate)*predinputvec
+
+        hout, hn = self.gru(combinputvec,hidden1)
+        output = self.h2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,[hn,output]
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
+                torch.zeros(self.num_layers, batch, self.output_size)]
+
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
+                torch.zeros(self.num_layers, batch, self.output_size).to(device)]
 
 
 class GRU_TwoLayerCon_DataEnhanceVer(torch.nn.Module):
@@ -1245,6 +1315,8 @@ class LSTM_PJ_NLP(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
                 Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
+
+
 
 class FF_NLP(torch.nn.Module):
     """
