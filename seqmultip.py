@@ -1491,9 +1491,14 @@ class LSTM_DIMProbGatting_NLP(torch.nn.Module):
         self.gpuavail = torch.cuda.is_available()
         self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
 
+    def set_gatepara(self,gate_para):
+        self.gate_para=gate_para
+
     def sample_gate(self,shape):
         gate=torch.rand(shape)
-        gate=gate-
+        gate=gate-self.gate_para
+        gate=(gate/torch.abs(gate)+1.0)/2
+        return gate
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -1502,12 +1507,8 @@ class LSTM_DIMProbGatting_NLP(torch.nn.Module):
         :param hidden:
         :return:
         """
-        gate=self.sample_gate()
-        input=input*self.siggate
-        if self.gpuavail:
-            input=input+self.noise*(2*torch.rand(input.shape).to(self.device)-1)
-        else:
-            input = input  + self.noise * (2 * torch.rand(input.shape) - 1)
+        probgate=self.sample_gate(input.shape)
+        input=input*probgate
         hout, hn = self.lstm(input,hidden1)
         output = self.h2o(hout)
         if add_logit is not None:
