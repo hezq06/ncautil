@@ -241,16 +241,20 @@ class NLPutil(object):
             w2v_proj[k]=vecp
         return w2v_proj
 
-    def build_textmat(self,text):
+    def build_textmat(self,text,w2v_dict_temp=None):
         """
         Build sequecing vector of sub_corpus
         :return:
         """
         print("Building sequecing vector of text...")
         txtmat = []
-        unkvec=self.w2v_dict.get("UNK",None)
+        if w2v_dict_temp is not None:
+            w2v_dict=w2v_dict_temp
+        else:
+            w2v_dict=self.w2v_dict
+        unkvec=w2v_dict.get("UNK",None)
         for word in text:
-            wvec=self.w2v_dict.get(word,unkvec)
+            wvec=w2v_dict.get(word,unkvec)
             txtmat.append(wvec)
         txtmat=np.array(txtmat)
         # self.plot_txtmat(txtmat.T)

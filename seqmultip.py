@@ -1316,7 +1316,213 @@ class LSTM_PJ_NLP(torch.nn.Module):
         return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
                 Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
 
+class Binary_W2V(torch.nn.Module):
+    """
+    PyTorch binary word to vector trial
+    """
+    def __init__(self, input_size, interaction_w, window_size):
+        """
 
+        :param lsize:
+        :param mode:
+        """
+        super(self.__class__, self).__init__()
+        # Setter or detector
+        self.input_size=input_size
+        self.interaction_w=interaction_w
+        self.window_size=window_size
+
+        self.w2v_bin=torch.nn.Linear(self.input_size, 3)
+        self.softmax = torch.nn.Softmax(dim=-1)
+
+        self.sinorm = None
+
+        self.theta=torch.zeros((3,3))
+        self.theta[0,0]=1
+        self.theta[2, 2] = 1
+        self.theta[0, 2] = -1
+        self.theta[2, 0] = -1
+
+        self.multip=torch.zeros(3)
+        self.multip[0]=1
+        self.multip[2]=-1
+
+        self.reg=torch.zeros(3)
+        self.reg[0] = 1
+        self.reg[2] = 1
+
+        self.interaction_m=torch.zeros((self.window_size,self.window_size))
+        for ii in range(self.window_size):
+            for jj in range(self.window_size):
+                if ii<jj and ii>=jj-self.interaction_w:
+                    self.interaction_m[ii,jj]=1
+
+        self.gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+
+        if self.gpuavail:
+            self.theta=self.theta.to(self.device)
+            self.interaction_m = self.interaction_m.to(self.device)
+            self.multip = self.multip.to(self.device)
+            self.reg= self.reg.to(self.device)
+
+        self.lamda=0.01
+
+    def forward(self, input, hidden,schedule=None):
+        """
+        Forward
+        :param input: [window, batch, lsize]
+        :param hidden:
+        :param plogits: prior
+        :return:
+        """
+        input=input.permute(1,0,2) # [batch, window, lsize]
+        si=self.w2v_bin(input) # [batch, window, 3]
+        sinorm = self.softmax(si)
+        self.sinorm=sinorm
+        sit=torch.matmul(sinorm,self.theta) # [batch, window, 3]
+        si2=sinorm.permute(0,2,1) # [batch, 3, window]
+        sits1=torch.matmul(sit,si2) # [batch, window, window]
+        sits1_mask=self.interaction_m*sits1
+        nitem=(2*self.window_size-self.interaction_w-1)*self.interaction_w/2
+        batch_size=input.shape[0]
+        E1=torch.sum(sits1_mask)/batch_size/nitem
+        meanF=torch.sum(sinorm*self.multip.view(1,-1))/self.window_size/batch_size
+        E2=meanF*meanF
+
+        regF=torch.sum(sinorm*self.reg.view(1,-1))/self.window_size/batch_size
+        E3=regF
+
+        return -E1+E2+self.lamda*E3, None
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
+
+class LSTM_DIMGatting_NLP(torch.nn.Module):
+    """
+    PyTorch LSTM for NLP with input dimemsion gating.
+    Basic hypothesis, more understandable means tighter information bottleneck
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True, noise=0.1):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers)
+
+        self.gate = torch.nn.Parameter(torch.rand(input_size), requires_grad=True)
+        self.noise = noise
+
+        if weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.lstm = WeightDrop(self.lstm, ['weight_hh_l0'], dropout=weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.siggate = self.sigmoid(self.gate)
+
+        self.gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        self.siggate=self.sigmoid(self.gate)
+        input=input*self.siggate
+        if self.gpuavail:
+            input=input+self.noise*(2*torch.rand(input.shape).to(self.device)-1)
+        else:
+            input = input  + self.noise * (2 * torch.rand(input.shape) - 1)
+        hout, hn = self.lstm(input,hidden1)
+        output = self.h2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
+
+class LSTM_DIMProbGatting_NLP(torch.nn.Module):
+    """
+    PyTorch LSTM for NLP with input dimemsion gating with a probablistic 0/1 gate, two step training
+    Basic hypothesis, more understandable means tighter information bottleneck
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers)
+
+        self.gate_para = torch.ones(input_size)
+
+        if weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.lstm = WeightDrop(self.lstm, ['weight_hh_l0'], dropout=weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+
+    def sample_gate(self,shape):
+        gate=torch.rand(shape)
+        gate=gate-
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        gate=self.sample_gate()
+        input=input*self.siggate
+        if self.gpuavail:
+            input=input+self.noise*(2*torch.rand(input.shape).to(self.device)-1)
+        else:
+            input = input  + self.noise * (2 * torch.rand(input.shape) - 1)
+        hout, hn = self.lstm(input,hidden1)
+        output = self.h2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
 
 class FF_NLP(torch.nn.Module):
     """
@@ -2447,3 +2653,4 @@ class KNW_CELL(torch.nn.Module):
 
     def initHidden(self,batch=1):
         return Variable(torch.zeros(1, batch, 1), requires_grad=True)
+

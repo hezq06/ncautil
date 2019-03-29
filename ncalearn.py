@@ -1205,6 +1205,7 @@ class PyTrain_Lite(object):
         self.two_step_training = para.get("two_step_training", False)
         self.context_total=para.get("context_total", 1)
         self.context_switch_step = para.get("context_switch_step", 10)
+        self.reg_lamda = para.get("reg_lamda", 0.0)
         self.length_sorted=False
 
         if type(lsize) is list:
@@ -1215,6 +1216,7 @@ class PyTrain_Lite(object):
             self.lsize_out = lsize
 
         self.lossf = None
+        self.lossf_eval = None
 
         # profiler
         self.prtstep = int(step / 20)
@@ -1249,16 +1251,17 @@ class PyTrain_Lite(object):
         if self.gpuavail:
             self.rnn.to(self.device)
         for iis in range(self.step):
+        # for iis in tqdm(range(self.step)):
             if self.gpuavail:
                 hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
             if self.seqtrain:
-                x,label=self.get_data()
+                x, label, _ = self.get_data()
                 outputl, hidden = self.rnn(x, hidden, schedule=iis / self.step)
             else:
                 outputl=None
-                x, label = self.get_data()
+                x, label, _ = self.get_data()
                 for iiw in range(self.window):
                     output, hidden = self.rnn(x[iiw,:,:], hidden, schedule=iis / self.step)
                     if outputl is None:
@@ -1266,7 +1269,7 @@ class PyTrain_Lite(object):
                     else:
                         outputl = torch.cat((outputl.view(-1, self.batch, self.lsize), output.view(1, self.batch, self.lsize)), dim=0)
             loss = self.lossf(outputl, label, self.rnn, iis)
-            self.__profiler(iis, loss)
+            self._profiler(iis, loss)
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -1274,7 +1277,7 @@ class PyTrain_Lite(object):
 
         endt = time.time()
         print("Time used in training:", endt - startt)
-        self.__postscript()
+        self._postscript()
         if self.gpuavail:
             torch.cuda.empty_cache()
 
@@ -1290,14 +1293,46 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
-            x, label = self.get_data()
+            x, label, _ = self.get_data()
             output, hidden = self.rnn(x, hidden, schedule=1.0)
-            loss = self.lossf(output, label, self.rnn, iis)
+            loss = self.lossf_eval(output, label, self.rnn, iis)
             perpl.append(loss.cpu().item())
             # self.eval_mem(output)
-        print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
+        # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
+        print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
         endt = time.time()
         print("Time used in evaluation:", endt - startt)
+        if self.gpuavail:
+            torch.cuda.empty_cache()
+
+    def do_test(self,step_test=300):
+        """
+        Calculate correct rate
+        :param step_test:
+        :return:
+        """
+        startt = time.time()
+        self.rnn.eval()
+        total=0
+        correct=0
+        correct_ratel=[]
+        for iis in range(step_test):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x, label, _ = self.get_data()
+            output, hidden = self.rnn(x, hidden, schedule=1.0)
+            output = output.permute(1, 2, 0)
+            _,predicted = torch.max(output,1)
+            total += label.size(0)*label.size(1)
+            correct += (predicted == label).sum().item()
+            correct_ratel.append(correct/total)
+            # self.eval_mem(output)
+        # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
+        print("Correct rate: ", np.mean(np.array(correct_ratel)))
+        endt = time.time()
+        print("Time used in test:", endt - startt)
         if self.gpuavail:
             torch.cuda.empty_cache()
 
@@ -1310,13 +1345,19 @@ class PyTrain_Lite(object):
     def while_training(self,iis):
         pass
 
-    def __profiler(self, iis, loss):
-        if int(iis / self.prtstep) != self.his:
-            print("Loss: ", iis, loss.item())
-            self.his = int(iis / self.prtstep)
-        self.train_hist.append(loss.item())
+    def _profiler(self, iis, loss):
 
-    def __postscript(self):
+        if int(iis / self.prtstep) != self.his:
+            print("Perlexity: ", iis, np.exp(loss.item()))
+            self.his = int(iis / self.prtstep)
+        self.train_hist.append(np.exp(loss.item()))
+
+        # if int(iis / self.prtstep) != self.his:
+        #     print("Loss: ", iis, loss.item())
+        #     self.his = int(iis / self.prtstep)
+        # self.train_hist.append(loss.item())
+
+    def _postscript(self):
         x = []
         for ii in range(len(self.train_hist)):
             x.append([ii, self.train_hist[ii]])
@@ -1328,7 +1369,8 @@ class PyTrain_Lite(object):
                 plt.gcf().clear()
             else:
                 if self.loss_clip > 0:
-                    plt.ylim((-self.loss_clip, self.loss_clip))
+                    # plt.ylim((-self.loss_clip, self.loss_clip))
+                    plt.ylim((0, self.loss_clip))
                 plt.show()
         except:
             pass
@@ -1346,29 +1388,37 @@ class PyTrain_Custom(PyTrain_Lite):
 
         self.data_init = None
         self.databp = None
-        self.data(dataset)
 
-        # Interface
+        # Interface 1
+        # self._init_data = self._init_data_sup
+        self._init_data = self._init_data_continous
         self.get_data = None
-        self.lossf = None
-        self.__init_data = None
 
         # context controller
         self.context_id=0
+
+        # Last step
+        self.data(dataset)
         self.context_switch(0)
 
     def context_switch(self,context_id):
         assert context_id<self.context_total
         self.rnn.context_id=context_id
-        if context_id==0:
-            # self.lossf=self.custom_loss_pos_auto_0
-            # self.get_data=self.custom_get_data_pos_auto
-            self.lossf = self.KNWLoss
-            self.get_data = self.get_data_continous
-            self.__init_data =
+        # if context_id==0:
+        #     # self.lossf=self.custom_loss_pos_auto_0
+        #     # self.get_data=self.custom_get_data_pos_auto
+        #     # Interface 2
+        #     self.lossf = self.raw_loss
+        #     self.get_data = self.get_data_continous
+            # self.__init_data =
         # elif context_id==1:
         #     self.lossf=self.custom_loss_pos_auto_1
         #     self.get_data=self.custom_get_data_pos_auto
+
+        # Interface
+        self.lossf = self.KNWLoss_GateReg
+        self.lossf_eval = self.KNWLoss
+        self.get_data = self.get_data_continous
 
 
     def data(self,dataset):
@@ -1378,10 +1428,14 @@ class PyTrain_Custom(PyTrain_Lite):
         :return:
         """
         limit = 1e9
-        print("Data size: ",len(self.dataset) * self.lsize_in)
+        self.dataset = dataset
+        if type(dataset) is list:
+            print("Data size: ",len(self.dataset) * self.lsize_in)
+        elif type(dataset) is dict:
+            print("Data size: ", len(self.dataset["dataset"]) * self.lsize_in)
         if len(self.dataset) * self.lsize_in < limit:
             self.data_init = True
-            self.__init_data()
+            self._init_data()
         else:
             self.data_init = False
             print("Warning, large dataset, not pre-processed.")
@@ -1389,13 +1443,39 @@ class PyTrain_Custom(PyTrain_Lite):
         if (type(dataset) is dict) != self.supervise_mode:
             raise Exception("Supervise mode Error.")
 
-        self.dataset = dataset
-
-    def __init_data_continous(self):
-        # aaa
+    def eval_mem(self,dataset):
+        """
+        Data archiving
+        :param dataset:
+        :return:
+        """
         pass
 
-    def __init_data_all(self,limit=1e9):
+    def while_training(self,iis):
+        # self.context_monitor(iis)
+        pass
+
+    def context_monitor(self,iis):
+        """Monitor progress"""
+        pass
+        # self.context_id=int(iis/100)%self.context_total
+        # self.context_switch(self.context_id)
+
+    def _init_data_continous(self,limit=1e9):
+        assert self.digit_input
+        assert not self.supervise_mode
+        datab = []
+        for data in self.dataset:
+            if self.id_2_vec is None:  # No embedding, one-hot representation
+                datavec = np.zeros(self.lsize_in)
+                datavec[data] = 1.0
+            else:
+                datavec = np.array(self.id_2_vec[data])
+            datab.append(datavec)
+        self.databp = torch.from_numpy(np.array(datab))
+        self.databp = self.databp.type(torch.FloatTensor)
+
+    def _init_data_all(self,limit=1e9):
         if len(self.dataset)*self.lsize_in<limit:
             datab = []
             if self.digit_input:
@@ -1450,7 +1530,7 @@ class PyTrain_Custom(PyTrain_Lite):
             self.databp=None
             self.data_init=False
 
-    def __init_data_sup(self):
+    def _init_data_sup(self):
 
         assert self.digit_input
         assert self.id_2_vec is not None
@@ -1465,91 +1545,61 @@ class PyTrain_Custom(PyTrain_Lite):
         self.databp = self.databp.type(torch.FloatTensor)
         self.data_init = True
 
-    def __build_databp(self,inlabs):
+    # def __build_databp(self,inlabs):
+    #     """
+    #     Build databp from inlab (when dataset too large)
+    #     :param inlab:
+    #     :return:
+    #     """
+    #     assert self.digit_input
+    #     assert self.id_2_vec is not None
+    #     assert self.supervise_mode
+    #
+    #     datab=np.zeros((len(inlabs),self.lsize_in))
+    #     for ii_b in range(len(inlabs)):
+    #         datab[ii_b,inlabs[ii_b]]=np.array(self.id_2_vec[inlabs[ii_b]])
+    #     databp = torch.from_numpy(np.array(datab))
+    #     return databp
+
+    def _build_databp(self,inlabs):
         """
         Build databp from inlab (when dataset too large)
         :param inlab:
         :return:
         """
-        assert self.digit_input
-        assert self.id_2_vec is not None
-        assert self.supervise_mode
-
-        datab=np.zeros((len(inlabs),self.lsize_in))
-        for ii_b in range(len(inlabs)):
-            datab[ii_b,inlabs[ii_b]]=np.array(self.id_2_vec[inlabs[ii_b]])
-        databp = torch.from_numpy(np.array(datab))
+        if self.digit_input and self.id_2_vec is None and not self.data_init:
+            datab=np.zeros((len(inlabs),self.lsize_in))
+            for ii_b in range(len(inlabs)):
+                datab[ii_b,inlabs[ii_b]]=1.0
+            databp = torch.from_numpy(np.array(datab))
+            # databp = databp.type(torch.FloatTensor)
+        else:
+            raise Exception("Not Implemented")
         return databp
-
-    def KNWLoss(self, outputl, outlab, model=None, cstep=None):
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        # loss1 = self.lossc(outputl, outlab)
-        loss1 = lossc(outputl, outlab)
-        # logith2o = model.h2o.weight
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-        return loss1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
-    def while_training(self,iis):
-        # self.context_monitor(iis)
-        pass
-
-    def context_monitor(self,iis):
-        """Monitor progress"""
-        pass
-        # self.context_id=int(iis/100)%self.context_total
-        # self.context_switch(self.context_id)
-
-
-    def custom_loss_pos_auto_0(self, outputl, outlab, model=None, cstep=None):
-        """
-        Loss function for pos_auto task context0
-        outputl=[output11,output12,output21,output22]
-        outlab=[poslab,autolab]
-        """
-        loss11=self.KNWLoss(outputl[0], outlab[0])
-        loss12 = self.KNWLoss(outputl[1], outlab[1])
-        loss21 = self.KNWLoss(outputl[2], outlab[0])
-        loss22 = self.KNWLoss(outputl[3], outlab[1])
-        return loss11+loss12+loss21+loss22
-
-    def custom_loss_pos_auto_1(self, outputl, outlab, model=None, cstep=None):
-        """
-        Loss function for pos_auto task context1
-        outputl=[output11,output12,output21,output22]
-        outlab=[poslab,autolab]
-        """
-        loss11=self.KNWLoss(outputl[0], outlab[0])
-        loss12 = self.KNWLoss(outputl[1], outlab[1])
-        loss21 = self.KNWLoss(outputl[2], outlab[0])
-        loss22 = self.KNWLoss(outputl[3], outlab[1])
-        return loss11-loss12-loss21+loss22
 
     def get_data_continous(self):
 
-        rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset) - self.window - 1))
-
         if not self.supervise_mode:
             # Generating output label
+            rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset) - self.window - 1))
             yl = np.zeros((self.batch,self.window))
             xl = np.zeros((self.batch,self.window))
             for iib in range(self.batch):
                 xl[iib,:]=self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
                 yl[iib,:]=self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]
-            inlab = torch.from_numpy(xl)
-            inlab = inlab.type(torch.LongTensor)
+            # inlab = torch.from_numpy(xl)
+            # inlab = inlab.type(torch.LongTensor)
             outlab = torch.from_numpy(yl)
             outlab = outlab.type(torch.LongTensor)
 
         else:
+            rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset["dataset"]) - self.window - 1))
             xl = np.zeros((self.batch, self.window))
             for iib in range(self.batch):
-                xl[iib, :] = self.label[int(rstartv[iib]):int(rstartv[iib]) + self.window]
-            inlab = torch.from_numpy(xl)
-            inlab = inlab.type(torch.LongTensor)
-            outlab = inlab
+                xl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib]):int(rstartv[iib]) + self.window])
+            outlab = torch.from_numpy(xl)
+            outlab = outlab.type(torch.LongTensor)
+            # inlab = outlab
 
         vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
         # vec2m = torch.zeros(self.window, self.batch, self.lsize_in)
@@ -1561,7 +1611,7 @@ class PyTrain_Custom(PyTrain_Lite):
             if self.data_init:
                 vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
             else:
-                vec1=self.__build_databp(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+                vec1=self._build_databp(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
             # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
             vec1m[:,iib,:]=vec1
             # vec2m[:, iib, :] = vec2
@@ -1569,10 +1619,11 @@ class PyTrain_Custom(PyTrain_Lite):
         # y = Variable(vec2m, requires_grad=True)
 
         if self.gpuavail:
-            inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.device)
             x = x.to(self.device)
 
-        return x, None, inlab, outlab
+        return x, outlab, None
 
     def custom_get_data_pos_auto(self):
         """
@@ -1610,13 +1661,55 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return x, [poslab,autolab]
 
-    def eval_mem(self,dataset):
+    def KNWLoss(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        # loss1 = self.lossc(outputl, outlab)
+        loss1 = lossc(outputl, outlab)
+        # logith2o = model.h2o.weight
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_GateReg(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        # loss1 = self.lossc(outputl, outlab)
+        loss1 = lossc(outputl, outlab)
+        loss_gate = model.siggate
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1+self.reg_lamda*torch.mean(loss_gate)  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def raw_loss(self, output, label, rnn, iis):
+        return output
+
+
+    def custom_loss_pos_auto_0(self, outputl, outlab, model=None, cstep=None):
         """
-        Data archiving
-        :param dataset:
-        :return:
+        Loss function for pos_auto task context0
+        outputl=[output11,output12,output21,output22]
+        outlab=[poslab,autolab]
         """
-        pass
+        loss11=self.KNWLoss(outputl[0], outlab[0])
+        loss12 = self.KNWLoss(outputl[1], outlab[1])
+        loss21 = self.KNWLoss(outputl[2], outlab[0])
+        loss22 = self.KNWLoss(outputl[3], outlab[1])
+        return loss11+loss12+loss21+loss22
+
+    def custom_loss_pos_auto_1(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for pos_auto task context1
+        outputl=[output11,output12,output21,output22]
+        outlab=[poslab,autolab]
+        """
+        loss11=self.KNWLoss(outputl[0], outlab[0])
+        loss12 = self.KNWLoss(outputl[1], outlab[1])
+        loss21 = self.KNWLoss(outputl[2], outlab[0])
+        loss22 = self.KNWLoss(outputl[3], outlab[1])
+        return loss11-loss12-loss21+loss22
 
     def custom_loss_pos_auto_eval(self, outputl, outlab, model=None, cstep=None):
         """

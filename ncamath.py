@@ -52,7 +52,7 @@ def pca(data,D):
 
 def pca_approx(data,D,dataT=None):
     """
-    Approximate data with leading D eigen_vector
+    Approximate data with leading D eigen_vector, the result is an D-rank approximation, not a projection.
     :param data: input textmat
     :param D: rank
     :param dataT: Using eigenvalue of data to project dataT
