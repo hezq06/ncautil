@@ -1390,8 +1390,8 @@ class PyTrain_Custom(PyTrain_Lite):
         self.databp = None
 
         # Interface 1
-        # self._init_data = self._init_data_sup
-        self._init_data = self._init_data_continous
+        self._init_data = self._init_data_sup
+        # self._init_data = self._init_data_continous
         self.get_data = None
 
         # context controller

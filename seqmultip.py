@@ -1462,6 +1462,50 @@ class LSTM_DIMGatting_NLP(torch.nn.Module):
         return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
                 Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
 
+class MySampler(torch.autograd.Function):
+    """
+    We can implement our own custom autograd Functions by subclassing
+    torch.autograd.Function and implementing the forward and backward passes
+    which operate on Tensors.
+    """
+
+    @staticmethod
+    def forward(ctx, input):
+        """
+        In the forward pass we receive a Tensor containing the input and return
+        a Tensor containing the output. ctx is a context object that can be used
+        to stash information for backward computation. You can cache arbitrary
+        objects for use in the backward pass using the ctx.save_for_backward method.
+        """
+        gpuavail = torch.cuda.is_available()
+        device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        gate = torch.rand(input.shape)
+        zeros = torch.zeros(input.shape)
+        if gpuavail:
+            gate = gate.to(device)
+            zeros = zeros.to(device)
+        gate = input - gate
+        gate[gate == zeros] = 1e-8
+        gate = (gate / torch.abs(gate) + 1.0) / 2
+        if torch.isnan(gate).any():
+            raise Exception("NaN Error")
+
+        ctx.save_for_backward(input)
+
+        return gate
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        In the backward pass we receive a Tensor containing the gradient of the loss
+        with respect to the output, and we need to compute the gradient of the loss
+        with respect to the input.
+        """
+        return grad_output
+
+mysampler = MySampler.apply
+
 class LSTM_DIMProbGatting_NLP(torch.nn.Module):
     """
     PyTorch LSTM for NLP with input dimemsion gating with a probablistic 0/1 gate, two step training
@@ -1477,7 +1521,9 @@ class LSTM_DIMProbGatting_NLP(torch.nn.Module):
         self.h2o = torch.nn.Linear(hidden_size, output_size)
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers)
 
-        self.gate_para = torch.ones(input_size)
+        # self.gate_para = torch.ones(input_size)
+
+        self.gate =  torch.nn.Parameter(torch.rand(input_size), requires_grad=True)
 
         if weight_dropout>0:
             print("Be careful, only GPU works for now.")
@@ -1488,17 +1534,26 @@ class LSTM_DIMProbGatting_NLP(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
+        self.siggate = self.sigmoid(self.gate)
+
         self.gpuavail = torch.cuda.is_available()
         self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
 
-    def set_gatepara(self,gate_para):
-        self.gate_para=gate_para
+        # self.mysampler = MySampler.apply
 
-    def sample_gate(self,shape):
-        gate=torch.rand(shape)
-        gate=gate-self.gate_para
-        gate=(gate/torch.abs(gate)+1.0)/2
-        return gate
+    # def sample_gate(self,shape):
+    #     gate=torch.rand(shape)
+    #     zeros=torch.zeros(shape)
+    #     if self.gpuavail:
+    #         gate=gate.to(self.device)
+    #         zeros=zeros.to(self.device)
+    #     gate=gate-self.siggate
+    #     gate[gate == zeros] = 1e-8
+    #     gate=(gate/torch.abs(gate)+1.0)/2
+    #     if torch.isnan(gate).any():
+    #         print(self.siggate,torch.sum(torch.isnan(gate)))
+    #         raise Exception("NaN Error")
+    #     return gate
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -1507,7 +1562,11 @@ class LSTM_DIMProbGatting_NLP(torch.nn.Module):
         :param hidden:
         :return:
         """
-        probgate=self.sample_gate(input.shape)
+        self.siggate = self.sigmoid(self.gate)
+
+        # torch.autograd.set_detect_anomaly(True)
+        # probgate=self.mysampler(self.siggate)
+        probgate = mysampler(self.siggate)
         input=input*probgate
         hout, hn = self.lstm(input,hidden1)
         output = self.h2o(hout)
