@@ -66,7 +66,9 @@ def pltsne(data,D=2,perp=1):
     return tsnetrainer
 
 
-def plot_mat(data,start=0,lim=1000,symmetric=False):
+def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,show=True):
+    if show:
+        plt.figure()
     data=np.array(data)
     assert len(data.shape) == 2
     img=data[:,start:start+lim]
@@ -75,7 +77,13 @@ def plot_mat(data,start=0,lim=1000,symmetric=False):
     else:
         plt.imshow(img, cmap='seismic')
     plt.colorbar()
-    plt.show()
+    if title is not None:
+        plt.title(title)
+    if tick_step is not None:
+        plt.xticks(np.arange(0, len(img[0]), tick_step))
+        plt.yticks(np.arange(0, len(img), tick_step))
+    if show:
+        plt.show()
 
 def plot_mat_sub(datal,start=0,lim=1000,symmetric=True):
     """
@@ -1206,6 +1214,7 @@ class PyTrain_Lite(object):
         self.context_total=para.get("context_total", 1)
         self.context_switch_step = para.get("context_switch_step", 10)
         self.reg_lamda = para.get("reg_lamda", 0.0)
+        self.optimizer_label = para.get("optimizer_label", "adam")
         self.length_sorted=False
 
         if type(lsize) is list:
@@ -1224,8 +1233,12 @@ class PyTrain_Lite(object):
         self.his = 0
 
         # optimizer
-        self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=learning_rate, weight_decay=0.0)
-        # self.optimizer = torch.optim.SGD(rnn.parameters(), lr=learning_rate)
+        if self.optimizer_label=="adam":
+            print("Using adam optimizer")
+            self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=learning_rate, weight_decay=0.0)
+        else:
+            print("Using SGD optimizer")
+            self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=learning_rate)
 
         # CUDA
         self.cuda_flag = para.get("cuda_flag", True)
@@ -1241,10 +1254,18 @@ class PyTrain_Lite(object):
         # Evaluation memory
         self.evalmem= None
 
-    def run_training(self,step=None):
+    def run_training(self,step=None,lr=None,optimizer_label="adam"):
 
         if step is not None:
             self.step=step
+
+        if lr is not None:
+            if optimizer_label == "adam":
+                print("Using adam optimizer")
+                self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=lr, weight_decay=0.0)
+            else:
+                print("Using SGD optimizer")
+                self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=lr)
 
         startt = time.time()
         self.rnn.train()
@@ -1265,9 +1286,9 @@ class PyTrain_Lite(object):
                 for iiw in range(self.window):
                     output, hidden = self.rnn(x[iiw,:,:], hidden, schedule=iis / self.step)
                     if outputl is None:
-                        outputl = output.view(1, self.batch, self.lsize)
+                        outputl = output.view(1, self.batch, self.lsize_out)
                     else:
-                        outputl = torch.cat((outputl.view(-1, self.batch, self.lsize), output.view(1, self.batch, self.lsize)), dim=0)
+                        outputl = torch.cat((outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)), dim=0)
             loss = self.lossf(outputl, label, self.rnn, iis)
             self._profiler(iis, loss)
             self.optimizer.zero_grad()
@@ -1281,7 +1302,7 @@ class PyTrain_Lite(object):
         if self.gpuavail:
             torch.cuda.empty_cache()
 
-    def eval_mem(self,dataset):
+    def eval_mem(self,output,hidden):
         pass
 
     def do_eval(self,step_eval=300):
@@ -1294,10 +1315,22 @@ class PyTrain_Lite(object):
             else:
                 hidden = self.rnn.initHidden(self.batch)
             x, label, _ = self.get_data()
-            output, hidden = self.rnn(x, hidden, schedule=1.0)
-            loss = self.lossf_eval(output, label, self.rnn, iis)
+            if self.seqtrain:
+                output, hidden = self.rnn(x, hidden, schedule=1.0)
+                loss = self.lossf_eval(output, label, self.rnn, iis)
+            else:
+                outputl=None
+                for iiw in range(self.window):
+                    output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=iis / self.step)
+                    if outputl is None:
+                        outputl = output.view(1, self.batch, self.lsize_out)
+                    else:
+                        outputl = torch.cat(
+                            (outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)),
+                            dim=0)
+                loss = self.lossf_eval(outputl, label, self.rnn, iis)
             perpl.append(loss.cpu().item())
-            # self.eval_mem(output)
+            self.eval_mem(output,hidden)
         # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
         print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
         endt = time.time()
@@ -1390,8 +1423,8 @@ class PyTrain_Custom(PyTrain_Lite):
         self.databp = None
 
         # Interface 1
-        self._init_data = self._init_data_sup
-        # self._init_data = self._init_data_continous
+        # self._init_data = self._init_data_sup
+        self._init_data = self._init_data_continous
         self.get_data = None
 
         # context controller
@@ -1416,7 +1449,10 @@ class PyTrain_Custom(PyTrain_Lite):
         #     self.get_data=self.custom_get_data_pos_auto
 
         # Interface
-        self.lossf = self.KNWLoss_GateReg
+        # self.lossf = self.KNWLoss
+        # self.lossf = self.KNWLoss_GateReg
+        self.lossf = self.KNWLoss_WeightReg
+        # self.lossf = self.KNWLoss_WeightReg_GRU
         self.lossf_eval = self.KNWLoss
         self.get_data = self.get_data_continous
 
@@ -1443,13 +1479,20 @@ class PyTrain_Custom(PyTrain_Lite):
         if (type(dataset) is dict) != self.supervise_mode:
             raise Exception("Supervise mode Error.")
 
-    def eval_mem(self,dataset):
+    def eval_mem(self,output,hidden):
         """
-        Data archiving
-        :param dataset:
+        Archiving date
+        :param output:
+        :param hidden:
         :return:
         """
-        pass
+        if self.evalmem is None:
+            self.evalmem=[[],[]]
+        try:
+            self.evalmem[0].append(self.rnn.outnrn.cpu().data.numpy())
+            self.evalmem[1].append(self.rnn.mem.cpu().data.numpy())
+        except:
+            pass
 
     def while_training(self,iis):
         # self.context_monitor(iis)
@@ -1682,6 +1725,46 @@ class PyTrain_Custom(PyTrain_Lite):
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
         return loss1+self.reg_lamda*torch.mean(loss_gate)  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        # loss1 = self.lossc(outputl, outlab)
+        loss1 = lossc(outputl, outlab)
+        # allname = ["i2a","a2keepz","a2sreth","h2o","o2l"]
+        # allname = ["Wir", "Whr", "Wiz", "Whz", "Win", "Whn", "h2o"]
+        allname = ["Wiz", "Whz", "Win", "Whn", "h2o"]
+        wnorm1=0
+        for namep in allname:
+            try:
+                wattr = getattr(self.rnn, namep)
+                wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+            except:
+                pass
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        wnorm1=wnorm1/len(allname)
+        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_WeightReg_GRU(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        # loss1 = self.lossc(outputl, outlab)
+        loss1 = lossc(outputl, outlab)
+        wnorm1=0
+        if self.rnn.weight_dropout>0:
+            weight_ih=self.rnn.gru.module.weight_ih_l0
+            weight_hh = self.rnn.gru.module.weight_hh_l0
+        else:
+            weight_ih = self.rnn.gru.weight_ih_l0
+            weight_hh = self.rnn.gru.weight_hh_l0
+        wnorm1 = wnorm1 + torch.mean(torch.abs(weight_ih)) + torch.mean(torch.abs(weight_hh))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        wnorm1=wnorm1/6
+        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def raw_loss(self, output, label, rnn, iis):
         return output

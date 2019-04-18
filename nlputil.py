@@ -174,7 +174,7 @@ class NLPutil(object):
         print(self.id_to_word)
         return self.word_to_id, self.id_to_word
 
-    def build_w2v(self,mode="torchnlp",Nvac=10000):
+    def build_w2v(self,mode="onehot",Nvac=10000):
         """
         Build word to vector lookup table
         :param mode: "pickle"
@@ -1542,63 +1542,6 @@ class GRU_Sememe(torch.nn.Module):
         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
 
 
-
-class GRU_Cell_Zoneout(torch.nn.Module):
-    """
-    PyTorch LSTM PDC for Audio
-    """
-    def __init__(self, input_size, hidden_size, output_size, zoneout_rate=0.0):
-        super(self.__class__, self).__init__()
-
-        self.hidden_size = hidden_size
-        self.input_size = input_size
-        self.zoneout_rate=zoneout_rate
-
-        self.Wir = torch.nn.Linear(input_size, hidden_size)
-        self.Whr = torch.nn.Linear(hidden_size, hidden_size)
-        self.Wiz = torch.nn.Linear(input_size, hidden_size)
-        self.Whz = torch.nn.Linear(hidden_size, hidden_size)
-        self.Win = torch.nn.Linear(input_size, hidden_size)
-        self.Whn = torch.nn.Linear(hidden_size, hidden_size)
-
-        self.h2o = torch.nn.Linear(hidden_size, output_size)
-
-        self.sigmoid = torch.nn.Sigmoid()
-        self.tanh = torch.nn.Tanh()
-        self.softmax = torch.nn.LogSoftmax(dim=-1)
-
-    def forward(self, input, hidden, add_logit=None, logit_mode=False):
-        """
-
-        :param input: input
-        :param hidden: hidden
-        :param result:
-        :return:
-        """
-        rt=self.sigmoid(self.Wir(input)+self.Whr(hidden))
-        zt=self.sigmoid(self.Wiz(input)+self.Whz(hidden))
-        nt=self.tanh(self.Win(input)+rt*self.Whn(hidden))
-        if self.training:
-            mask=(np.sign(np.random.random(list(zt.shape))-self.zoneout_rate)+1)/2
-            mask = Variable(torch.from_numpy(mask))
-            mask = mask.type(torch.FloatTensor)
-            if torch.cuda.is_available():
-                device = torch.device("cuda:0")
-                mask=mask.to(device)
-            zt=1-(1-zt)*mask
-            ht=(1-zt)*nt+zt*hidden
-        else:
-            ht = (1 - zt) * nt + zt * hidden
-        output = self.h2o(ht)
-        output = self.softmax(output)
-
-        return output, ht
-
-    def initHidden(self, batch=1):
-        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
-
-    def initHidden_cuda(self, device, batch=1):
-        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
 
 class GRU_NLP(torch.nn.Module):
     """

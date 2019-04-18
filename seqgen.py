@@ -16,7 +16,7 @@ from random import random
 from ncautil.tfnlp import TFNet
 from ncautil.ncalearn import *
 from ncautil.ncamath import *
-from ncautil.nlputil import NLPutil,GRU_Cell_Zoneout
+from ncautil.nlputil import NLPutil
 
 
 import tensorflow as tf

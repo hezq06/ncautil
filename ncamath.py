@@ -194,7 +194,7 @@ def ica(data,LR=1e-2,step=1e4,show_step=1e2):
     plt.show()
     return Xh,W
 
-def pl_eig_pca(data):
+def plot_eig_pca(data):
     """
     Plot the eigenvalue of covariance
     :param data: data matrix
@@ -214,7 +214,7 @@ def pl_eig_pca(data):
     plt.show()
     return S
 
-def pl_eig_ppca(data,history=1):
+def plot_eig_ppca(data,history=1):
     """
     Plot the eigenvalue of ppca
     :param data: data matrix
@@ -238,7 +238,7 @@ def pl_eig_ppca(data,history=1):
     plt.show()
     return S
 
-def pl_cov(data,text=None,texty=None):
+def plot_cov(data,text=None,texty=None):
     """
     Plot covariance
     :param data: data matrix
@@ -248,8 +248,8 @@ def pl_cov(data,text=None,texty=None):
     assert len(data.shape) == 2
     assert data.shape[1] >= data.shape[0]
     N = data.shape[1]
-    for ii in range(data.shape[1]):
-        data[:,ii]=data[:,ii]-np.mean(data[:,ii])
+    for ii in range(data.shape[0]):
+        data[ii, :] = data[ii, :] - np.mean(data[ii, :])
     Cov = data.dot((data).T) / N
     fig, ax = plt.subplots()
     fig = ax.imshow(Cov, cmap='seismic',clim=(-np.amax(np.abs(Cov)),np.amax(np.abs(Cov))))
@@ -279,7 +279,7 @@ def pl_cov(data,text=None,texty=None):
     plt.show()
     return Cov
 
-def pl_corr(data,text=None,texty=None):
+def plot_corr(data,text=None,texty=None):
     """
     Plot correlation
     :param data: data matrix
@@ -289,8 +289,9 @@ def pl_corr(data,text=None,texty=None):
     assert len(data.shape) == 2
     assert data.shape[1] >= data.shape[0]
     N = data.shape[1]
-    for ii in range(data.shape[1]):
-        data[:, ii] = data[:, ii] - np.mean(data[:, ii])
+    for ii in range(data.shape[0]):
+        mn = np.mean(data[ii, :])
+        data[ii, :] = data[ii, :] - mn
     Cov = data.dot((data).T) / N
     d=np.diag(1/np.sqrt(np.diag(Cov)))
     Corr=d.dot(Cov).dot(d)
@@ -322,7 +323,7 @@ def pl_corr(data,text=None,texty=None):
     plt.show()
     return Corr
 
-def pl_mucov(data1,data2):
+def plot_mucov(data1,data2):
     """
     Plot mutual covariance
     :param data1: data matrix 1
