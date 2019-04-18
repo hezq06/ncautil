@@ -73,7 +73,7 @@ def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,sho
     assert len(data.shape) == 2
     img=data[:,start:start+lim]
     if symmetric:
-        plt.imshow(img, cmap='seismic',clim=(-np.amax(data), np.amax(data)))
+        plt.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)), np.amax(np.abs(data))))
     else:
         plt.imshow(img, cmap='seismic')
     plt.colorbar()
@@ -1317,20 +1317,26 @@ class PyTrain_Lite(object):
             x, label, _ = self.get_data()
             if self.seqtrain:
                 output, hidden = self.rnn(x, hidden, schedule=1.0)
-                loss = self.lossf_eval(output, label, self.rnn, iis)
+                loss = self.lossf_eval(output, label, self.rnn, None)
+                self.eval_mem(output, hidden)
             else:
                 outputl=None
+                hiddenl=None
                 for iiw in range(self.window):
-                    output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=iis / self.step)
+                    output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=1.0)
                     if outputl is None:
                         outputl = output.view(1, self.batch, self.lsize_out)
+                        hiddenl = hidden.view(1, self.batch, self.rnn.hidden_size)
                     else:
                         outputl = torch.cat(
                             (outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)),
                             dim=0)
+                        hiddenl = torch.cat(
+                            (hiddenl.view(-1, self.batch, self.rnn.hidden_size), hidden.view(1, self.batch, self.rnn.hidden_size)),
+                            dim=0)
                 loss = self.lossf_eval(outputl, label, self.rnn, iis)
+                self.eval_mem(outputl, hiddenl)
             perpl.append(loss.cpu().item())
-            self.eval_mem(output,hidden)
         # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
         print("Evaluation Perplexity: ", np.exp(np.mean(np.array(perpl))))
         endt = time.time()
@@ -1368,6 +1374,73 @@ class PyTrain_Lite(object):
         print("Time used in test:", endt - startt)
         if self.gpuavail:
             torch.cuda.empty_cache()
+
+    def plot_example(self):
+        """
+        Plot a single example of prediction
+        :return:
+        """
+        print("Plot a single example of predcition.")
+        self.rnn.eval()
+        if self.gpuavail:
+            hidden = self.rnn.initHidden_cuda(self.device, 1)
+            self.rnn.to(self.device)
+        else:
+            hidden = self.rnn.initHidden(1)
+        x, label, _ = self.get_data(batch=1)
+        outputl = None
+        hiddenl = None
+        ztl = None
+        ntl = None
+        hidden_size = self.rnn.hidden_size
+        for iiw in range(self.window):
+            output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=1.0)
+            if outputl is None:
+                outputl = output.view(1, 1, self.lsize_out)
+                hiddenl = hidden.view(1, 1, hidden_size)
+                ztl = self.rnn.zt.view(1, 1, hidden_size)
+                ntl = self.rnn.nt.view(1, 1, hidden_size)
+            else:
+                outputl = torch.cat((outputl.view(-1, 1, self.lsize_out), output.view(1, 1, self.lsize_out)),dim=0)
+                hiddenl = torch.cat((hiddenl.view(-1, 1, hidden_size), hidden.view(1, 1, hidden_size)), dim=0)
+                ztl = torch.cat((ztl.view(-1, 1, hidden_size), self.rnn.zt.view(1, 1, hidden_size)), dim=0)
+                ntl = torch.cat((ntl.view(-1, 1, hidden_size), self.rnn.nt.view(1, 1, hidden_size)), dim=0)
+        # loss = self.lossf_eval(outputl, label, self.rnn, None)
+        xnp=x.cpu().data.numpy().reshape(-1,self.lsize_in)
+        outmat=outputl.cpu().data.numpy().reshape(-1,self.lsize_out)
+        hidmat = hiddenl.cpu().data.numpy().reshape(-1, hidden_size)
+        ztmat = ztl.cpu().data.numpy().reshape(-1, hidden_size)
+        ntmat = ntl.cpu().data.numpy().reshape(-1, hidden_size)
+
+        def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None):
+            img = np.array(img)
+            assert len(img.shape) == 2
+            if symmetric:
+                pltimg = ax.imshow(img, cmap='seismic', clim=(-np.amax(np.abs(img)), np.amax(np.abs(img))),aspect="auto")
+            else:
+                pltimg = ax.imshow(img, cmap='seismic',aspect="auto")
+            if title is not None:
+                ax.set_title(title)
+            if tick_step is not None:
+                ax.set_xticks(np.arange(0, len(img[0]), tick_step))
+                ax.set_yticks(np.arange(0, len(img), tick_step))
+            return pltimg
+
+        f, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(5, 1, sharex=True)
+        plt1 =plot_mat_ax(ax1,xnp.T, title="input", symmetric=True, tick_step=1)
+        plt2 =plot_mat_ax(ax2,outmat.T, title="predict", symmetric=False, tick_step=1)
+        plt3 =plot_mat_ax(ax3,hidmat.T, title="hidden", symmetric=True, tick_step=1)
+        plt4 = plot_mat_ax(ax4, ztmat.T, title="zt keep gate", symmetric=True, tick_step=1)
+        plt5 = plot_mat_ax(ax5, ntmat.T, title="nt set gate", symmetric=True, tick_step=1)
+        plt.colorbar(plt1, ax=ax1)
+        plt.colorbar(plt2, ax=ax2)
+        plt.colorbar(plt3, ax=ax3)
+        plt.colorbar(plt4, ax=ax4)
+        plt.colorbar(plt5, ax=ax5)
+        plt.show()
+        if self.gpuavail:
+            torch.cuda.empty_cache()
+
 
     def get_data(self):
         raise Exception("NotImplementedException")
@@ -1487,10 +1560,9 @@ class PyTrain_Custom(PyTrain_Lite):
         :return:
         """
         if self.evalmem is None:
-            self.evalmem=[[],[]]
+            self.evalmem=[]
         try:
-            self.evalmem[0].append(self.rnn.outnrn.cpu().data.numpy())
-            self.evalmem[1].append(self.rnn.mem.cpu().data.numpy())
+            self.evalmem.append(hidden.cpu().data.numpy())
         except:
             pass
 
@@ -1620,14 +1692,17 @@ class PyTrain_Custom(PyTrain_Lite):
             raise Exception("Not Implemented")
         return databp
 
-    def get_data_continous(self):
+    def get_data_continous(self,batch=None):
+
+        if batch is None:
+            batch=self.batch
 
         if not self.supervise_mode:
             # Generating output label
-            rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset) - self.window - 1))
-            yl = np.zeros((self.batch,self.window))
-            xl = np.zeros((self.batch,self.window))
-            for iib in range(self.batch):
+            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset) - self.window - 1))
+            yl = np.zeros((batch,self.window))
+            xl = np.zeros((batch,self.window))
+            for iib in range(batch):
                 xl[iib,:]=self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
                 yl[iib,:]=self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]
             # inlab = torch.from_numpy(xl)
@@ -1636,17 +1711,17 @@ class PyTrain_Custom(PyTrain_Lite):
             outlab = outlab.type(torch.LongTensor)
 
         else:
-            rstartv = np.floor(np.random.rand(self.batch) * (len(self.dataset["dataset"]) - self.window - 1))
-            xl = np.zeros((self.batch, self.window))
-            for iib in range(self.batch):
+            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - self.window - 1))
+            xl = np.zeros((batch, self.window))
+            for iib in range(batch):
                 xl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib]):int(rstartv[iib]) + self.window])
             outlab = torch.from_numpy(xl)
             outlab = outlab.type(torch.LongTensor)
             # inlab = outlab
 
-        vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
-        # vec2m = torch.zeros(self.window, self.batch, self.lsize_in)
-        for iib in range(self.batch):
+        vec1m = torch.zeros(self.window, batch, self.lsize_in)
+        # vec2m = torch.zeros(self.window, batch, self.lsize_in)
+        for iib in range(batch):
             # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
             # vec1_rnd = torch.rand(vec1_raw.shape)
             # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())

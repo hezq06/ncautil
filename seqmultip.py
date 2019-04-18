@@ -2957,13 +2957,16 @@ class GRU_Cell_Maskout(torch.nn.Module):
 
         self.h2o = torch.nn.Linear(hidden_size, output_size)
 
-        # self.sigmoid = torch.nn.Sigmoid()
-        self.sigmoid = Gumbel_Sigmoid()
+        self.sigmoid = torch.nn.Sigmoid()
+        # self.sigmoid = Gumbel_Sigmoid()
         # self.sigmoid = MyHardSig.apply # clamp input
-        # self.tanh = torch.nn.Tanh()
-        self.tanh = Gumbel_Tanh()
+        self.tanh = torch.nn.Tanh()
+        # self.tanh = Gumbel_Tanh()
         # self.tanh = MySign.apply
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.zt=None
+        self.nt=None
 
     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -2977,17 +2980,21 @@ class GRU_Cell_Maskout(torch.nn.Module):
         # rt = self.sigmoid(self.Wir(input) + self.Whr(hidden),temperature=1.1-schedule)
         # temp1=torch.clamp(self.Wir(input)+self.Whr(hidden),-1,1)
         # rt=self.sigmoid(temp1)
-        # zt=self.sigmoid(self.Wiz(input)+self.Whz(hidden))
-        zt = self.sigmoid(self.Wiz(input) + self.Whz(hidden),temperature=1.1-schedule)
+        zt=self.sigmoid(self.Wiz(input)+self.Whz(hidden))
+        # zt = self.sigmoid(self.Wiz(input) + self.Whz(hidden),temperature=1.1-schedule)
         # temp2 = torch.clamp(self.Wiz(input)+self.Whz(hidden), -1, 1)
         # zt = self.sigmoid(temp2)
         # nt=self.tanh(self.Win(input)+rt*self.Whn(hidden),temperature=1.1-schedule)
-        nt = self.tanh(self.Win(input) * self.Whn(hidden), temperature=1.1 - schedule)
+        nt = self.tanh(self.Win(input) * self.Whn(hidden))
+        # nt = self.tanh(self.Win(input) * self.Whn(hidden), temperature=1.1 - schedule)
         # temp3 = torch.clamp(self.Win(input)+rt*self.Whn(hidden), -1, 1)
         # nt = self.tanh(temp3)
         ht = (1 - zt) * nt + zt * hidden
         output = self.h2o(ht)
         output = self.softmax(output)
+
+        self.zt=zt
+        self.nt=nt
 
         return output, ht
 
