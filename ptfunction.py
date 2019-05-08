@@ -9,6 +9,8 @@ from __future__ import print_function
 
 import torch
 
+gl_cuda_device="cuda:0"
+
 class MySign(torch.autograd.Function): # A straight through estimation of sign
     """
     We can implement our own custom autograd Functions by subclassing
@@ -25,7 +27,7 @@ class MySign(torch.autograd.Function): # A straight through estimation of sign
         objects for use in the backward pass using the ctx.save_for_backward method.
         """
         gpuavail = torch.cuda.is_available()
-        device = torch.device("cuda:0" if gpuavail else "cpu")
+        device = torch.device(gl_cuda_device if gpuavail else "cpu")
 
         ctx.save_for_backward(input)
 
@@ -68,7 +70,7 @@ class MyHardSig(torch.autograd.Function): # A straight through estimation of sig
         objects for use in the backward pass using the ctx.save_for_backward method.
         """
         gpuavail = torch.cuda.is_available()
-        device = torch.device("cuda:0" if gpuavail else "cpu")
+        device = torch.device(gl_cuda_device if gpuavail else "cpu")
 
         ctx.save_for_backward(input)
 
@@ -111,7 +113,7 @@ class MySampler(torch.autograd.Function): # a 0/1 sampler following straight thr
         objects for use in the backward pass using the ctx.save_for_backward method.
         """
         gpuavail = torch.cuda.is_available()
-        device = torch.device("cuda:0" if gpuavail else "cpu")
+        device = torch.device(gl_cuda_device if gpuavail else "cpu")
 
         gate = torch.rand(input.shape)
         zeros = torch.zeros(input.shape)
@@ -137,7 +139,10 @@ class MySampler(torch.autograd.Function): # a 0/1 sampler following straight thr
         """
         return grad_output
 
-mysampler = MySampler.apply
+def mysampler(input, cuda_device="cuda:0"):
+    global gl_cuda_device
+    gl_cuda_device=cuda_device
+    return MySampler.apply(input)
 
 
 class Gumbel_Softmax(torch.nn.Module):
@@ -145,11 +150,11 @@ class Gumbel_Softmax(torch.nn.Module):
     PyTorch Gumbel softmax function
     Categorical Reprarameteruzation with Gumbel-Softmax
     """
-    def __init__(self):
+    def __init__(self,cuda_device="cuda:0"):
         super(self.__class__, self).__init__()
 
         self.gpuavail = torch.cuda.is_available()
-        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+        self.device = torch.device(cuda_device if self.gpuavail else "cpu")
 
     def forward(self, input, temperature=1.0):
         """
@@ -173,11 +178,11 @@ class Gumbel_Sigmoid(torch.nn.Module):
     PyTorch GRU for Gumbel Sigmoid
     "Towards Binary-Valued Gates for Robust LSTM Training"
     """
-    def __init__(self):
+    def __init__(self,cuda_device="cuda:0"):
         super(self.__class__, self).__init__()
 
         self.gpuavail = torch.cuda.is_available()
-        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+        self.device = torch.device(cuda_device if self.gpuavail else "cpu")
         self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, input, temperature=1.0):
@@ -220,6 +225,7 @@ class Gumbel_Tanh(torch.nn.Module):
         if self.gpuavail:
             U = U.to(self.device)
 
-        G=2*self.sigmoid((input+torch.log(U)-torch.log(1-U))/temperature)-1
+        G = 2 * self.sigmoid((input + (torch.log(U) - torch.log(1 - U))) / temperature) - 1
+        # G = 2 * self.sigmoid((input + (1.1-temperature)*((torch.log(U) - torch.log(1 - U)))) / temperature) - 1
 
         return G

@@ -1,6 +1,5 @@
 """
 Python package for NCA learning algorithm
-Algorithm:  Takuya Isomura, Taro Toyoizumi
 Developer: Harry He
 """
 
@@ -943,6 +942,8 @@ class PyTrain(object):
             print("Evaluate layer 1 only ...")
         startt = time.time()
         self.rnn.eval()
+        if self.gpuavail:
+            self.rnn.to(self.device)
         perpl=[]
         for iis in range(step_eval):
             if self.gpuavail:
@@ -1199,23 +1200,7 @@ class PyTrain_Lite(object):
 
         if para is None:
             para = dict([])
-        self.save = para.get("save", None)
-        self.cuda_flag = para.get("cuda_flag", True)
-        self.seqtrain = para.get("seqtrain", True)
-        self.id_2_vec = para.get("id_2_vec", None)
-        self.supervise_mode = para.get("supervise_mode", False)
-        self.coop = para.get("coop", None)
-        self.coopseq = para.get("coopseq", None)
-        self.invec_noise = para.get("invec_noise", 0.0)
-        self.pre_training = para.get("pre_training", False)
-        self.loss_clip = para.get("loss_clip", 0.0)
-        self.digit_input = para.get("digit_input", True)
-        self.two_step_training = para.get("two_step_training", False)
-        self.context_total=para.get("context_total", 1)
-        self.context_switch_step = para.get("context_switch_step", 10)
-        self.reg_lamda = para.get("reg_lamda", 0.0)
-        self.optimizer_label = para.get("optimizer_label", "adam")
-        self.length_sorted=False
+        self.para(para)
 
         if type(lsize) is list:
             self.lsize_in = lsize[0]
@@ -1241,10 +1226,9 @@ class PyTrain_Lite(object):
             self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=learning_rate)
 
         # CUDA
-        self.cuda_flag = para.get("cuda_flag", True)
         if self.cuda_flag:
             self.gpuavail = torch.cuda.is_available()
-            self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+            self.device = torch.device(self.cuda_device if self.gpuavail else "cpu")
         else:
             self.gpuavail = False
             self.device = torch.device("cpu")
@@ -1253,6 +1237,28 @@ class PyTrain_Lite(object):
 
         # Evaluation memory
         self.evalmem= None
+
+    def para(self,para):
+        self.save = para.get("save", None)
+        self.cuda_flag = para.get("cuda_flag", True)
+        self.seqtrain = para.get("seqtrain", True)
+        self.id_2_vec = para.get("id_2_vec", None)
+        self.supervise_mode = para.get("supervise_mode", False)
+        self.coop = para.get("coop", None)
+        self.coopseq = para.get("coopseq", None)
+        self.invec_noise = para.get("invec_noise", 0.0)
+        self.pre_training = para.get("pre_training", False)
+        self.loss_clip = para.get("loss_clip", 0.0)
+        self.digit_input = para.get("digit_input", True)
+        self.two_step_training = para.get("two_step_training", False)
+        self.context_total = para.get("context_total", 1)
+        self.context_switch_step = para.get("context_switch_step", 10)
+        self.reg_lamda = para.get("reg_lamda", 0.0)
+        self.optimizer_label = para.get("optimizer_label", "adam")
+        self.length_sorted = False
+        self.cuda_flag = para.get("cuda_flag", True)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+
 
     def run_training(self,step=None,lr=None,optimizer_label="adam"):
 
@@ -1308,6 +1314,8 @@ class PyTrain_Lite(object):
     def do_eval(self,step_eval=300):
         startt = time.time()
         self.rnn.eval()
+        if self.gpuavail:
+            self.rnn.to(self.device)
         perpl=[]
         for iis in range(step_eval):
             if self.gpuavail:
@@ -1352,6 +1360,8 @@ class PyTrain_Lite(object):
         """
         startt = time.time()
         self.rnn.eval()
+        if self.gpuavail:
+            self.rnn.to(self.device)
         total=0
         correct=0
         correct_ratel=[]
@@ -1437,6 +1447,7 @@ class PyTrain_Lite(object):
         plt.colorbar(plt3, ax=ax3)
         plt.colorbar(plt4, ax=ax4)
         plt.colorbar(plt5, ax=ax5)
+        # [ax.grid(True, linestyle='-.') for ax in (ax1, ax2, ax3, ax4, ax5)]
         plt.show()
         if self.gpuavail:
             torch.cuda.empty_cache()
@@ -1494,10 +1505,12 @@ class PyTrain_Custom(PyTrain_Lite):
 
         self.data_init = None
         self.databp = None
+        self.databp_lab = None
 
         # Interface 1
         # self._init_data = self._init_data_sup
-        self._init_data = self._init_data_continous
+        self._init_data = self._init_data_sent_sup
+        # self._init_data = self._init_data_seq2seq
         self.get_data = None
 
         # context controller
@@ -1523,11 +1536,12 @@ class PyTrain_Custom(PyTrain_Lite):
 
         # Interface
         # self.lossf = self.KNWLoss
-        # self.lossf = self.KNWLoss_GateReg
-        self.lossf = self.KNWLoss_WeightReg
+        self.lossf = self.KNWLoss_GateReg
+        # self.lossf = self.KNWLoss_WeightReg
         # self.lossf = self.KNWLoss_WeightReg_GRU
         self.lossf_eval = self.KNWLoss
-        self.get_data = self.get_data_continous
+        self.get_data = self.get_data_sent_sup
+        # self.get_data = self.get_data_seq2seq
 
 
     def data(self,dataset):
@@ -1589,6 +1603,66 @@ class PyTrain_Custom(PyTrain_Lite):
             datab.append(datavec)
         self.databp = torch.from_numpy(np.array(datab))
         self.databp = self.databp.type(torch.FloatTensor)
+
+    def _init_data_sent_sup(self,limit=1e9):
+        assert self.supervise_mode
+        assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
+        assert self.digit_input
+        assert self.id_2_vec is None # No embedding, one-hot representation
+
+        if len(self.dataset)*self.lsize_in<limit:
+            self.databp=[]
+            for sent in self.dataset["dataset"]:
+                datab_sent=[]
+                for data in sent:
+                    datavec = np.zeros(self.lsize_in)
+                    datavec[data] = 1.0
+                    datab_sent.append(datavec)
+                datab_sent = torch.from_numpy(np.array(datab_sent))
+                datab_sent = datab_sent.type(torch.FloatTensor)
+                self.databp.append(datab_sent)
+            self.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.databp=None
+            self.data_init=False
+
+    def _init_data_seq2seq(self,limit=1e9):
+
+        assert self.supervise_mode
+        assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
+        assert self.digit_input
+        assert self.id_2_vec is None # No embedding, one-hot representation
+
+        if len(self.dataset)*self.lsize_in<limit:
+            self.databp=[]
+            for sent in self.dataset["dataset"]:
+                datab_sent=[]
+                for data in sent:
+                    datavec = np.zeros(self.lsize_in)
+                    datavec[data] = 1.0
+                    datab_sent.append(datavec)
+                datab_sent = torch.from_numpy(np.array(datab_sent))
+                datab_sent = datab_sent.type(torch.FloatTensor)
+                self.databp.append(datab_sent)
+            self.databp_lab=[]
+            for sent in self.dataset["label"]:
+                datab_sent=[]
+                datavec = np.zeros(self.lsize_in)
+                datab_sent.append(datavec)
+                for data in sent:
+                    datavec = np.zeros(self.lsize_in)
+                    datavec[data] = 1.0
+                    datab_sent.append(datavec)
+                del datab_sent[-1] # shift label right
+                datab_sent = torch.from_numpy(np.array(datab_sent))
+                datab_sent = datab_sent.type(torch.FloatTensor)
+                self.databp_lab.append(datab_sent)
+            self.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.databp=None
+            self.data_init=False
 
     def _init_data_all(self,limit=1e9):
         if len(self.dataset)*self.lsize_in<limit:
@@ -1743,6 +1817,126 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return x, outlab, None
 
+    def get_data_sent_sup(self,batch=None):
+        assert self.supervise_mode
+        assert type(self.dataset["dataset"][0]) == list  # we assume sentence structure
+        assert self.data_init
+
+        if batch is None:
+            batch=self.batch
+
+        rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
+        qlen = len(self.dataset["dataset"][0])
+        anslen=len(self.dataset["label"][0])
+        xl = np.zeros((batch, qlen))
+        outl = np.zeros((batch, anslen))
+        for iib in range(batch):
+            xl[iib, :] = np.array(self.dataset["dataset"][int(rstartv[iib])])
+            outl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib])])
+        inlab = torch.from_numpy(xl)
+        inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(outl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(self.window, batch, self.lsize_in)
+        for iib in range(batch):
+            vec1=self.databp[int(rstartv[iib])]
+            vec1m[:,iib,:]=vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if self.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.device)
+            x = x.to(self.device)
+
+        return x, outlab, inlab
+
+    def get_data_seq2seq(self,batch=None):
+        assert self.supervise_mode
+        assert type(self.dataset["dataset"][0]) == list  # we assume sentence structure
+        assert self.data_init
+
+        if batch is None:
+            batch=self.batch
+
+        rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
+        qlen = len(self.dataset["dataset"][0])
+        anslen=len(self.dataset["label"][0])
+        xl = np.zeros((batch, qlen))
+        outl = np.zeros((batch, anslen))
+        for iib in range(batch):
+            xl[iib, :] = np.array(self.dataset["dataset"][int(rstartv[iib])])
+            outl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib])])
+        inlab = torch.from_numpy(xl)
+        inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(outl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(qlen, batch, self.lsize_in)
+        for iib in range(batch):
+            vec1=self.databp[int(rstartv[iib])]
+            vec1m[:,iib,:]=vec1
+        x_in = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        vec2m = torch.zeros(anslen, batch, self.lsize_in)
+        for iib in range(batch):
+            vec2 = self.databp_lab[int(rstartv[iib])]
+            vec2m[:, iib, :] = vec2
+        x_dec = Variable(vec2m, requires_grad=True).type(torch.FloatTensor)
+
+        if self.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.device)
+            x_in = x_in.to(self.device)
+            x_dec = x_dec.to(self.device)
+
+        return [x_in,x_dec], outlab, inlab
+
+    def custom_do_test(self,step_test=300):
+        """
+        Calculate correct rate
+        :param step_test:
+        :return:
+        """
+        startt = time.time()
+        self.rnn.eval()
+        total=0
+        correct=0
+        correct_ratel=[]
+        total_ans = 0
+        correct_ans=0
+        correct_ratel_ans = []
+        for iis in range(step_test):
+            if self.gpuavail:
+                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            else:
+                hidden = self.rnn.initHidden(self.batch)
+            x, label, inlab = self.get_data()
+            output, hidden = self.rnn(x, hidden, schedule=1.0)
+            output = output.permute(1, 2, 0)
+            _,predicted = torch.max(output,1)
+            # Calculate digit level correct rate
+            total += label.size(0)*label.size(1)
+            correct += (predicted == label).sum().item()
+            correct_ratel.append(correct/total)
+            # Calculate answer level correct rate predicted.shape [batch,outlen]
+            total_ans += label.size(0)
+            for iib in range(predicted.shape[0]):
+                if torch.all(torch.eq(predicted[iib,:], label[iib,:])):
+                    correct_ans=correct_ans+1
+                else:
+                    print("Question", inlab[iib].cpu().data.numpy(), "Label:", label[iib].cpu().data.numpy(), "Predicted:",
+                          predicted[iib].cpu().data.numpy())
+            correct_ratel.append(correct / total)
+            correct_ratel_ans.append(correct_ans / total_ans)
+        # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
+        print("Digit level Correct rate: ", np.mean(np.array(correct_ratel)))
+        print("Ans level Correct rate: ", np.mean(np.array(correct_ratel_ans)))
+        endt = time.time()
+        print("Time used in test:", endt - startt)
+        if self.gpuavail:
+            torch.cuda.empty_cache()
+
     def custom_get_data_pos_auto(self):
         """
         Customed data get subroutine for both pos tag and self tag
@@ -1782,7 +1976,6 @@ class PyTrain_Custom(PyTrain_Lite):
     def KNWLoss(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
-        # loss1 = self.lossc(outputl, outlab)
         loss1 = lossc(outputl, outlab)
         # logith2o = model.h2o.weight
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
@@ -1793,27 +1986,40 @@ class PyTrain_Custom(PyTrain_Lite):
     def KNWLoss_GateReg(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
-        # loss1 = self.lossc(outputl, outlab)
         loss1 = lossc(outputl, outlab)
-        loss_gate = model.siggate
+        # if outputl.shape[-1]==outlab.shape[-1]:
+        #     loss1 = lossc(outputl, outlab)
+        # else:
+        #     loss1 = lossc(outputl[:,:,(outputl.shape[-1]-outlab.shape[-1]):], outlab)
+        # loss_gate = model.siggate
+        loss_gate = model.sigmoid(model.hgate)
+        allname = ["Wiz", "Whz", "Win", "Whn"]
+        wnorm1 = 0
+        for namep in allname:
+            try:
+                wattr = getattr(self.rnn.gru_enc, namep)
+                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+                wattr = getattr(self.rnn.gru_dec, namep)
+                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+            except:
+                pass
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        return loss1+self.reg_lamda*torch.mean(loss_gate)  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1+self.reg_lamda*torch.mean(loss_gate)#+self.reg_lamda*wnorm1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
-        # loss1 = self.lossc(outputl, outlab)
         loss1 = lossc(outputl, outlab)
-        # allname = ["i2a","a2keepz","a2sreth","h2o","o2l"]
-        # allname = ["Wir", "Whr", "Wiz", "Whz", "Win", "Whn", "h2o"]
-        allname = ["Wiz", "Whz", "Win", "Whn", "h2o"]
+        allname = ["Wiz", "Whz", "Win", "Whn"]
         wnorm1=0
         for namep in allname:
             try:
-                wattr = getattr(self.rnn, namep)
+                wattr = getattr(self.rnn.gru_enc, namep)
                 wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+                wattr = getattr(self.rnn.gru_dec, namep)
+                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
             except:
                 pass
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)

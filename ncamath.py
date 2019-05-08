@@ -1,3 +1,9 @@
+"""
+Python package for NCA utility
+Developer: Harry He
+Algorithm:  Takuya Isomura, Taro Toyoizumi
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -318,7 +324,7 @@ def plot_corr(data,text=None,texty=None):
         ax.set_yticklabels(labels, rotation=0)
     plt.xlabel("Data 1")
     plt.ylabel("Data 1")
-    plt.title("cov(|D1|,|D1|)")
+    plt.title("corr(|D1|,|D1|)")
     plt.colorbar(fig)
     plt.show()
     return Corr

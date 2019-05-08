@@ -81,6 +81,7 @@ def onehot_data_enhance_create_param(prior,dim=3,figure=False):
 def onehot_data_enhance(dataset,prior,dim=3,param=None):
     """
     Enhancement of one-hot dataset [0,12,5,......] using Afinity scaled K-means like clustering
+    input is one hot dataset, output is distributed data where clusters of data contains one-hot label information
     :param dataset_onehot:
     :param dim: enhancement dimention
     :return:
@@ -113,3 +114,132 @@ def onehot_data_enhance(dataset,prior,dim=3,param=None):
     print("Hit:",hitcnt,"Miss:",misscnt)
     return res_datavec,param
 
+def data_padding(data,endp="#"):
+    """
+    End data padding with endp
+    :param data:
+    :param endp:
+    :return:
+    """
+    lenlist=[len(sent) for sent in data]
+    maxlen=np.max(np.array(lenlist))
+    res=[]
+    for sent in data:
+        npad=maxlen-len(sent)
+        for ii in range(npad+1):
+            sent.append(endp)
+        res.append(sent)
+    return res
+
+class Plus_dataset(object):
+    """
+    A object creating NNN+NNN=NNN dataset for seq2seq model understanding
+    """
+    def __init__(self):
+        self.num=0
+        self.dataset_raw = dict([])
+        self.dataset_raw["dataset"] = []
+        self.dataset_raw["label"] = []
+        self.dataset_sup=dict([])
+        self.dataset_sup["dataset"]=[]
+        self.dataset_sup["label"] = []
+        self.digits=None
+
+    def create_dataset(self,num,digits=3):
+        """
+        create dataset
+        :param num: with number of example to be num
+        :param max_range: and maximum digit less than max_range
+        :return:
+        """
+        dataset=[]
+        label=[]
+        for ii in range(num):
+            dig1=int(np.random.rand()*(10**digits-1))
+            dig2 = int(np.random.rand() * (10**digits-1))
+            dig_ans=int(dig1+dig2)
+            str1=str(dig1)
+            # npad = digits - len(str1)
+            # for ii in range(npad):
+            #     str1 = "0"+str1
+            str2 = str(dig2)
+            # npad = digits - len(str2)
+            # for ii in range(npad):
+            #     str2 = "0" + str2
+            strdata=str1+"+"+str2+"="
+            dataset.append(list(strdata))
+            ansdata=str(dig_ans)
+            # npad = digits+ 1 - len(ansdata)
+            # for ii in range(npad):
+            #     ansdata = "0"+ansdata
+            label.append(list(ansdata))
+        self.num=self.num+num
+        self.dataset_raw["dataset"]=data_padding(dataset)
+        self.dataset_raw["label"]=data_padding(label)
+        self.data_precess()
+        self.digits=digits
+
+    def data_precess(self):
+        """
+        Transfer data to digits
+        :return:
+        """
+        wrd_2_id = dict([])
+        for ii in range(10):
+            wrd_2_id[str(ii)] = ii
+        wrd_2_id["+"] = 10
+        wrd_2_id["="] = 11
+        wrd_2_id["#"] = 12
+
+        for sent in self.dataset_raw["dataset"]:
+            trans_sent=[]
+            for chr in sent:
+                trans_sent.append(wrd_2_id[chr])
+            self.dataset_sup["dataset"].append(trans_sent)
+
+        for sent in self.dataset_raw["label"]:
+            trans_sent=[]
+            for chr in sent:
+                trans_sent.append(wrd_2_id[chr])
+            self.dataset_sup["label"].append(trans_sent)
+
+    # def data_precess_v2(self):
+    #     """
+    #     Transfer data to digits
+    #     :return:
+    #     """
+    #     wrd_2_id = dict([])
+    #     for ii in range(10):
+    #         wrd_2_id[str(ii)] = ii
+    #     wrd_2_id["+"] = 10
+    #     wrd_2_id["="] = 11
+    #     wrd_2_id["#"] = 12
+    #
+    #     for ii in range(len(self.dataset_raw["dataset"])):
+    #         trans_sent=[]
+    #         for chr in self.dataset_raw["dataset"][ii]:
+    #             trans_sent.append(wrd_2_id[chr])
+    #         for chr in self.dataset_raw["label"][ii]:
+    #             trans_sent.append(wrd_2_id[chr])
+    #         del trans_sent[-1]
+    #         self.dataset_sup["dataset"].append(trans_sent)
+    #
+    #     for sent in self.dataset_raw["label"]:
+    #         trans_sent=[]
+    #         for chr in sent:
+    #             trans_sent.append(wrd_2_id[chr])
+    #         self.dataset_sup["label"].append(trans_sent)
+
+
+    def print_example(self,num):
+        """
+        print num of examples
+        :param num:
+        :return:
+        """
+        print("Number of data is",self.num)
+        print("digits is,", self.digits)
+        for ii in range(num):
+            idn=int(np.random.rand()*self.num)
+            print("Q:",self.dataset_raw["dataset"][idn])
+            print("A:", self.dataset_raw["label"][idn])
