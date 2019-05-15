@@ -8,6 +8,9 @@ from __future__ import division
 from __future__ import print_function
 
 import torch
+import math
+from torch.nn import functional as F
+
 
 gl_cuda_device="cuda:0"
 
@@ -52,7 +55,10 @@ class MySign(torch.autograd.Function): # A straight through estimation of sign
 
         return grad_output
 
-mysign = MySign.apply
+def mysign(input, cuda_device="cuda:0"):
+    global gl_cuda_device
+    gl_cuda_device=cuda_device
+    return MySign.apply(input)
 
 class MyHardSig(torch.autograd.Function): # A straight through estimation of sign
     """
@@ -95,7 +101,10 @@ class MyHardSig(torch.autograd.Function): # A straight through estimation of sig
 
         return grad_output
 
-myhsig =  MyHardSig.apply
+def myhsig(input, cuda_device="cuda:0"):
+    global gl_cuda_device
+    gl_cuda_device=cuda_device
+    return MyHardSig.apply(input)
 
 class MySampler(torch.autograd.Function): # a 0/1 sampler following straight through estimator
     """
@@ -229,3 +238,38 @@ class Gumbel_Tanh(torch.nn.Module):
         # G = 2 * self.sigmoid((input + (1.1-temperature)*((torch.log(U) - torch.log(1 - U)))) / temperature) - 1
 
         return G
+
+class Linear_Mask(torch.nn.Module):
+    """
+    A linear module with mask
+    """
+    def __init__(self,input_size, output_size,bias=True):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.output_size=output_size
+        self.weight=torch.nn.Parameter(torch.Tensor(output_size, input_size), requires_grad=True)
+        torch.nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(self.weight)
+        if bias:
+            self.bias = torch.nn.Parameter(torch.Tensor(output_size), requires_grad=True)
+            bound = 1 / math.sqrt(fan_in)
+            torch.nn.init.uniform_(self.bias, -bound, bound)
+        else:
+            self.bias = None
+
+    def forward(self, input, mask=None):
+        # weight_mask=self.weight
+        # if mask is not None:
+        #     weight_mask=torch.mul(self.weight,mask)
+        # output=torch.matmul(input,weight_mask)+self.bias
+        # return output
+        if mask is not None:
+            weight_mask = torch.mul(self.weight, mask)
+        else:
+            weight_mask = self.weight
+        return F.linear(input, weight_mask, self.bias)
+        # output=torch.matmul(input.permute(1,0,2),weight_mask)+self.bias.view(1,-1)
+        # return output.permute(1,0,2)
+
+
+
