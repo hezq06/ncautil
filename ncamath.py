@@ -362,7 +362,21 @@ def cal_cosdist(v1,v2):
     """
     return np.dot(v1,v2)/np.linalg.norm(v1)/np.linalg.norm(v2)
 
-def cal_pdist(data):
+def cal_hist(data,bins=10,range=None):
+    """
+    calculate a histogram of data
+    :param data:
+    :return:
+    """
+    if len(data.shape)==1: #1D case
+        dist,bins=np.histogram(data, bins=bins, range=range, density=True)
+        return dist / np.sum(dist), bins
+    elif len(data.shape)==2: #2D case
+        assert data.shape[1]==2
+        dist, binsx,  binsy = np.histogram2d(data[:, 0], data[:, 1], bins=bins, range=range)
+        return dist / np.sum(dist), binsx,  binsy
+
+def cal_pdistance(data):
     """
     Cal probabilistic distribution distance of data
     :param data:
@@ -392,6 +406,18 @@ def cal_entropy(data,logit=False):
     ent=-np.sum(data*np.log(data))
     return ent
 
+def cal_mulinfo(p,q,pq):
+    """
+    Calculate multual information
+    :param p: marginal p
+    :param q: marginal q
+    :param pq: joint pq
+    :return:
+    """
+    assert len(p)*len(q) == pq.shape[0]*pq.shape[1]
+    ptq=p.reshape(-1,1)*q.reshape(1,-1)
+    return cal_kldiv(pq,ptq)
+
 def cal_kldiv(p,q):
     """
     Cal KL divergence of p over q
@@ -402,9 +428,7 @@ def cal_kldiv(p,q):
     q = np.array(q)+1e-9
     p = p / np.sum(p)
     q = q / np.sum(q)
-    assert len(q.shape) == 1
-    assert len(p.shape) == 1
-    assert p.shape[0] == q.shape[0]
+    assert p.shape == q.shape
     assert np.min(p)>0
     assert np.min(q)>0
     kld=np.sum(p*np.log(p/q))

@@ -80,11 +80,12 @@ class MyHardSig(torch.autograd.Function): # A straight through estimation of sig
 
         ctx.save_for_backward(input)
 
+        output = torch.zeros(input.shape)
         zeros = torch.zeros(input.shape)
         if gpuavail:
+            output = output.to(device)
             zeros = zeros.to(device)
-        input[input == zeros] = 1e-8
-        output=(1+input/torch.abs(input))/2
+        output[input >= zeros] = 1.0
 
         return output
 
@@ -105,6 +106,51 @@ def myhsig(input, cuda_device="cuda:0"):
     global gl_cuda_device
     gl_cuda_device=cuda_device
     return MyHardSig.apply(input)
+
+class MyHardSample(torch.autograd.Function): # A straight through estimation of sign
+    """
+    Hard sampling if input>0.5 then pick
+    """
+
+    @staticmethod
+    def forward(ctx, input):
+        """
+        In the forward pass we receive a Tensor containing the input and return
+        a Tensor containing the output. ctx is a context object that can be used
+        to stash information for backward computation. You can cache arbitrary
+        objects for use in the backward pass using the ctx.save_for_backward method.
+        """
+        gpuavail = torch.cuda.is_available()
+        device = torch.device(gl_cuda_device if gpuavail else "cpu")
+
+        ctx.save_for_backward(input)
+
+        output = torch.zeros(input.shape)
+        threds = torch.zeros(input.shape)+0.5
+        if gpuavail:
+            output = output.to(device)
+            threds = threds.to(device)
+        output[input >= threds] = 1.0
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        In the backward pass we receive a Tensor containing the gradient of the loss
+        with respect to the output, and we need to compute the gradient of the loss
+        with respect to the input.
+        """
+        # input = ctx.saved_tensors
+        # grad_output[input > 1] = 0
+        # grad_output[input < -1] = 0
+
+        return grad_output
+
+def myhsample(input, cuda_device="cuda:0"):
+    global gl_cuda_device
+    gl_cuda_device=cuda_device
+    return MyHardSample.apply(input)
 
 class MySampler(torch.autograd.Function): # a 0/1 sampler following straight through estimator
     """
@@ -215,12 +261,13 @@ class Gumbel_Tanh(torch.nn.Module):
     PyTorch GRU for Gumbel tanh (trial)
     "Towards Binary-Valued Gates for Robust LSTM Training"
     """
-    def __init__(self):
+    def __init__(self,cuda_device="cuda:0"):
         super(self.__class__, self).__init__()
 
         self.gpuavail = torch.cuda.is_available()
-        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+        self.device = torch.device(cuda_device if self.gpuavail else "cpu")
         self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
 
     def forward(self, input, temperature=1.0):
         """
@@ -234,16 +281,16 @@ class Gumbel_Tanh(torch.nn.Module):
         if self.gpuavail:
             U = U.to(self.device)
 
-        G = 2 * self.sigmoid((input + (torch.log(U) - torch.log(1 - U))) / temperature) - 1
+        # G = 2 * self.sigmoid((input + (torch.log(U) - torch.log(1 - U))) / temperature) - 1
         # G = 2 * self.sigmoid((input + (1.1-temperature)*((torch.log(U) - torch.log(1 - U)))) / temperature) - 1
-
+        G = self.tanh((input + (torch.log(U) - torch.log(1 - U))) / temperature)
         return G
 
 class Linear_Mask(torch.nn.Module):
     """
     A linear module with mask
     """
-    def __init__(self,input_size, output_size,bias=True):
+    def __init__(self,input_size, output_size,bias=True, cuda_device="cuda:0"):
         super(self.__class__, self).__init__()
         self.input_size=input_size
         self.output_size=output_size
@@ -257,6 +304,18 @@ class Linear_Mask(torch.nn.Module):
         else:
             self.bias = None
 
+        self.hard_mask=torch.ones(self.weight.shape)
+
+        self.gpuavail = torch.cuda.is_available()
+        if self.gpuavail:
+            self.cuda_device=cuda_device
+            self.hard_mask = self.hard_mask.to(cuda_device)
+
+    def set_hard_mask(self,hard_mask):
+        self.hard_mask = hard_mask
+        if self.gpuavail:
+            self.hard_mask = self.hard_mask.to(self.cuda_device)
+
     def forward(self, input, mask=None):
         # weight_mask=self.weight
         # if mask is not None:
@@ -264,9 +323,9 @@ class Linear_Mask(torch.nn.Module):
         # output=torch.matmul(input,weight_mask)+self.bias
         # return output
         if mask is not None:
-            weight_mask = torch.mul(self.weight, mask)
+            weight_mask = torch.mul(self.weight, mask)*self.hard_mask
         else:
-            weight_mask = self.weight
+            weight_mask = self.weight*self.hard_mask
         return F.linear(input, weight_mask, self.bias)
         # output=torch.matmul(input.permute(1,0,2),weight_mask)+self.bias.view(1,-1)
         # return output.permute(1,0,2)

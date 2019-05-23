@@ -106,6 +106,591 @@ def logit_gen(seq, model,lsize):
         res.append(logp(output.view(-1).data.numpy()))
     return np.array(res)
 
+class GRU_seq2seq(torch.nn.Module):
+    """
+    A GRU based seq2seq model
+    """
+
+    def __init__(self, input_size, hidden_size, output_size, output_len, num_layers=1, dropout_rate=0.0,para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.output_len = output_len
+        self.num_layers = num_layers
+
+        if para is None:
+            para = dict([])
+
+        self.hgate = torch.nn.Parameter(torch.rand(hidden_size) + 1.0, requires_grad=True)
+        self.gru_enc = GRU_Cell_Seq(input_size, hidden_size, para=para)
+        self.gru_dec = GRU_Cell_Seq(input_size, hidden_size, para=para)
+
+        # self.gru_dec = Dec_Cell_Simplify(input_size, hidden_size, para=para)
+
+        self.para(para)
+
+        # self.gru_enc = torch.nn.GRU(input_size, hidden_size)
+        # self.gru_dec = torch.nn.GRU(input_size, hidden_size)
+
+
+
+        # self.gru_enc = WeightDrop(torch.nn.GRU(input_size, hidden_size), ['weight_hh_l0'], dropout=dropout_rate)
+        # self.gru_dec = WeightDrop(torch.nn.GRU(input_size, hidden_size), ['weight_hh_l0'], dropout=dropout_rate)
+
+        # hinter = int(self.hidden_size / output_len)
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        # self.h2o = torch.nn.Linear(hinter, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.mysampler=mysampler
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gpuavail = torch.cuda.is_available()
+
+        self.device = torch.device(self.cuda_device if self.gpuavail else "cpu")
+
+        self.pruning_mask=None
+
+        # self.switch=switch
+        # if switch=="normal":
+        #     self.sigmoid = torch.nn.Sigmoid()
+        #     self.tanh = torch.nn.Tanh()
+        # elif switch=="st": # Straight through estimator
+        #     self.sigmoid = MyHardSig.apply  # clamp input
+        #     self.tanh = MySign.apply
+        # elif switch=="gumbel": # Gumbel sigmoid
+        #     self.sigmoid = Gumbel_Sigmoid()
+        #     self.tanh = Gumbel_Tanh()
+
+    def para(self,para):
+        self.hidden_node_pruning = para.get("hidden_node_pruning", False)
+        self.hidden_pruning_switch = para.get("hidden_pruning_switch", "mysampler") #"mysampler","gsigmoid"
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+
+        self.gru_enc.para(para)
+        self.gru_dec.para(para)
+
+    def para_copy(self,gru):
+        """
+        Copy parameter from another gru
+        :param gru:
+        :return:
+        """
+        self.gru_enc.para_copy(gru.gru_enc)
+        self.gru_dec.para_copy(gru.gru_dec)
+
+        self.h2o.weight.data.copy_(gru.h2o.weight.data)
+        self.h2o.bias.data.copy_(gru.h2o.bias.data)
+
+        self.hgate.data.copy_(gru.hgate.data)
+
+    def para_copy_sample_adaptive(self,gru):
+        """
+        Copy parameter from another gru
+        :param gru:
+        :return:
+        """
+        self.gru_enc.para_copy_sample_adaptive(gru.gru_enc)
+        self.gru_dec.para_copy_sample_adaptive(gru.gru_dec)
+
+        self.h2o.weight.data.copy_(gru.h2o.weight.data)
+        self.h2o.bias.data.copy_(gru.h2o.bias.data)
+
+        self.hgate.data.copy_(gru.hgate.data)
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Seqence mode only
+        :param input:
+        :param hidden:
+        :param add_logit:
+        :param logit_mode:
+        :param schedule:
+        :return:
+        """
+        input_in = input
+
+        if self.hidden_node_pruning:
+            if self.hidden_pruning_switch=="mysampler":
+                exphgate=self.hgate.expand_as(hidden)
+                siggate=self.sigmoid(exphgate)
+                pruning_mask = self.mysampler(siggate,cuda_device=self.device)
+            elif self.hidden_pruning_switch=="gsigmoid":
+                exphgate = self.hgate.expand_as(hidden)
+                pruning_mask = self.gsigmoid(exphgate, temperature=1.01 - schedule)
+            else:
+                raise Exception("Unknown switch")
+        else:
+            pruning_mask=None
+        self.pruning_mask = pruning_mask
+
+        hout, hn = self.gru_enc(input_in, hidden, schedule=schedule, pruning_mask=pruning_mask)
+
+        # Sequence mode Decoding
+        input_dec=torch.zeros((self.output_len,input.shape[1],input.shape[2]))
+        if self.gpuavail:
+            input_dec=input_dec.to(self.device)
+        hout, hn = self.gru_dec(input_dec, hn, schedule=schedule,pruning_mask=pruning_mask)
+        output = self.h2o(hout)
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
+# class GRU_seq2seq_v2(torch.nn.Module):
+#     """
+#     A GRU based seq2seq model, version 2, where encoder decoder combined, input output combined , to provide output information for training
+#     """
+#
+#     def __init__(self, input_size, hidden_size, output_size, output_len, num_layers=1, dropout_rate=0.0,
+#                  zoneout_rate=0.0, switch="normal", pruning=False):
+#         super(self.__class__, self).__init__()
+#         self.input_size = input_size
+#         self.hidden_size = hidden_size
+#         self.output_size = output_size
+#         self.output_len=output_len
+#         self.num_layers = num_layers
+#
+#         # self.gru_enc = torch.nn.GRU(input_size, hidden_size)
+#         # self.gru_dec = torch.nn.GRU(input_size, hidden_size)
+#
+#         self.hgate = torch.nn.Parameter(torch.rand(hidden_size), requires_grad=True)
+#         self.gru_enc_dec = GRU_Cell_Seq(input_size, hidden_size,dropout_rate=dropout_rate)
+#
+#         self.h2o = torch.nn.Linear(hidden_size, output_size)
+#
+#         self.sigmoid = torch.nn.Sigmoid()
+#         self.gsigmoid = Gumbel_Sigmoid()
+#         self.tanh = torch.nn.Tanh()
+#         self.softmax = torch.nn.LogSoftmax(dim=-1)
+#         self.gpuavail = torch.cuda.is_available()
+#         self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+#
+#         self.pruning=pruning
+#         self.pruning_mask=None
+#
+#     def para_copy(self,gru):
+#         """
+#         Copy parameter from another gru
+#         :param gru:
+#         :return:
+#         """
+#         self.gru_enc_dec.para_copy(gru.gru_enc)
+#
+#         self.h2o.weight.data.copy_(gru.h2o.weight.data)
+#         self.h2o.bias.data.copy_(gru.h2o.bias.data)
+#
+#         self.hgate.data.copy_(gru.hgate.data)
+#
+#     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
+#         """
+#         Seqence mode only
+#         :param input:
+#         :param hidden:
+#         :param add_logit:
+#         :param logit_mode:
+#         :param schedule:
+#         :return:
+#         """
+#         # Sequence mode Encoding
+#
+#         if self.pruning:
+#             pruning_mask = self.gsigmoid(self.hgate, temperature=1.01 - schedule)
+#         else:
+#             pruning_mask=None
+#         self.pruning_mask = pruning_mask
+#
+#         hout, hn = self.gru_enc_dec(input, hidden,schedule=schedule,pruning_mask=pruning_mask)
+#         output = self.h2o(hout)
+#
+#         return output,hn
+#
+#     def initHidden(self,batch):
+#         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)
+#
+#     def initHidden_cuda(self,device, batch):
+#         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
+class Dec_Cell_Simplify(torch.nn.Module):
+    """
+    A simplified decoding cell
+    """
+    def __init__(self, input_size, hidden_size, para=None):
+        super(self.__class__, self).__init__()
+
+        self.hidden_size = hidden_size
+        if para is None:
+            para = dict([])
+        self.para(para)
+        self.ht = None
+        self.device=self.cuda_device
+
+        self.Wiz = torch.nn.Linear(input_size, hidden_size)
+        self.Win = torch.nn.Linear(input_size, hidden_size)
+
+        if self.drop_connect_mode == "adaptive":
+            self.Whz_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
+            self.Whn_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
+
+        self.Whz = Linear_Mask(hidden_size, hidden_size, bias=False, cuda_device=self.cuda_device)
+        self.Whn = Linear_Mask(hidden_size, hidden_size, bias=False, cuda_device=self.cuda_device)
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.drop_connect_mode = para.get("drop_connect_mode", None)  # "None, adaptive, random"
+
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None, pruning_mask=None):
+        """
+
+        :param input: input
+        :param hidden: hidden
+        :param result:
+        :return:
+        """
+        assert len(input.shape)==3
+        batch=input.shape[1]
+        ht=hidden.view(1, batch, self.hidden_size)
+        output=None
+
+        lout=input.shape[0]
+        hinter=int(self.hidden_size/lout)
+
+
+        for iis in range(lout):
+            # ht output version
+            if output is None:
+                output = ht[:,:,iis*hinter:(iis+1)*hinter]
+            else:
+                output = torch.cat(
+                    (output.view(-1, batch, hinter), ht[:,:,iis*hinter:(iis+1)*hinter].view(1, batch, hinter)), dim=0)
+
+        self.ht = output
+
+        return output, ht
+
+class GRU_Cell_Seq(torch.nn.Module):
+    """
+    PyTorch self-coded GRU with sequence mode
+    """
+    def __init__(self, input_size, hidden_size, para=None):
+        super(self.__class__, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        # self.Wir = torch.nn.Linear(input_size, hidden_size)
+        # self.Whr = torch.nn.Linear(hidden_size, hidden_size)
+        self.Wiz = torch.nn.Linear(input_size, hidden_size)
+        self.Win = torch.nn.Linear(input_size, hidden_size)
+
+        # self.Whz = torch.nn.Linear(hidden_size, hidden_size)
+        # self.Whn = torch.nn.Linear(hidden_size, hidden_size)
+
+        if self.drop_connect_mode=="adaptive":
+            self.Whz_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
+            self.Whn_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
+
+        self.Whz = Linear_Mask(hidden_size, hidden_size,bias=False, cuda_device=self.cuda_device)
+        self.Whn = Linear_Mask(hidden_size, hidden_size,bias=False, cuda_device=self.cuda_device)
+
+        if self.gate_switch == "normal":
+            self.sigmoid = torch.nn.Sigmoid()
+            self.tanh = torch.nn.Tanh()
+        elif self.gate_switch == "gsigmoid":
+            self.sigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+            # self.tanh = Gumbel_Tanh(cuda_device=self.cuda_device)
+            self.tanh = torch.nn.Tanh()
+
+        self.mysampler = mysampler
+        self.myhsample = myhsample
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+
+        # if switch=="normal":
+        #     self.sigmoid = torch.nn.Sigmoid()
+        #     self.tanh = torch.nn.Tanh()
+        # elif switch=="st": # Straight through estimator
+        #     self.sigmoid = MyHardSig.apply  # clamp input
+        #     self.tanh = MySign.apply
+        # elif switch=="gumbel": # Gumbel sigmoid
+        #     self.sigmoid = Gumbel_Sigmoid()
+        #     self.tanh = Gumbel_Tanh()
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.ht = None
+        self.zt = None
+        self.nt = None
+
+        self.device=self.cuda_device
+
+    def para(self,para):
+        self.drop_connect_mode = para.get("drop_connect_mode", None) # "None, adaptive, random"
+        self.drop_connect_switch = para.get("drop_connect_switch", "mysampler") # "mysampler","gsigmoid","myhsample"
+        self.gate_switch = para.get("gate_switch", "normal")  # "normal","gsigmoid"
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.drop_connect_rate = para.get("drop_connect_rate", 0.0)
+        self.zoneout_rate = para.get("zoneout_rate", 0.0)
+
+    def para_copy(self,gru):
+        """
+        Copy parameter from another gru of the same class
+        :param gru:
+        :return:
+        """
+        allname = ["Wiz", "Win", "Whz", "Whn"]
+        for nn,nameitem in enumerate(allname):
+            rnn_w = getattr(self, nameitem).weight
+            rnn_w.data.copy_(getattr(gru, nameitem).weight.data)
+            rnn_b = getattr(self, nameitem).bias
+            rnn_b.data.copy_(getattr(gru, nameitem).bias.data)
+
+    def para_copy_sample_adaptive(self,gru):
+        """
+        Copy parameter from another gru
+        :param gru:
+        :return:
+        """
+        assert gru.drop_connect_mode=="adaptive"
+        allname = ["Wiz", "Win"]
+        for nn,nameitem in enumerate(allname):
+            rnn_w = getattr(self, nameitem).weight
+            rnn_w.data.copy_(getattr(gru, nameitem).weight.data)
+            rnn_b = getattr(self, nameitem).bias
+            rnn_b.data.copy_(getattr(gru, nameitem).bias.data)
+
+        allname = ["Whz", "Whn"]
+        for nn,nameitem in enumerate(allname):
+            rnn_w = getattr(self, nameitem).weight
+            Whz_siggate = self.sigmoid(getattr(gru, nameitem+"_mask"))
+            if self.drop_connect_switch == "mysampler":
+                Whz_mask_sample = gru.mysampler(Whz_siggate, cuda_device=gru.device)
+            elif self.drop_connect_switch == "myhsample":
+                Whz_mask_sample = gru.myhsample(Whz_siggate, cuda_device=gru.device)
+            else:
+                raise Exception("Unknown drop_connect_switch")
+            rnn_w.data.copy_(torch.mul(getattr(gru, nameitem).weight, Whz_mask_sample).data)
+            # rnn_w.data.copy_(getattr(gru, nameitem).weight.data*Whz_mask_sample.data)
+            if getattr(gru, nameitem).bias is not None:
+                rnn_b = getattr(self, nameitem).bias
+                rnn_b.data.copy_(getattr(gru, nameitem).bias.data)
+
+    def weight_pruning(self, perc):
+        """
+        Pruning by setting hard mask by percentage
+        :return:
+        """
+        allname = ["Whz", "Whn"]
+        for nn, nameitem in enumerate(allname):
+            rnn_w = getattr(self, nameitem).weight
+            sort_rnn_w=np.sort(np.abs(rnn_w.cpu().data.numpy().reshape(-1)))
+            thd=sort_rnn_w[int(perc*len(sort_rnn_w))]
+            print(nameitem,thd)
+            hard_mask=torch.ones(rnn_w.shape)
+            hard_mask[torch.abs(rnn_w) <= thd] = 0.0
+            getattr(self, nameitem).set_hard_mask(hard_mask)
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None, pruning_mask=None):
+        """
+
+        :param input: input
+        :param hidden: hidden
+        :param result:
+        :return:
+        """
+        assert len(input.shape)==3
+        batch=input.shape[1]
+        ht=hidden
+        output=None
+
+        temperature=1.01-schedule
+
+        # if self.dropout_rate>0.0: # Not working
+        #     mask = self.Whz.weight.new_ones(self.Whz.weight.size())
+        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
+        #     # self.Whz.weight= torch.nn.Parameter(mask*self.Whz.weight)
+        #     self.Whz.weight.data.mul_(mask)
+        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
+        #     # self.Whn.weight = torch.nn.Parameter(mask * self.Whn.weight)
+        #     self.Whn.weight.data.mul_(mask)
+
+        if self.drop_connect_mode == "adaptive":
+            if self.drop_connect_switch=="mysampler":
+                Whz_siggate=self.sigmoid(self.Whz_mask)
+                # Whz_siggate = self.sigmoid(self.Whz_mask.expand(batch, self.Whz_mask.shape[0], self.Whz_mask.shape[1]))
+                Whz_mask_sample = self.mysampler(Whz_siggate, cuda_device=self.device)
+                Whn_siggate = self.sigmoid(self.Whn_mask)
+                # Whn_siggate = self.sigmoid(self.Whz_mask.expand(batch,self.Whz_mask.shape[0],self.Whz_mask.shape[1]))
+                Whn_mask_sample = self.mysampler(Whn_siggate, cuda_device=self.device)
+            elif self.drop_connect_switch == "gsigmoid":
+                Whz_siggate = self.gsigmoid(self.Whz_mask,temperature=temperature)
+                Whz_mask_sample = self.mysampler(Whz_siggate, cuda_device=self.device)
+                Whn_siggate = self.gsigmoid(self.Whn_mask,temperature=temperature)
+                Whn_mask_sample = self.mysampler(Whn_siggate, cuda_device=self.device)
+            elif self.drop_connect_switch == "myhsample":
+                Whz_siggate = self.gsigmoid(self.Whz_mask,temperature=temperature)
+                Whz_mask_sample = self.myhsample(Whz_siggate, cuda_device=self.device)
+                Whn_siggate = self.gsigmoid(self.Whn_mask,temperature=temperature)
+                Whn_mask_sample = self.myhsample(Whn_siggate, cuda_device=self.device)
+            else:
+                raise Exception("Unknown switch",self.switch)
+        elif self.drop_connect_mode == "random":
+            Whz_mask_sample = torch.ones(self.Whz.weight.size())
+            Whz_mask_sample = torch.nn.functional.dropout(Whz_mask_sample, p=self.drop_connect_rate, training=True)
+            Whn_mask_sample = torch.ones(self.Whn.weight.size())
+            Whn_mask_sample = torch.nn.functional.dropout(Whn_mask_sample, p=self.drop_connect_rate, training=True)
+            if torch.cuda.is_available():
+                Whz_mask_sample = Whz_mask_sample.to(self.device)
+                Whn_mask_sample = Whn_mask_sample.to(self.device)
+        else:
+            Whz_mask_sample=None
+            Whn_mask_sample=None
+
+        self.zt = None
+        self.nt = None
+
+        for iis in range(input.shape[0]):
+            input_ii=input[iis,:,:]
+            if pruning_mask is not None:
+                ht = ht * pruning_mask
+            # zt = self.sigmoid(self.Wiz(input_ii) + self.Whz(ht))
+            # nt = self.tanh(self.Win(input_ii) + self.Whn(ht))
+            if self.gate_switch == "normal":
+                zt = self.sigmoid(self.Wiz(input_ii) + self.Whz(ht,Whz_mask_sample))
+                nt = self.tanh(self.Win(input_ii) + self.Whn(ht,Whn_mask_sample))
+            elif self.gate_switch =="gsigmoid":
+                zt = self.sigmoid(self.Wiz(input_ii) + self.Whz(ht, Whz_mask_sample),temperature=temperature)
+                # nt = self.tanh(self.Win(input_ii) + self.Whn(ht, Whn_mask_sample),temperature=temperature)
+                nt = self.tanh(self.Win(input_ii) + self.Whn(ht, Whn_mask_sample))
+            ht = (1 - zt) * nt + zt * ht
+
+            # ht output version
+            if output is None:
+                output = ht.view(1, batch, self.hidden_size)
+            else:
+                output = torch.cat(
+                    (output.view(-1, batch, self.hidden_size), ht.view(1, batch, self.hidden_size)), dim=0)
+
+            # archiving data
+            if self.zt is None:
+                self.zt = zt.view(1, batch, self.hidden_size)
+                self.nt = nt.view(1, batch, self.hidden_size)
+            else:
+                self.zt = torch.cat(
+                    (self.zt.view(-1, batch, self.hidden_size), zt.view(1, batch, self.hidden_size)), dim=0)
+                self.nt = torch.cat(
+                    (self.nt.view(-1, batch, self.hidden_size), nt.view(1, batch, self.hidden_size)), dim=0)
+
+        self.ht = output
+
+        # if self.dropout_rate>0.0:
+        #     mask = self.Whz.weight.new_ones(self.Whz.weight.size())
+        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
+        #     # self.Whz.weight= torch.nn.Parameter(mask*self.Whz.weight)
+        #     self.Whz.weight.data.mul_(mask)
+        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
+        #     # self.Whn.weight = torch.nn.Parameter(mask * self.Whn.weight)
+        #     self.Whn.weight.data.mul_(mask)
+        #
+        # if self.switch=="gumbel":
+        #     zt = self.sigmoid(self.Wiz(input) + self.Whz(hidden), temperature=1.1 - schedule)
+        #     nt = self.tanh(self.Win(input) + self.Whn(hidden), temperature=1.1 - schedule)
+        # else:
+        #     zt = self.sigmoid(self.Wiz(input) + self.Whz(hidden))
+        #     nt = self.tanh(self.Win(input) + self.Whn(hidden))
+        #
+        # if self.training:
+        #     mask=(np.sign(np.random.random(list(zt.shape))-self.zoneout_rate)+1)/2
+        #     mask = torch.from_numpy(mask)
+        #     mask = mask.type(torch.FloatTensor)
+        #     if torch.cuda.is_available():
+        #         device = torch.device("cuda:0")
+        #         mask=mask.to(device)
+        #     zt=1-(1-zt)*mask
+        #     ht=(1-zt)*nt+zt*hidden
+        # else:
+        #     ht = (1 - zt) * nt + zt * hidden
+        # output = self.h2o(ht)
+        # output = self.softmax(output)
+        #
+        # self.zt = zt
+        # self.nt = nt
+
+        return output, ht
+
+    # def plot_layer_all(self):
+    #     allname = ["h2o", "Wir",  "Wiz","Win", "Whr","Whz", "Whn"]
+    #     subplotidx=330
+    #     for nameitem in allname:
+    #         mat = getattr(self, nameitem).cpu().weight.data.numpy()
+    #         subplotidx=subplotidx+1
+    #         plt.subplot(subplotidx)
+    #         plot_mat(mat,title=nameitem,symmetric=True,tick_step=1,show=False)
+    #     plt.show()
+
+    def plot_layer_all(self):
+        srow=2
+        scol=5
+        allname = ["Wiz", "Win", "Whz", "Whn"]
+        plt.figure()
+        for nn,nameitem in enumerate(allname):
+            try:
+                hard_mask=getattr(self, nameitem).cpu().hard_mask.data.numpy()
+            except:
+                hard_mask=1
+            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
+            plt.subplot(srow, scol, 1+nn)
+            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
+            plt.subplot(srow, scol, 1+nn + scol)
+            try:
+                mat = getattr(self, nameitem).cpu().bias.data.numpy()
+                plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
+            except:
+                pass
+        plt.show()
+
+    def plot_weight_dist(self):
+        # plt.figure()
+        srow = 3
+        scol = 2
+        allname = ["Wiz", "Win", "Whz", "Whn"]
+        for nn, nameitem in enumerate(allname):
+            try:
+                hard_mask=getattr(self, nameitem).cpu().hard_mask.data.numpy()
+            except:
+                hard_mask=1
+            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
+            plt.subplot(srow, scol, 1 + nn)
+            wvec=mat.reshape(-1)
+            wvec=np.sort(wvec)
+            plt.plot(wvec)
+            plt.title(nameitem)
+        # allname = ["Whz_mask", "Whn_mask"]
+        # for nn, nameitem in enumerate(allname):
+        #     mat = self.sigmoid(getattr(self, nameitem)).data.numpy()
+        #     plt.subplot(srow, scol, 5 + nn)
+        #     wvec=mat.reshape(-1)
+        #     wvec=np.sort(wvec)
+        #     plt.plot(wvec)
+        #     plt.title(nameitem)
+        plt.show()
+
+    def initHidden(self, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch=1):
+        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
+
 class GRU_Cell_Maskout(torch.nn.Module):
     """
     PyTorch GRU with pathway stochastic mask
@@ -182,11 +767,11 @@ class GRU_Cell_Maskout(torch.nn.Module):
         scol=5
         allname = ["h2o", "Wiz", "Win", "Whz", "Whn"]
         for nn,nameitem in enumerate(allname):
-            mat = getattr(self, nameitem).cpu().weight.data.numpy()
+            mat = getattr(self, nameitem).weight.data.numpy()
             plt.subplot(srow, scol, 1+nn)
             plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
             plt.subplot(srow, scol, 1+nn + scol)
-            mat = getattr(self, nameitem).cpu().bias.data.numpy()
+            mat = getattr(self, nameitem).bias.data.numpy()
             plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
         plt.show()
 
@@ -318,411 +903,6 @@ class GRU_Cell_DropConnect(torch.nn.Module):
             plt.subplot(srow, scol, 1+nn + scol)
             mat = getattr(self, nameitem).cpu().bias.data.numpy()
             plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
-        plt.show()
-
-    def initHidden(self, batch=1):
-        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True)
-
-    def initHidden_cuda(self, device, batch=1):
-        return Variable(torch.zeros( batch, self.hidden_size), requires_grad=True).to(device)
-
-class GRU_seq2seq(torch.nn.Module):
-    """
-    A GRU based seq2seq model
-    """
-
-    def __init__(self, input_size, hidden_size, output_size, output_len, num_layers=1, dropout_rate=0.0,
-                 zoneout_rate=0.0, switch="mysampler", pruning=False, cuda_device="cuda:0",drop_connect_flag=False):
-        super(self.__class__, self).__init__()
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.output_size = output_size
-        self.output_len = output_len
-        self.num_layers = num_layers
-
-        # self.gru_enc = torch.nn.GRU(input_size, hidden_size)
-        # self.gru_dec = torch.nn.GRU(input_size, hidden_size)
-
-        self.hgate = torch.nn.Parameter(torch.rand(hidden_size)+1.0, requires_grad=True)
-        self.gru_enc = GRU_Cell_Seq(input_size, hidden_size,dropout_rate=dropout_rate, cuda_device=cuda_device, drop_connect_flag=drop_connect_flag,switch=switch)
-        self.gru_dec = GRU_Cell_Seq(input_size, hidden_size,dropout_rate=dropout_rate, cuda_device=cuda_device, drop_connect_flag=drop_connect_flag,switch=switch)
-
-        # self.gru_enc = WeightDrop(torch.nn.GRU(input_size, hidden_size), ['weight_hh_l0'], dropout=dropout_rate)
-        # self.gru_dec = WeightDrop(torch.nn.GRU(input_size, hidden_size), ['weight_hh_l0'], dropout=dropout_rate)
-
-        self.h2o = torch.nn.Linear(hidden_size, output_size)
-
-        self.sigmoid = torch.nn.Sigmoid()
-        self.gsigmoid = Gumbel_Sigmoid(cuda_device=cuda_device)
-        self.mysampler=mysampler
-        self.tanh = torch.nn.Tanh()
-        self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.gpuavail = torch.cuda.is_available()
-        self.device = torch.device(cuda_device if self.gpuavail else "cpu")
-
-        self.pruning=pruning
-        self.pruning_mask=None
-
-        self.drop_connect_flag=drop_connect_flag
-
-        self.switch=switch
-
-    def set_drop_connect_flag(self,flag):
-        self.drop_connect_flag = flag
-        self.gru_enc.drop_connect_flag = flag
-        self.gru_dec.drop_connect_flag = flag
-
-    def para_copy(self,gru):
-        """
-        Copy parameter from another gru
-        :param gru:
-        :return:
-        """
-        self.gru_enc.para_copy(gru.gru_enc)
-        self.gru_dec.para_copy(gru.gru_dec)
-        self.h2o.para_copy(gru.h2o)
-
-        self.h2o.weight.data.copy_(gru.h2o.weight.data)
-        self.h2o.bias.data.copy_(gru.h2o.bias.data)
-
-        self.hgate.data.copy_(gru.hgate.data)
-
-    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
-        """
-        Seqence mode only
-        :param input:
-        :param hidden:
-        :param add_logit:
-        :param logit_mode:
-        :param schedule:
-        :return:
-        """
-        # Sequence mode Encoding
-        # assert len(input) == 2
-
-        # input_in,input_dec = input
-        input_in = input
-
-        if self.pruning:
-            if self.switch=="mysampler":
-                exphgate=self.hgate.expand_as(hidden)
-                siggate=self.sigmoid(exphgate)
-                pruning_mask = self.mysampler(siggate,cuda_device=self.device)
-            elif self.switch=="gsigmoid":
-                exphgate = self.hgate.expand_as(hidden)
-                pruning_mask = self.gsigmoid(exphgate, temperature=1.01 - schedule)
-            else:
-                raise Exception("Unknown switch")
-        else:
-            pruning_mask=None
-        self.pruning_mask = pruning_mask
-
-        hout, hn = self.gru_enc(input_in, hidden, schedule=schedule, pruning_mask=pruning_mask)
-
-        # Sequence mode Decoding
-        input_dec=torch.zeros((self.output_len,input.shape[1],input.shape[2]))
-        if self.gpuavail:
-            input_dec=input_dec.to(self.device)
-        hout, hn = self.gru_dec(input_dec, hn, schedule=schedule,pruning_mask=pruning_mask)
-        output = self.h2o(hout)
-        return output,hn
-
-    def initHidden(self,batch):
-        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)
-
-    def initHidden_cuda(self,device, batch):
-        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
-
-# class GRU_seq2seq_v2(torch.nn.Module):
-#     """
-#     A GRU based seq2seq model, version 2, where encoder decoder combined, input output combined , to provide output information for training
-#     """
-#
-#     def __init__(self, input_size, hidden_size, output_size, output_len, num_layers=1, dropout_rate=0.0,
-#                  zoneout_rate=0.0, switch="normal", pruning=False):
-#         super(self.__class__, self).__init__()
-#         self.input_size = input_size
-#         self.hidden_size = hidden_size
-#         self.output_size = output_size
-#         self.output_len=output_len
-#         self.num_layers = num_layers
-#
-#         # self.gru_enc = torch.nn.GRU(input_size, hidden_size)
-#         # self.gru_dec = torch.nn.GRU(input_size, hidden_size)
-#
-#         self.hgate = torch.nn.Parameter(torch.rand(hidden_size), requires_grad=True)
-#         self.gru_enc_dec = GRU_Cell_Seq(input_size, hidden_size,dropout_rate=dropout_rate)
-#
-#         self.h2o = torch.nn.Linear(hidden_size, output_size)
-#
-#         self.sigmoid = torch.nn.Sigmoid()
-#         self.gsigmoid = Gumbel_Sigmoid()
-#         self.tanh = torch.nn.Tanh()
-#         self.softmax = torch.nn.LogSoftmax(dim=-1)
-#         self.gpuavail = torch.cuda.is_available()
-#         self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
-#
-#         self.pruning=pruning
-#         self.pruning_mask=None
-#
-#     def para_copy(self,gru):
-#         """
-#         Copy parameter from another gru
-#         :param gru:
-#         :return:
-#         """
-#         self.gru_enc_dec.para_copy(gru.gru_enc)
-#
-#         self.h2o.weight.data.copy_(gru.h2o.weight.data)
-#         self.h2o.bias.data.copy_(gru.h2o.bias.data)
-#
-#         self.hgate.data.copy_(gru.hgate.data)
-#
-#     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
-#         """
-#         Seqence mode only
-#         :param input:
-#         :param hidden:
-#         :param add_logit:
-#         :param logit_mode:
-#         :param schedule:
-#         :return:
-#         """
-#         # Sequence mode Encoding
-#
-#         if self.pruning:
-#             pruning_mask = self.gsigmoid(self.hgate, temperature=1.01 - schedule)
-#         else:
-#             pruning_mask=None
-#         self.pruning_mask = pruning_mask
-#
-#         hout, hn = self.gru_enc_dec(input, hidden,schedule=schedule,pruning_mask=pruning_mask)
-#         output = self.h2o(hout)
-#
-#         return output,hn
-#
-#     def initHidden(self,batch):
-#         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)
-#
-#     def initHidden_cuda(self,device, batch):
-#         return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
-
-class GRU_Cell_Seq(torch.nn.Module):
-    """
-    PyTorch self-coded GRU with sequence mode
-    """
-    def __init__(self, input_size, hidden_size, dropout_rate=0.0, zoneout_rate=0.0, switch="mysampler",cuda_device="cuda:0"
-                 ,drop_connect_mode = None,):
-        super(self.__class__, self).__init__()
-
-        self.drop_connect_mode=drop_connect_mode
-
-        self.hidden_size = hidden_size
-        self.input_size = input_size
-        self.zoneout_rate=zoneout_rate # seems not that useful
-        self.dropout_rate = dropout_rate
-
-        # self.Wir = torch.nn.Linear(input_size, hidden_size)
-        # self.Whr = torch.nn.Linear(hidden_size, hidden_size)
-        self.Wiz = torch.nn.Linear(input_size, hidden_size)
-        self.Win = torch.nn.Linear(input_size, hidden_size)
-
-        # self.Whz = torch.nn.Linear(hidden_size, hidden_size)
-        # self.Whn = torch.nn.Linear(hidden_size, hidden_size)
-
-        if drop_connect_mode=="adaptive":
-            self.Whz_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
-            self.Whn_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
-
-        self.Whz = Linear_Mask(hidden_size, hidden_size,bias=False)
-        self.Whn = Linear_Mask(hidden_size, hidden_size,bias=False)
-
-        self.switch=switch
-
-        self.sigmoid = torch.nn.Sigmoid()
-        self.tanh = torch.nn.Tanh()
-
-        self.mysampler = mysampler
-        self.gsigmoid = Gumbel_Sigmoid(cuda_device=cuda_device)
-
-        self.switch=switch
-
-        # if switch=="normal":
-        #     self.sigmoid = torch.nn.Sigmoid()
-        #     self.tanh = torch.nn.Tanh()
-        # elif switch=="st": # Straight through estimator
-        #     self.sigmoid = MyHardSig.apply  # clamp input
-        #     self.tanh = MySign.apply
-        # elif switch=="gumbel": # Gumbel sigmoid
-        #     self.sigmoid = Gumbel_Sigmoid()
-        #     self.tanh = Gumbel_Tanh()
-
-        self.softmax = torch.nn.LogSoftmax(dim=-1)
-
-        self.ht = None
-        self.zt = None
-        self.nt = None
-
-        self.device=cuda_device
-
-    def para_copy(self,gru):
-        """
-        Copy parameter from another gru
-        :param gru:
-        :return:
-        """
-        allname = ["Wiz", "Win", "Whz", "Whn"]
-        for nn,nameitem in enumerate(allname):
-            rnn_w = getattr(self, nameitem).weight
-            rnn_w.data.copy_(getattr(gru, nameitem).weight.data)
-            rnn_b = getattr(self, nameitem).bias
-            rnn_b.data.copy_(getattr(gru, nameitem).bias.data)
-
-    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None, pruning_mask=None):
-        """
-
-        :param input: input
-        :param hidden: hidden
-        :param result:
-        :return:
-        """
-        assert len(input.shape)==3
-        batch=input.shape[1]
-        ht=hidden
-        output=None
-
-        if schedule<0.8:
-            temperature=0.81-schedule
-        else:
-            temperature=0.01
-
-        # if self.dropout_rate>0.0: # Not working
-        #     mask = self.Whz.weight.new_ones(self.Whz.weight.size())
-        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
-        #     # self.Whz.weight= torch.nn.Parameter(mask*self.Whz.weight)
-        #     self.Whz.weight.data.mul_(mask)
-        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
-        #     # self.Whn.weight = torch.nn.Parameter(mask * self.Whn.weight)
-        #     self.Whn.weight.data.mul_(mask)
-
-        if self.drop_connect_mode == "adaptive":
-            if self.switch=="mysampler":
-                Whz_siggate=self.sigmoid(self.Whz_mask)
-                # Whz_siggate = self.sigmoid(self.Whz_mask.expand(batch, self.Whz_mask.shape[0], self.Whz_mask.shape[1]))
-                Whz_mask_sample = self.mysampler(Whz_siggate, cuda_device=self.device)
-                Whn_siggate = self.sigmoid(self.Whz_mask)
-                # Whn_siggate = self.sigmoid(self.Whz_mask.expand(batch,self.Whz_mask.shape[0],self.Whz_mask.shape[1]))
-                Whn_mask_sample = self.mysampler(Whn_siggate, cuda_device=self.device)
-            elif self.switch == "gsigmoid":
-                Whz_siggate = self.gsigmoid(self.Whz_mask,temperature=temperature)
-                Whz_mask_sample = self.mysampler(Whz_siggate, cuda_device=self.device)
-                Whn_siggate = self.gsigmoid(self.Whz_mask,temperature=temperature)
-                Whn_mask_sample = self.mysampler(Whn_siggate, cuda_device=self.device)
-            else:
-                raise Exception("Unknown switch")
-        elif self.drop_connect_mode == "random":
-            Whz_mask_sample = torch.ones(self.Whz.weight.size())
-            Whz_mask_sample = torch.nn.functional.dropout(Whz_mask_sample, p=self.dropout_rate, training=True)
-            Whn_mask_sample = torch.ones(self.Whn.weight.size())
-            Whn_mask_sample = torch.nn.functional.dropout(Whn_mask_sample, p=self.dropout_rate, training=True)
-            if torch.cuda.is_available():
-                Whz_mask_sample = Whz_mask_sample.to(self.cuda_device)
-                Whn_mask_sample = Whn_mask_sample.to(self.cuda_device)
-        else:
-            Whz_mask_sample=None
-            Whn_mask_sample=None
-
-        self.zt = None
-        self.nt = None
-
-        for iis in range(input.shape[0]):
-            input_ii=input[iis,:,:]
-            if pruning_mask is not None:
-                ht = ht * pruning_mask
-            # zt = self.sigmoid(self.Wiz(input_ii) + self.Whz(ht))
-            # nt = self.tanh(self.Win(input_ii) + self.Whn(ht))
-            zt = self.sigmoid(self.Wiz(input_ii) + self.Whz(ht,Whz_mask_sample))
-            nt = self.tanh(self.Win(input_ii) + self.Whn(ht,Whn_mask_sample))
-            ht = (1 - zt) * nt + zt * ht
-
-            # ht output version
-            if output is None:
-                output = ht.view(1, batch, self.hidden_size)
-            else:
-                output = torch.cat(
-                    (output.view(-1, batch, self.hidden_size), ht.view(1, batch, self.hidden_size)), dim=0)
-
-            # archiving data
-            if self.zt is None:
-                self.zt = zt.view(1, batch, self.hidden_size)
-                self.nt = nt.view(1, batch, self.hidden_size)
-            else:
-                self.zt = torch.cat(
-                    (self.zt.view(-1, batch, self.hidden_size), zt.view(1, batch, self.hidden_size)), dim=0)
-                self.nt = torch.cat(
-                    (self.nt.view(-1, batch, self.hidden_size), nt.view(1, batch, self.hidden_size)), dim=0)
-
-        self.ht = output
-
-        # if self.dropout_rate>0.0:
-        #     mask = self.Whz.weight.new_ones(self.Whz.weight.size())
-        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
-        #     # self.Whz.weight= torch.nn.Parameter(mask*self.Whz.weight)
-        #     self.Whz.weight.data.mul_(mask)
-        #     mask = torch.nn.functional.dropout(mask, p=self.dropout_rate, training=True)
-        #     # self.Whn.weight = torch.nn.Parameter(mask * self.Whn.weight)
-        #     self.Whn.weight.data.mul_(mask)
-        #
-        # if self.switch=="gumbel":
-        #     zt = self.sigmoid(self.Wiz(input) + self.Whz(hidden), temperature=1.1 - schedule)
-        #     nt = self.tanh(self.Win(input) + self.Whn(hidden), temperature=1.1 - schedule)
-        # else:
-        #     zt = self.sigmoid(self.Wiz(input) + self.Whz(hidden))
-        #     nt = self.tanh(self.Win(input) + self.Whn(hidden))
-        #
-        # if self.training:
-        #     mask=(np.sign(np.random.random(list(zt.shape))-self.zoneout_rate)+1)/2
-        #     mask = torch.from_numpy(mask)
-        #     mask = mask.type(torch.FloatTensor)
-        #     if torch.cuda.is_available():
-        #         device = torch.device("cuda:0")
-        #         mask=mask.to(device)
-        #     zt=1-(1-zt)*mask
-        #     ht=(1-zt)*nt+zt*hidden
-        # else:
-        #     ht = (1 - zt) * nt + zt * hidden
-        # output = self.h2o(ht)
-        # output = self.softmax(output)
-        #
-        # self.zt = zt
-        # self.nt = nt
-
-        return output, ht
-
-    # def plot_layer_all(self):
-    #     allname = ["h2o", "Wir",  "Wiz","Win", "Whr","Whz", "Whn"]
-    #     subplotidx=330
-    #     for nameitem in allname:
-    #         mat = getattr(self, nameitem).cpu().weight.data.numpy()
-    #         subplotidx=subplotidx+1
-    #         plt.subplot(subplotidx)
-    #         plot_mat(mat,title=nameitem,symmetric=True,tick_step=1,show=False)
-    #     plt.show()
-
-    def plot_layer_all(self):
-        srow=2
-        scol=5
-        allname = ["Wiz", "Win", "Whz", "Whn"]
-        for nn,nameitem in enumerate(allname):
-            mat = getattr(self, nameitem).cpu().weight.data.numpy()
-            plt.subplot(srow, scol, 1+nn)
-            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
-            plt.subplot(srow, scol, 1+nn + scol)
-            try:
-                mat = getattr(self, nameitem).cpu().bias.data.numpy()
-                plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
-            except:
-                pass
         plt.show()
 
     def initHidden(self, batch=1):

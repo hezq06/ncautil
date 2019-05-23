@@ -112,26 +112,28 @@ def plot_mat_sub(datal,start=0,lim=1000,symmetric=True):
     fig.colorbar(im, cax=cbar_ax)
     plt.show()
 
-def plot_activity_example(self,datalist,titlelist,sysmlist=None,mode="predict"):
+def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None, clim=None):
+    img = np.array(img)
+    assert len(img.shape) == 2
+    if clim is None:
+        if symmetric:
+            clim=(-np.amax(np.abs(img)), np.amax(np.abs(img)))
+        else:
+            clim = (-np.min(img), np.max(img))
+    pltimg = ax.imshow(img, cmap='seismic', clim=clim,aspect="auto")
+    if title is not None:
+        ax.set_title(title)
+    if tick_step is not None:
+        ax.set_xticks(np.arange(0, len(img[0]), tick_step))
+        ax.set_yticks(np.arange(0, len(img), tick_step))
+    return pltimg
+
+def plot_activity_example(self,datalist,titlelist,sysmlist=None,mode="predict",):
     """
     Plot a single example of prediction
     :return:
     """
     assert type(datalist) is list
-
-    def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None):
-        img = np.array(img)
-        assert len(img.shape) == 2
-        if symmetric:
-            pltimg = ax.imshow(img, cmap='seismic', clim=(-np.amax(np.abs(img)), np.amax(np.abs(img))),aspect="auto")
-        else:
-            pltimg = ax.imshow(img, cmap='seismic',aspect="auto")
-        if title is not None:
-            ax.set_title(title)
-        if tick_step is not None:
-            ax.set_xticks(np.arange(0, len(img[0]), tick_step))
-            ax.set_yticks(np.arange(0, len(img), tick_step))
-        return pltimg
 
     if mode=="predict":
         for ii in range(len(datalist)):
@@ -154,6 +156,8 @@ def plot_activity_example(self,datalist,titlelist,sysmlist=None,mode="predict"):
             datalist[ii][1] = datalist[ii][1].cpu().data.numpy()
         num_plot = len(datalist)
         f, axes = plt.subplots(num_plot, 2, sharex=False)
+        if num_plot==1:
+            axes=[axes] # if only 1 plot, make it support indexing
         for ii in range(len(datalist)):
             symlab = True
             if sysmlist is not None:
@@ -562,6 +566,7 @@ class PyTrain_Lite(object):
         if self.cuda_flag:
             self.gpuavail = torch.cuda.is_available()
             self.device = torch.device(self.cuda_device if self.gpuavail else "cpu")
+            self.rnn=self.rnn.to(self.device)
         else:
             self.gpuavail = False
             self.device = torch.device("cpu")
@@ -644,14 +649,15 @@ class PyTrain_Lite(object):
 
         endt = time.time()
         print("Time used in training:", endt - startt)
+        self.log = self.log + "Time used in training: " + str(endt - startt) + "\n"
         self._postscript()
         if self.gpuavail:
             torch.cuda.empty_cache()
 
-    def eval_mem(self,output,hidden):
+    def eval_mem(self,*args):
         pass
 
-    def do_eval(self,step_eval=300):
+    def do_eval(self,step_eval=300,schedule=1.0):
         startt = time.time()
         self.rnn.eval()
         if self.gpuavail:
@@ -664,14 +670,15 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden(self.batch)
             x, label, _ = self.get_data()
             if self.seqtrain:
-                output, hidden = self.rnn(x, hidden, schedule=1.0)
+                output, hidden = self.rnn(x, hidden, schedule=schedule)
                 loss = self.lossf_eval(output, label, self.rnn, None)
-                self.eval_mem(output, hidden)
+                self.eval_mem(x, label, self.rnn)
+
             else:
                 outputl=None
                 hiddenl=None
                 for iiw in range(self.window):
-                    output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=1.0)
+                    output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=schedule)
                     if outputl is None:
                         outputl = output.view(1, self.batch, self.lsize_out)
                         hiddenl = hidden.view(1, self.batch, self.rnn.hidden_size)
@@ -693,11 +700,11 @@ class PyTrain_Lite(object):
             torch.cuda.empty_cache()
 
         currentDT = datetime.datetime.now()
-        self.log = self.log + "Time of evaluation: " + str(currentDT) + "\n"
+        self.log = self.log + "Time at evaluation: " + str(currentDT) + "\n"
         self.log = self.log + "Evaluation Perplexity: "+ str(np.exp(np.mean(np.array(perpl)))) + "\n"
         self.log = self.log + "Time used in evaluation:"+ str(endt - startt) + "\n"
 
-    def do_test(self,step_test=300):
+    def do_test(self,step_test=300,schedule=1.0):
         """
         Calculate correct rate
         :param step_test:
@@ -716,7 +723,7 @@ class PyTrain_Lite(object):
             else:
                 hidden = self.rnn.initHidden(self.batch)
             x, label, _ = self.get_data()
-            output, hidden = self.rnn(x, hidden, schedule=1.0)
+            output, hidden = self.rnn(x, hidden, schedule=schedule)
             output = output.permute(1, 2, 0)
             _,predicted = torch.max(output,1)
             total += label.size(0)*label.size(1)
@@ -735,10 +742,10 @@ class PyTrain_Lite(object):
         self.log = self.log + "Correct rate: " + str(np.mean(np.array(correct_ratel))) + "\n"
         self.log = self.log + "Time used in test:" + str(endt - startt) + "\n"
 
-    def example_data_collection(self,*args):
+    def example_data_collection(self,*args,**kwargs):
         raise Exception("NotImplementedException")
 
-    def plot_example(self):
+    def plot_example(self,items="all"):
         """
         Plot a single example of prediction
         :return:
@@ -754,11 +761,11 @@ class PyTrain_Lite(object):
         x, label, _ = self.get_data(batch=1)
         if self.seqtrain:
             output, hidden = self.rnn(x, hidden, schedule=1.0)
-            self.example_data_collection(x, output, hidden, label)
+            self.example_data_collection(x, output, hidden, label,items=items)
         else:
             for iiw in range(self.window):
                 output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=1.0)
-                self.example_data_collection(x[iiw, :, :], output, hidden, label)
+                self.example_data_collection(x[iiw, :, :], output, hidden, label,items="all")
 
         # datalist=[xnp.T,outmat.T,hidmat.T,ztmat.T,ntmat.T]
         # datalist = [[xnp.T,xnp.T], [outmat.T,outmat.T], [hidmat.T,hidmat.T], [ztmat.T,ztmat.T], [ntmat.T,ntmat.T]]
@@ -913,19 +920,32 @@ class PyTrain_Custom(PyTrain_Lite):
         if (type(dataset) is dict) != self.supervise_mode:
             raise Exception("Supervise mode Error.")
 
-    def eval_mem(self,output,hidden):
+    def eval_mem(self, x, label, rnn):
         """
         Archiving date
         :param output:
         :param hidden:
         :return:
         """
+
+        # temp_data_col_mem["datalist"][2] = [self.rnn.gru_enc.ht.view(length, hdsize),
+        #                                     self.rnn.gru_dec.ht.view(anslength, hdsize)]
+        # temp_data_col_mem["datalist"][3] = [self.rnn.gru_enc.zt.view(length, hdsize),
+        #                                     self.rnn.gru_dec.zt.view(anslength, hdsize)]
+        # temp_data_col_mem["datalist"][4] = [self.rnn.gru_enc.nt.view(length, hdsize),
+        #                                     self.rnn.gru_dec.nt.view(anslength, hdsize)]
+
         if self.evalmem is None:
-            self.evalmem=[]
-        try:
-            self.evalmem.append(hidden.cpu().data.numpy())
-        except:
-            pass
+            self.evalmem=[[] for ii in range(8)] # x,label,enc(ht,zt,nt),dec(ht,zt,nt)
+        else:
+            self.evalmem[0].append(x.cpu().data.numpy())
+            self.evalmem[1].append(label.cpu().data.numpy())
+            self.evalmem[2].append(rnn.gru_enc.ht.cpu().data.numpy())
+            self.evalmem[3].append(rnn.gru_enc.zt.cpu().data.numpy())
+            self.evalmem[4].append(rnn.gru_enc.nt.cpu().data.numpy())
+            self.evalmem[5].append(rnn.gru_dec.ht.cpu().data.numpy())
+            self.evalmem[6].append(rnn.gru_dec.zt.cpu().data.numpy())
+            self.evalmem[7].append(rnn.gru_dec.nt.cpu().data.numpy())
 
     def while_training(self,iis):
         # self.context_monitor(iis)
@@ -1239,7 +1259,7 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return [x_in,x_dec], outlab, inlab
 
-    def custom_do_test(self,step_test=300):
+    def custom_do_test(self,step_test=300,schedule=1.0):
         """
         Calculate correct rate
         :param step_test:
@@ -1259,7 +1279,7 @@ class PyTrain_Custom(PyTrain_Lite):
             else:
                 hidden = self.rnn.initHidden(self.batch)
             x, label, inlab = self.get_data()
-            output, hidden = self.rnn(x, hidden, schedule=1.0)
+            output, hidden = self.rnn(x, hidden, schedule=schedule)
             output = output.permute(1, 2, 0)
             _,predicted = torch.max(output,1)
             # Calculate digit level correct rate
@@ -1523,9 +1543,9 @@ class PyTrain_Custom(PyTrain_Lite):
         if self.gpuavail:
             torch.cuda.empty_cache()
 
-    def example_data_collection(self, x, output, hidden, label):
+    def example_data_collection(self, x, output, hidden, label,items="all"):
         # return self.custom_example_data_collection_continuous(x, output, hidden)
-        return self.custom_example_data_collection_seq2seq(x, output, hidden, label)
+        return self.custom_example_data_collection_seq2seq(x, output, hidden, label,items=items)
 
     def custom_example_data_collection_continuous(self, x, output, hidden, label):
 
@@ -1550,20 +1570,22 @@ class PyTrain_Custom(PyTrain_Lite):
             self.data_col_mem["datalist"][3] = torch.cat((self.data_col_mem["datalist"][3], self.rnn.zt.view(1, -1)), dim=0)
             self.data_col_mem["datalist"][4] = torch.cat((self.data_col_mem["datalist"][4], self.rnn.nt.view(1, -1)), dim=0)
 
-    def custom_example_data_collection_seq2seq(self, x, output, hidden, label):
+    def custom_example_data_collection_seq2seq(self, x, output, hidden, label, items=[3,4]):
 
         # datalist=[xnp.T,outmat.T,hidmat.T,ztmat.T,ntmat.T]
         # datalist = [[xnp.T,xnp.T], [outmat.T,outmat.T], [hidmat.T,hidmat.T], [ztmat.T,ztmat.T], [ntmat.T,ntmat.T]]
         # titlelist=
         # sysmlist=
 
-        if self.data_col_mem is None:
-            # Step 1 of example_data_collection
-            self.data_col_mem = dict([])
-            self.data_col_mem["titlelist"] = ["input","output","hidden"]
-            self.data_col_mem["sysmlist"] = [True,False,True]
-            self.data_col_mem["mode"] = "seq2seq"
-            self.data_col_mem["datalist"] = [None,None,None]
+        # temp_data_col_mem
+
+        # if self.data_col_mem is None:
+        # Step 1 of example_data_collection
+        temp_data_col_mem = dict([])
+        temp_data_col_mem["titlelist"] = ["input","output","hidden","zt keep gate","nt set gate"]
+        temp_data_col_mem["sysmlist"] = [True,False,True,True,True]
+        temp_data_col_mem["mode"] = "seq2seq"
+        temp_data_col_mem["datalist"] = [None,None,None,None,None]
 
         length=x.shape[0]
         lsize=x.shape[-1]
@@ -1573,10 +1595,29 @@ class PyTrain_Custom(PyTrain_Lite):
         for ii in range(label.shape[-1]):
             id=label[0,ii]
             label_onehot[ii,id]=1
-        self.data_col_mem["datalist"][0] = [x.view(length,lsize),label_onehot]
-        self.data_col_mem["datalist"][1] = [torch.zeros(length,lsize), output.view(anslength,lsize)]
-        print(self.rnn.gru_enc.ht.shape,self.rnn.gru_dec.ht.shape)
-        self.data_col_mem["datalist"][2] = [self.rnn.gru_enc.ht.view(length,hdsize) , self.rnn.gru_dec.ht.view(anslength,hdsize)]
+        temp_data_col_mem["datalist"][0] = [x.view(length,lsize),label_onehot]
+        temp_data_col_mem["datalist"][1] = [torch.zeros(length,lsize), output.view(anslength,lsize)]
+        # temp_data_col_mem["datalist"][2] = [self.rnn.gru_enc.ht.view(length, hdsize),
+        #                                     self.rnn.gru_dec.ht.view(anslength, hdsize)]
+        # temp_data_col_mem["datalist"][3] = [self.rnn.gru_enc.zt.view(length, hdsize),
+        #                                     self.rnn.gru_dec.zt.view(anslength, hdsize)]
+        # temp_data_col_mem["datalist"][4] = [self.rnn.gru_enc.nt.view(length, hdsize),
+        #                                     self.rnn.gru_dec.nt.view(anslength, hdsize)]
         # self.data_col_mem["datalist"][1] = output.view(1, -1)
         # self.data_col_mem["datalist"][2] = hidden.view(1, -1)
+
+        if items == "all":
+            self.data_col_mem=temp_data_col_mem
+        else:
+            assert type(items) is list
+            self.data_col_mem=dict([])
+            self.data_col_mem["mode"] = "seq2seq"
+
+            self.data_col_mem["titlelist"] = []
+            self.data_col_mem["sysmlist"] = []
+            self.data_col_mem["datalist"] = []
+            for num in items:
+                self.data_col_mem["titlelist"].append(temp_data_col_mem["titlelist"][num])
+                self.data_col_mem["sysmlist"].append(temp_data_col_mem["sysmlist"][num])
+                self.data_col_mem["datalist"].append(temp_data_col_mem["datalist"][num])
 

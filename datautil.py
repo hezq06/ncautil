@@ -137,13 +137,17 @@ class Plus_dataset(object):
     """
     def __init__(self):
         self.num=0
+        self.reset()
+
+
+    def reset(self):
         self.dataset_raw = dict([])
         self.dataset_raw["dataset"] = []
         self.dataset_raw["label"] = []
-        self.dataset_sup=dict([])
-        self.dataset_sup["dataset"]=[]
+        self.dataset_sup = dict([])
+        self.dataset_sup["dataset"] = []
         self.dataset_sup["label"] = []
-        self.digits=None
+        self.digits = None
 
     def create_dataset(self,num,digits=3):
         """
