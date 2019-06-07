@@ -10,6 +10,7 @@ from __future__ import print_function
 import torch
 import math
 from torch.nn import functional as F
+import numpy as np
 
 
 gl_cuda_device="cuda:0"
@@ -329,6 +330,43 @@ class Linear_Mask(torch.nn.Module):
         return F.linear(input, weight_mask, self.bias)
         # output=torch.matmul(input.permute(1,0,2),weight_mask)+self.bias.view(1,-1)
         # return output.permute(1,0,2)
+
+class Linear_Sparse(torch.nn.Module):
+    """
+    A linear module with mask
+    """
+    def __init__(self,input_size, output_size, bias=True, cuda_device="cuda:0"):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.output_size=output_size
+
+        self.weight = torch.nn.Parameter(torch.rand(input_size)/input_size, requires_grad=True)
+
+        # posi = torch.LongTensor([np.array(range(output_size)), np.array(range(input_size))])
+        # self.weight = torch.sparse.FloatTensor(posi, self.weight_para, torch.Size([output_size, input_size]))
+
+        if bias:
+            self.bias = torch.nn.Parameter(torch.zeros(output_size), requires_grad=True)
+        else:
+            self.bias = None
+        self.hard_mask = torch.ones(input_size)
+
+        self.gpuavail = torch.cuda.is_available()
+        if self.gpuavail:
+            self.cuda_device=cuda_device
+            self.hard_mask = self.hard_mask.to(cuda_device)
+
+    def set_hard_mask(self,hard_mask):
+        self.hard_mask = hard_mask
+        if self.gpuavail:
+            self.hard_mask = self.hard_mask.to(self.cuda_device)
+
+    def forward(self, input):
+        matm=self.weight*input*self.hard_mask
+        if self.bias is not None:
+            matm = matm + self.bias
+        return matm
+
 
 
 

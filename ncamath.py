@@ -25,7 +25,7 @@ def cluster(data,n_clusters,mode="kmeans"):
     :return:
     """
     startt = time.time()
-    kmeans = KMeans(n_clusters=n_clusters, init="random", ).fit(data)
+    kmeans = KMeans(n_clusters=n_clusters, init="random").fit(data)
     center=np.zeros((n_clusters,len(data[0])))
     clscounter=np.zeros(n_clusters)
     for iid in range(len(data)):
@@ -33,7 +33,8 @@ def cluster(data,n_clusters,mode="kmeans"):
         center[ncls]=center[ncls]+data[iid]
         clscounter[ncls]=clscounter[ncls]+1
     for iic in range(n_clusters):
-        center[iic]=center[iic]/clscounter[iic]
+        if clscounter[iic] != 0:
+            center[iic]=center[iic]/clscounter[iic]
     endt = time.time()
     print("Time used in training:", endt - startt)
     return kmeans.labels_, center
@@ -174,6 +175,7 @@ def ica(data,LR=1e-2,step=1e4,show_step=1e2):
     :param step: learning step
     :return: independent source
     """
+    startt = time.time()
     print("Using Amari's ICA rule to do independent component analysis. Don't forget PCA projection beforehand.")
     data = np.array(data)
     assert len(data.shape) == 2
@@ -196,6 +198,59 @@ def ica(data,LR=1e-2,step=1e4,show_step=1e2):
         W = W + LR * DW # Amari's ICA rule
         ltab.append(np.linalg.norm(DW))
     Xh = W.dot(data)
+    endt = time.time()
+    print("Time used in ica:", endt - startt)
+    plt.plot(ltab)
+    plt.show()
+    return Xh,W
+
+def ica_torch(data,LR=1e-2,step=1e4,show_step=1e2,cuda_device="cuda:0"):
+    """
+    Independent component analysis using Amari's learning rule
+    :param data: dataset of signal mixing
+    :param LR: learning rate
+    :param step: learning step
+    :return: independent source
+    """
+    startt = time.time()
+
+    gpuavail = torch.cuda.is_available()
+    print("Using Amari's ICA rule to do independent component analysis. Don't forget PCA projection beforehand.")
+    data = torch.from_numpy(np.array(data))
+
+    assert len(data.shape) == 2
+    assert data.shape[1] >= data.shape[0]
+
+    D = data.shape[0]
+    N = data.shape[1]
+    ltab = []
+
+    W = torch.eye(D)  # initial weights
+    EYE = torch.eye(D)  # initial weights
+    if gpuavail:
+        data=data.to(cuda_device)
+        W = W.to(cuda_device)
+        EYE = EYE.to(cuda_device)
+
+    def g(x):
+        res = torch.sign(x) * (1 - torch.exp(-np.sqrt(2) * torch.abs(x))) / 2  # nonlinear function for Laplace distribution
+        return res
+
+    for k in range(int(step)):
+        if k%show_step==0:
+            print("Step "+str(k)+" of "+str(step)+" total step.")
+        Xh = torch.matmul(W,data)
+        DW_R=torch.matmul(g(Xh),(torch.t(Xh) / N))
+        DW = torch.matmul(EYE-DW_R,W)
+        W2 = W + LR * DW # Amari's ICA rule
+        W2 = W2 / (torch.norm(W2) / torch.norm(EYE))
+        ltab.append(torch.norm(W2-W))
+        W=W2
+    Xh = torch.matmul(W,data)
+
+    endt = time.time()
+    print("Time used in ica:", endt - startt)
+
     plt.plot(ltab)
     plt.show()
     return Xh,W

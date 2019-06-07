@@ -18,8 +18,27 @@ import torch
 from torch.autograd import Variable
 from ncautil.nlputil import NLPutil
 from ncautil.ncalearn import *
+import pickle
 
 from tqdm import tqdm
+
+# def save(item,path):
+#     # torch.save(model.state_dict(), path))
+# def load(model,path):
+#     gru_gumbel = GRU_seq2seq(lsize_in, 100, lsize_in, outlen, para=gru_para)
+#     model.load_state_dict(torch.load("./gru_myhsample_finetune"))
+#     gru_gumbel = gru_gumbel.to(cuda_device)
+
+
+def save_data(data,file):
+    pickle.dump(data, open(file, "wb"))
+    print("Data saved to ", file)
+
+def load_data(file):
+    data = pickle.load(open(file, "rb"))
+    print("Data load from ", file)
+    return data
+
 
 def get_id_with_sample_vec(param,vec):
     """

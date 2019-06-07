@@ -26,15 +26,6 @@ from PIL import ImageDraw,ImageFont
 from tqdm import tqdm
 import datetime
 
-def save_data(data,file):
-    pickle.dump(data, open(file, "wb"))
-    print("Data saved to ", file)
-
-def load_data(file):
-    data = pickle.load(open(file, "rb"))
-    print("Data load from ", file)
-    return data
-
 def pltfft(data):
     """
     Plot fft spectrum
@@ -119,7 +110,7 @@ def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None, clim=None)
         if symmetric:
             clim=(-np.amax(np.abs(img)), np.amax(np.abs(img)))
         else:
-            clim = (-np.min(img), np.max(img))
+            clim = (np.min(img), np.max(img))
     pltimg = ax.imshow(img, cmap='seismic', clim=clim,aspect="auto")
     if title is not None:
         ax.set_title(title)
@@ -128,7 +119,7 @@ def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None, clim=None)
         ax.set_yticks(np.arange(0, len(img), tick_step))
     return pltimg
 
-def plot_activity_example(self,datalist,titlelist,sysmlist=None,mode="predict",):
+def plot_activity_example(self,datalist,titlelist,climlist=None,sysmlist=None,mode="predict"):
     """
     Plot a single example of prediction
     :return:
@@ -142,9 +133,12 @@ def plot_activity_example(self,datalist,titlelist,sysmlist=None,mode="predict",)
         f, axes = plt.subplots(num_plot, 1, sharex=True)
         for ii in range(len(datalist)):
             symlab=True
+            clim=None
             if sysmlist is not None:
                 symlab=sysmlist[ii]
-            plt_t =plot_mat_ax(axes[ii],datalist[ii].T, title=titlelist[ii], symmetric=symlab, tick_step=1)
+            if climlist is not None:
+                clim=climlist[ii]
+            plt_t =plot_mat_ax(axes[ii],datalist[ii].T, title=titlelist[ii], symmetric=symlab, tick_step=1,clim=clim)
             plt.colorbar(plt_t, ax=axes[ii])
         # [ax.grid(True, linestyle='-.') for ax in (ax1, ax2, ax3, ax4, ax5)]
         plt.show()
@@ -160,11 +154,14 @@ def plot_activity_example(self,datalist,titlelist,sysmlist=None,mode="predict",)
             axes=[axes] # if only 1 plot, make it support indexing
         for ii in range(len(datalist)):
             symlab = True
+            clim = None
             if sysmlist is not None:
                 symlab = sysmlist[ii]
-            plt_t = plot_mat_ax(axes[ii][0], datalist[ii][0].T, title=titlelist[ii]+"_enc", symmetric=symlab, tick_step=1)
+            if climlist is not None:
+                clim = climlist[ii]
+            plt_t = plot_mat_ax(axes[ii][0], datalist[ii][0].T, title=titlelist[ii]+"_enc", symmetric=symlab, tick_step=1,clim=clim)
             plt.colorbar(plt_t, ax=axes[ii][0])
-            plt_t = plot_mat_ax(axes[ii][1], datalist[ii][1].T, title=titlelist[ii]+"_dec", symmetric=symlab, tick_step=1)
+            plt_t = plot_mat_ax(axes[ii][1], datalist[ii][1].T, title=titlelist[ii]+"_dec", symmetric=symlab, tick_step=1,clim=clim)
             plt.colorbar(plt_t, ax=axes[ii][1])
         # [ax.grid(True, linestyle='-.') for ax in (ax1, ax2, ax3, ax4, ax5)]
         plt.show()
@@ -657,7 +654,7 @@ class PyTrain_Lite(object):
     def eval_mem(self,*args):
         pass
 
-    def do_eval(self,step_eval=300,schedule=1.0):
+    def do_eval(self,step_eval=300,schedule=1.0,posi_ctrl=None):
         startt = time.time()
         self.rnn.eval()
         if self.gpuavail:
@@ -671,7 +668,10 @@ class PyTrain_Lite(object):
             x, label, _ = self.get_data()
             if self.seqtrain:
                 output, hidden = self.rnn(x, hidden, schedule=schedule)
-                loss = self.lossf_eval(output, label, self.rnn, None)
+                if posi_ctrl is None:
+                    loss = self.lossf_eval(output, label, self.rnn, None)
+                else:
+                    loss = self.lossf_eval(output[posi_ctrl,:,:].view(1,output.shape[1],output.shape[2]), label[:,posi_ctrl].view(label.shape[0],1), self.rnn, None)
                 self.eval_mem(x, label, self.rnn)
 
             else:
@@ -704,7 +704,7 @@ class PyTrain_Lite(object):
         self.log = self.log + "Evaluation Perplexity: "+ str(np.exp(np.mean(np.array(perpl)))) + "\n"
         self.log = self.log + "Time used in evaluation:"+ str(endt - startt) + "\n"
 
-    def do_test(self,step_test=300,schedule=1.0):
+    def do_test(self,step_test=300,schedule=1.0,posi_ctrl=None):
         """
         Calculate correct rate
         :param step_test:
@@ -726,8 +726,12 @@ class PyTrain_Lite(object):
             output, hidden = self.rnn(x, hidden, schedule=schedule)
             output = output.permute(1, 2, 0)
             _,predicted = torch.max(output,1)
-            total += label.size(0)*label.size(1)
-            correct += (predicted == label).sum().item()
+            if posi_ctrl is None:
+                total += label.size(0)*label.size(1)
+                correct += (predicted == label).sum().item()
+            else:
+                total += label.size(0)
+                correct += (predicted[:,posi_ctrl] == label[:,posi_ctrl]).sum().item()
             correct_ratel.append(correct/total)
             # self.eval_mem(output)
         # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
@@ -774,12 +778,13 @@ class PyTrain_Lite(object):
 
         datalist=self.data_col_mem["datalist"]
         titlelist = self.data_col_mem["titlelist"]
+        climlist = self.data_col_mem["climlist"]
         sysmlist = self.data_col_mem["sysmlist"]
         mode = self.data_col_mem["mode"]
 
         # plot_activity_example(self, datalist, titlelist, sysmlist=sysmlist,mode="predict")
 
-        plot_activity_example(self, datalist, titlelist, sysmlist=sysmlist, mode=mode)
+        plot_activity_example(self, datalist, titlelist, climlist=climlist,sysmlist=sysmlist, mode=mode)
 
 
         if self.gpuavail:
@@ -938,14 +943,18 @@ class PyTrain_Custom(PyTrain_Lite):
         if self.evalmem is None:
             self.evalmem=[[] for ii in range(8)] # x,label,enc(ht,zt,nt),dec(ht,zt,nt)
         else:
-            self.evalmem[0].append(x.cpu().data.numpy())
-            self.evalmem[1].append(label.cpu().data.numpy())
-            self.evalmem[2].append(rnn.gru_enc.ht.cpu().data.numpy())
-            self.evalmem[3].append(rnn.gru_enc.zt.cpu().data.numpy())
-            self.evalmem[4].append(rnn.gru_enc.nt.cpu().data.numpy())
-            self.evalmem[5].append(rnn.gru_dec.ht.cpu().data.numpy())
-            self.evalmem[6].append(rnn.gru_dec.zt.cpu().data.numpy())
-            self.evalmem[7].append(rnn.gru_dec.nt.cpu().data.numpy())
+            try:
+                self.evalmem[0].append(x.cpu().data.numpy())
+                self.evalmem[1].append(label.cpu().data.numpy())
+                self.evalmem[2].append(rnn.gru_enc.ht.cpu().data.numpy())
+                self.evalmem[3].append(rnn.gru_enc.zt.cpu().data.numpy())
+                self.evalmem[4].append(rnn.gru_enc.nt.cpu().data.numpy())
+                self.evalmem[5].append(rnn.gru_dec.ht.cpu().data.numpy())
+                self.evalmem[6].append(rnn.gru_dec.zt.cpu().data.numpy())
+                self.evalmem[7].append(rnn.gru_dec.nt.cpu().data.numpy())
+            except:
+                # print("eval_mem failed")
+                pass
 
     def while_training(self,iis):
         # self.context_monitor(iis)
@@ -1420,7 +1429,7 @@ class PyTrain_Custom(PyTrain_Lite):
         loss_gate_enc = (model.sigmoid(model.gru_enc.Whz_mask)+model.sigmoid(model.gru_enc.Whn_mask))/2
         loss_gate_dec = (model.sigmoid(model.gru_dec.Whz_mask)+model.sigmoid(model.gru_dec.Whn_mask))/2
 
-        allname = ["Wiz", "Whz", "Win", "Whn"]
+        allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
         wnorm1 = 0
         for namep in allname:
                 wattr = getattr(self.rnn.gru_enc, namep)
@@ -1444,18 +1453,62 @@ class PyTrain_Custom(PyTrain_Lite):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
         allname = ["Wiz", "Whz", "Win", "Whn"]
         wnorm1=0
         for namep in allname:
                 wattr = getattr(self.rnn.gru_enc, namep)
                 wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
-                wattr = getattr(self.rnn.gru_dec, namep)
-                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+                try:
+                    wattr = getattr(self.rnn.gru_dec, namep)
+                    wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+                except:
+                    pass
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        wnorm1=wnorm1/len(allname)
+        wnorm1=wnorm1/(2*len(allname))
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_WeightReg_TDFF(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        allname = ["W1", "W2","W3"]
+        wnorm1=0
+        for namep in allname:
+                wattr = getattr(self.rnn, namep)
+                wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        wnorm1=wnorm1/2
+        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        loss_gate = (torch.mean(model.sigmoid(model.W1_mask)) + torch.mean(model.sigmoid(model.W2_mask))) / 2
+
+        allname = ["W1", "W2","W3"]
+        wnorm1=0
+        for namep in allname:
+                wattr = getattr(self.rnn, namep)
+                wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        wnorm1=wnorm1/2
+        return loss1+self.reg_lamda*(wnorm1+loss_gate) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_WeightReg_GRU(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
@@ -1582,10 +1635,11 @@ class PyTrain_Custom(PyTrain_Lite):
         # if self.data_col_mem is None:
         # Step 1 of example_data_collection
         temp_data_col_mem = dict([])
-        temp_data_col_mem["titlelist"] = ["input","output","hidden","zt keep gate","nt set gate"]
+        temp_data_col_mem["titlelist"] = ["input","output","hidden","zt forget gate","nt set gate"]
         temp_data_col_mem["sysmlist"] = [True,False,True,True,True]
         temp_data_col_mem["mode"] = "seq2seq"
         temp_data_col_mem["datalist"] = [None,None,None,None,None]
+        temp_data_col_mem["climlist"] = [None,None,None,None,None]
 
         length=x.shape[0]
         lsize=x.shape[-1]
@@ -1597,12 +1651,12 @@ class PyTrain_Custom(PyTrain_Lite):
             label_onehot[ii,id]=1
         temp_data_col_mem["datalist"][0] = [x.view(length,lsize),label_onehot]
         temp_data_col_mem["datalist"][1] = [torch.zeros(length,lsize), output.view(anslength,lsize)]
-        # temp_data_col_mem["datalist"][2] = [self.rnn.gru_enc.ht.view(length, hdsize),
-        #                                     self.rnn.gru_dec.ht.view(anslength, hdsize)]
-        # temp_data_col_mem["datalist"][3] = [self.rnn.gru_enc.zt.view(length, hdsize),
-        #                                     self.rnn.gru_dec.zt.view(anslength, hdsize)]
-        # temp_data_col_mem["datalist"][4] = [self.rnn.gru_enc.nt.view(length, hdsize),
-        #                                     self.rnn.gru_dec.nt.view(anslength, hdsize)]
+        temp_data_col_mem["datalist"][2] = [self.rnn.gru_enc.ht.view(length, hdsize),
+                                            self.rnn.gru_dec.ht.view(anslength, hdsize)]
+        temp_data_col_mem["datalist"][3] = [self.rnn.gru_enc.zt.view(length, hdsize),
+                                            self.rnn.gru_dec.zt.view(anslength, hdsize)]
+        temp_data_col_mem["datalist"][4] = [self.rnn.gru_enc.nt.view(length, hdsize),
+                                            self.rnn.gru_dec.nt.view(anslength, hdsize)]
         # self.data_col_mem["datalist"][1] = output.view(1, -1)
         # self.data_col_mem["datalist"][2] = hidden.view(1, -1)
 
@@ -1616,8 +1670,10 @@ class PyTrain_Custom(PyTrain_Lite):
             self.data_col_mem["titlelist"] = []
             self.data_col_mem["sysmlist"] = []
             self.data_col_mem["datalist"] = []
+            self.data_col_mem["climlist"] = []
             for num in items:
                 self.data_col_mem["titlelist"].append(temp_data_col_mem["titlelist"][num])
                 self.data_col_mem["sysmlist"].append(temp_data_col_mem["sysmlist"][num])
                 self.data_col_mem["datalist"].append(temp_data_col_mem["datalist"][num])
+                self.data_col_mem["climlist"].append(temp_data_col_mem["climlist"][num])
 
