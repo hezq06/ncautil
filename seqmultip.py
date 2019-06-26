@@ -106,6 +106,148 @@ def logit_gen(seq, model,lsize):
         res.append(logp(output.view(-1).data.numpy()))
     return np.array(res)
 
+class TDNN_ATTN_FF(torch.nn.Module):
+    """
+    Time delayed neural network multi-head attention plus feed forward
+    """
+    def __init__(self, input_size, hidden_len, output_size, input_len, output_len, num_layers=1, para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.hidden_len = hidden_len
+        self.output_size = output_size
+        self.input_len = input_len
+        self.output_len = output_len
+        self.num_layers = num_layers
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.posi_mat,self.n_posiemb=self.posi_embed(self.input_len,switch="log") #(self.input_len,self.n_posiemb)
+
+        self.hdemb_mat,self.n_hdemb=self.posi_embed(self.hidden_len,switch="log") #(self.input_len,self.n_posiemb)
+
+        self.key_size = 20
+        self.value_size = 3
+
+        # self.W_in=torch.nn.Linear(input_size*input_len, hidden_size)
+        # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
+
+        self.hd_attn1 = Hidden_Attention(self.input_size, self.hidden_len, self.value_size, self.key_size, self.n_posiemb)
+        # self.hd_attn2 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size)
+        self.hd_attn2 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size,self.n_hdemb)
+        # self.hd_attn3 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size,self.n_hdemb)
+        # self.hd_attn3 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size)
+
+        self.W_hff = torch.nn.Linear(self.value_size * self.hidden_len, hidden_len)
+        self.W_ff = torch.nn.Linear(hidden_len, output_size * output_len)
+
+        self.hd_att_ff = Hidden_Attention(self.value_size, output_len, output_size, self.key_size,self.n_hdemb)
+
+        # self.hd_layer_stack = torch.nn.ModuleList([
+        #     torch.nn.Sequential(torch.nn.Dropout(p=0.1), torch.nn.Linear(hidden_size, hidden_size), torch.nn.ReLU())
+        #     for _ in range(self.num_layers)])
+
+        # self.sigmoid = torch.nn.Sigmoid()
+        # self.gsigmoid = Gumbel_Sigmoid(cda_device=self.cuda_device)
+        # self.myhsample = myhsample
+        # self.mysampler = mysampler
+        # self.tanh = torch.nn.Tanh()
+        self.layer_norm = torch.nn.LayerNorm(self.value_size)
+        self.layer_norm_ext = torch.nn.LayerNorm(self.value_size+self.n_hdemb)
+        self.layer_norm_ff = torch.nn.LayerNorm(output_size)
+        self.relu = torch.nn.ReLU()
+        self.lsoftmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.cdrop = torch.nn.Dropout(p=0.5)
+
+        self.attnM1 = None
+        self.attnM2 = None
+        self.attnM3 = None
+
+    def posi_embed(self,emb_len,switch="onehot"):
+        if switch=="log":
+            n_posiemb=int(np.log(emb_len)/np.log(2))+1
+            posi_mat=torch.ones((emb_len,n_posiemb))
+            for ii in range(n_posiemb):
+                step = 2 ** (ii+1)
+                for ii2 in range(2 ** ii):
+                    posi_mat[ii2::step,ii]=0
+        elif switch=="onehot":
+            n_posiemb = emb_len
+            posi_mat=torch.eye(emb_len)
+        else:
+            raise Exception("Switch not known")
+        print(posi_mat)
+        if torch.cuda.is_available():
+            posi_mat = posi_mat.to(self.cuda_device)
+        return posi_mat,n_posiemb
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None,switch="ff"):
+
+        # input: L, batch, l_size
+
+        length, batch, l_size = input.shape
+        ext_input = torch.cat(
+            (self.posi_mat.view(length, 1, self.n_posiemb).expand(length, batch, self.n_posiemb), input), dim=-1)
+        hidden1 = self.hd_attn1(ext_input)
+        hidden1 = self.cdrop(hidden1) #(h,b,v_size)
+        # hidden1 = self.layer_norm(hidden1)
+
+        if switch=="attn": # pure attn
+            ext_hidden1 = torch.cat(
+                (self.hdemb_mat.view(self.hidden_len, 1, self.n_hdemb).expand(self.hidden_len, batch, self.n_hdemb), hidden1), dim=-1)
+            ext_hidden1=self.layer_norm_ext(ext_hidden1)
+            # #
+            hidden2=self.hd_attn2(ext_hidden1)
+            hidden2=self.cdrop(hidden2)
+            # # hidden2=self.layer_norm(hidden2)
+            #
+            ext_hidden2 = torch.cat(
+                (self.hdemb_mat.view(self.hidden_len, 1, self.n_hdemb).expand(self.hidden_len, batch, self.n_hdemb),hidden2), dim=-1)
+            ext_hidden2 = self.layer_norm_ext(ext_hidden2)
+            #
+            # hidden3 = self.hd_attn3(ext_hidden2)
+            # # hidden3 = self.cdrop(hidden3)
+            # # hidden3 = self.layer_norm(hidden3)
+            #
+            # ext_hidden3 = torch.cat(
+            #     (self.hdemb_mat.view(self.hidden_len, 1, self.n_hdemb).expand(self.hidden_len, batch, self.n_hdemb),
+            #      hidden3), dim=-1)
+            # ext_hidden3 = self.layer_norm_ext(ext_hidden3)
+
+            # hidden3 = hidden2.permute(1,0,2).contiguous().view(-1,self.value_size*self.hidden_len)
+            # output=self.W_ff(hidden3) # (b,output_size * output_len)
+            # output=output.view(-1,self.output_len,self.output_size).permute(1,0,2)
+
+            output=self.hd_att_ff(ext_hidden2) # (h,b,v_size)
+            output=self.lsoftmax(output)
+
+            self.attnM1=self.hd_attn1.sfm_KQ
+            self.attnM2 = self.hd_attn2.sfm_KQ
+            self.attnM3 = self.hd_att_ff.sfm_KQ
+
+        elif switch=="ff": # position-wise ff
+            hidden2 = hidden1.permute(1, 0, 2).contiguous().view(-1, self.value_size * self.hidden_len)
+            hidden2 = self.W_hff(hidden2) # (b,output_size * output_len)
+            hidden2 = self.cdrop(hidden2)
+            hidden2 = self.relu(hidden2)
+
+            output = self.W_ff(hidden2) # (b,output_size * output_len)
+            output = output.view(-1, self.output_len, self.output_size).permute(1, 0, 2)
+
+        return output,hidden
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
+
 class TDNN_FF(torch.nn.Module):
     """
     Time delayed neural network feed forward
@@ -127,11 +269,23 @@ class TDNN_FF(torch.nn.Module):
         # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
 
         self.W_in = Linear_Mask(input_size*input_len, hidden_size, bias=True, cuda_device=self.cuda_device)
-        self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
+        self.noise_in = GaussNoise(hidden_size, cuda_device=self.cuda_device)
+        # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
+        self.W_out = Linear_Mask(hidden_size, output_size * output_len, bias=True, cuda_device=self.cuda_device)
+        self.noise_out = GaussNoise(output_size * output_len, cuda_device=self.cuda_device)
 
-        self.hd_layer_stack = torch.nn.ModuleList([
-            torch.nn.Sequential(torch.nn.Dropout(p=0.1), torch.nn.Linear(hidden_size, hidden_size), torch.nn.ReLU())
-            for _ in range(self.num_layers)])
+        # self.hd_layer_stack = torch.nn.ModuleList([
+        #     torch.nn.Sequential(torch.nn.Dropout(p=0.0), torch.nn.Linear(hidden_size, hidden_size), torch.nn.ReLU(), torch.nn.LayerNorm(hidden_size))
+        #     for _ in range(self.num_layers)])
+        # self.hd_layer_stack = torch.nn.ModuleList([
+        #     torch.nn.Sequential(torch.nn.Dropout(p=0.0), Linear_Mask(hidden_size, hidden_size, bias=True, cuda_device=self.cuda_device), torch.nn.ReLU(),
+        #                         torch.nn.LayerNorm(hidden_size))
+        #     for _ in range(self.num_layers)])
+
+        self.Whd0 = Linear_Mask(hidden_size, hidden_size, bias=True, cuda_device=self.cuda_device)
+        self.noise_hd0 = GaussNoise(hidden_size, cuda_device=self.cuda_device)
+        # self.Whd1 = Linear_Mask(hidden_size, hidden_size, bias=True, cuda_device=self.cuda_device)
+
 
         self.sigmoid = torch.nn.Sigmoid()
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
@@ -140,19 +294,101 @@ class TDNN_FF(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.layernorm = torch.nn.LayerNorm(hidden_size)
 
-        self.cdrop = torch.nn.Dropout(p=0.1)
+        self.cdrop = torch.nn.Dropout(p=0.5)
 
         if self.drop_connect_mode=="adaptive":
             # self.Whr_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
-            self.W1_mask = torch.nn.Parameter(torch.rand(hidden_size,input_size*input_len), requires_grad=True)
-            self.W2_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
+            # self.W_in_mask = torch.nn.Parameter(torch.rand(hidden_size,input_size*input_len), requires_grad=True).to(self.cuda_device)
+            # self.W_out_mask = torch.nn.Parameter(torch.rand(output_size * output_len, hidden_size), requires_grad=True).to(self.cuda_device)
+            self.Whd0_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True).to(self.cuda_device)
+
+        self.Wint = None
+        self.hdt = None
 
     def para(self,para):
         self.cuda_device = para.get("cuda_device", "cuda:0")
         self.drop_connect_mode = para.get("drop_connect_mode", None) # "None, adaptive, random"
         self.drop_connect_switch = para.get("drop_connect_switch", "mysampler") # "mysampler","gsigmoid","myhsample"
         self.drop_connect_rate = para.get("drop_connect_rate", 0.0) # Used for random drop connect
+
+    def plot_layer_all(self):
+        srow=2
+        scol=3
+        # allname = ["Wiz", "Win", "Wir", "Whz", "Whn", "Whr"]
+        allname = ["W_in", "W_out","Whd0"]
+        plt.figure()
+        for nn,nameitem in enumerate(allname):
+            try:
+                hard_mask=getattr(self, nameitem).cpu().hard_mask.data.numpy()
+            except:
+                hard_mask=1
+            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
+            plt.subplot(srow, scol, 1+nn)
+            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
+            plt.subplot(srow, scol, 1+nn + scol)
+            try:
+                mat = getattr(self, nameitem).cpu().bias.data.numpy()
+                plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
+            except:
+                pass
+        # for ii in range(self.num_layers):
+        #     mat = self.hd_layer_stack[ii][1].cpu().weight.data.numpy()
+        #     plt.subplot(srow, scol, 3 + ii)
+        #     plot_mat(mat, title="hidden"+str(ii), symmetric=True, tick_step=1, show=False)
+        #     plt.subplot(srow, scol, 3 + ii + scol)
+        #     try:
+        #         mat = self.hd_layer_stack[ii][1].cpu().bias.data.numpy()
+        #         plot_mat(mat.reshape(1, -1), title="hidden"+str(ii) + "_bias", symmetric=True, tick_step=1, show=False)
+        #     except:
+        #         pass
+        plt.show()
+
+    def weight_pruning(self, perc):
+        """
+        Pruning by setting hard mask by percentage
+        :return:
+        """
+        allname = ["W_in", "W_out","Whd0"]
+        if type(perc) is not list:
+            perc=[perc]*len(allname)
+        for nn, nameitem in enumerate(allname):
+            rnn_w = getattr(self, nameitem).weight
+            sort_rnn_w=np.sort(np.abs(rnn_w.cpu().data.numpy().reshape(-1)))
+            thd=sort_rnn_w[int(perc[nn]*len(sort_rnn_w))]
+            print(nameitem,thd)
+            hard_mask=torch.ones(rnn_w.shape)
+            hard_mask[torch.abs(rnn_w) <= thd] = 0.0
+            print(rnn_w.shape,hard_mask.shape)
+            getattr(self, nameitem).set_hard_mask(hard_mask)
+
+    def plot_weight_dist(self):
+        # plt.figure()
+        srow = 3
+        scol = 1
+        allname = ["W_in", "W_out","Whd0"]
+        for nn, nameitem in enumerate(allname):
+            try:
+                hard_mask=getattr(self, nameitem).hard_mask.cpu().data.numpy()
+            except:
+                print(nameitem," no hard mask")
+                hard_mask=1
+            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
+            plt.subplot(srow, scol, 1 + nn)
+            wvec=mat.reshape(-1)
+            wvec=np.sort(wvec)
+            plt.plot(wvec)
+            plt.title(nameitem)
+        # allname = ["Whz_mask", "Whn_mask"]
+        # for nn, nameitem in enumerate(allname):
+        #     mat = self.sigmoid(getattr(self, nameitem)).data.numpy()
+        #     plt.subplot(srow, scol, 5 + nn)
+        #     wvec=mat.reshape(-1)
+        #     wvec=np.sort(wvec)
+        #     plt.plot(wvec)
+        #     plt.title(nameitem)
+        plt.show()
 
     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
 
@@ -161,40 +397,51 @@ class TDNN_FF(torch.nn.Module):
         else:
             temperature = 0.01
 
-        W1_mask_sample = None
-        # W2_mask_sample = None
+        W_in_mask_sample = None
+        W_out_mask_sample = None
+        Whd0_mask_sample = None
         if self.drop_connect_mode == "adaptive":
             if self.drop_connect_switch=="mysampler":
-                W1_siggate=self.sigmoid(self.W1_mask)
-                W1_mask_sample = self.mysampler(W1_siggate, cuda_device=self.cuda_device)
-                # W2_siggate = self.sigmoid(self.W2_mask)
-                # W2_mask_sample = self.mysampler(W2_siggate, cuda_device=self.cuda_device)
-            elif self.drop_connect_switch == "myhsample":
-                W1_siggate = self.gsigmoid(self.W1_mask, temperature=temperature)
-                W1_mask_sample = self.myhsample(W1_siggate, cuda_device=self.cuda_device)
-                # W2_siggate = self.gsigmoid(self.W2_mask, temperature=temperature)
-                # W2_mask_sample = self.myhsample(W2_siggate, cuda_device=self.cuda_device)
+                # W_in_siggate=self.sigmoid(self.W_in_mask)
+                # W_in_mask_sample = self.mysampler(W_in_siggate, cuda_device=self.cuda_device)
+                # W_out_siggate = self.sigmoid(self.W_out_mask)
+                # W_out_mask_sample = self.mysampler(W_out_siggate, cuda_device=self.cuda_device)
+                Whd0_mask_siggate = self.sigmoid(self.Whd0_mask)
+                Whd0_mask_sample=self.mysampler(Whd0_mask_siggate, cuda_device=self.cuda_device)
             else:
                 raise Exception("Unknown switch",self.switch)
-        elif self.drop_connect_mode == "random":
-            W1_mask_sample = torch.ones(self.W1.weight.size())
-            W1_mask_sample = torch.nn.functional.dropout(W1_mask_sample, p=self.drop_connect_rate, training=True)
-            # W2_mask_sample = torch.ones(self.W2.weight.size())
-            # W2_mask_sample = torch.nn.functional.dropout(W2_mask_sample, p=self.drop_connect_rate, training=True)
-            if torch.cuda.is_available():
-                W1_mask_sample = W1_mask_sample.to(self.cuda_device)
-                # W2_mask_sample = W2_mask_sample.to(self.cuda_device)
+        elif self.drop_connect_mode is None:
+            pass
+        else:
+            raise Exception("Unknown drop_connect_mode")
 
         input=input.permute(1,0,2)
         input=input.contiguous().view(-1,self.input_size*self.input_len)
-        hidden1=self.W_in(input,W1_mask_sample)
-        hidden=self.relu(hidden1)
-        for ff_layer in self.hd_layer_stack:
-            hidden=ff_layer(hidden)
-        output=self.W_out(hidden)
+        hiddenin=self.W_in(input,W_in_mask_sample)
+        hiddenin=self.relu(hiddenin)
+        hiddenin = self.layernorm(hiddenin)
+        hiddenin = self.noise_in(hiddenin)
+        self.Wint=hiddenin
+        # for ii,ff_layer in enumerate(self.hd_layer_stack):
+        #     hidden=ff_layer(hidden)
+        #     self.hdt[ii] = hidden
+        # assert len(self.hd_layer_stack)==2
+        hidden0 = self.Whd0(hiddenin,Whd0_mask_sample)
+        hidden0 = self.relu(hidden0)
+        hidden0 = self.layernorm(hidden0)
+        hidden0 = self.noise_hd0(hidden0)
+        hidden0 = self.cdrop(hidden0)
+        self.hdt = hidden0
+        # hidden1 = self.Whd0(hidden0,Whd_mask_sample[1])
+        # hidden1 = self.relu(hidden1)
+        # hidden1 = self.layernorm(hidden1)
+        # hidden1 = self.cdrop(hidden1)
+        # self.hdt[1] = hidden1
+        output=self.W_out(hidden0,W_out_mask_sample)
+        output=self.noise_out(output)
         output=output.view(-1,self.output_len,self.output_size).permute(1,0,2)
         output=self.softmax(output)
-        return output,hidden
+        return output, hidden
 
     def initHidden(self,batch):
         return None
@@ -210,7 +457,12 @@ class GRU_seq2seq(torch.nn.Module):
     def __init__(self, input_size, hidden_size, output_size, output_len, num_layers=1, dropout_rate=0.0, para=None):
         super(self.__class__, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        if type(hidden_size) is not list:
+            self.hidden_size_enc = hidden_size
+            self.hidden_size_dec = hidden_size
+        else:
+            self.hidden_size_enc = hidden_size[0]
+            self.hidden_size_dec = hidden_size[1]
         self.output_size = output_size
         self.output_len = output_len
         self.num_layers = num_layers
@@ -219,22 +471,22 @@ class GRU_seq2seq(torch.nn.Module):
             para = dict([])
 
         self.hgate = torch.nn.Parameter(torch.rand(hidden_size) + 1.0, requires_grad=True)
-        self.gru_enc = GRU_Cell_Seq(input_size, hidden_size, para=para)
+        self.gru_enc = GRU_Cell_Seq(input_size, self.hidden_size_enc, para=para)
 
-        # self.gru_enc = GRU_Cell_Seq_ICA(input_size, hidden_size, para=para)
-        # self.gru_dec = GRU_Cell_Seq(input_size, hidden_size, para=para)
-        # self.gru_enc = GRU_Cell_Seq_Sparse(input_size, hidden_size, para=para)
+        # self.gru_enc = GRU_Cell_Seq_ICA(input_size, self.hidden_size_enc, para=para)
+        # self.gru_dec = GRU_Cell_Seq(input_size, self.hidden_size_enc, para=para)
+        # self.gru_enc = GRU_Cell_Seq_Sparse(input_size, self.hidden_size_enc, para=para)
 
         self.para(para)
 
         self.cdrop = torch.nn.Dropout(p=self.cdrop_rate)
 
         if self.decoder_switch is None:
-            self.gru_dec = GRU_Cell_Seq_Sparse(input_size, hidden_size, para=para)
+            self.gru_dec = GRU_Cell_Seq_Sparse(input_size, self.hidden_size_dec, para=para)
         elif self.decoder_switch is "simplify":
-            self.gru_dec = Dec_Cell_Simplify(input_size, hidden_size, para=para)
+            self.gru_dec = Dec_Cell_Simplify(input_size, self.hidden_size_dec, para=para)
         elif self.decoder_switch is "simplify1":
-            self.gru_dec = Dec_OneCell_Simplify(input_size, hidden_size, self.posi_ctrl, para=para)
+            self.gru_dec = Dec_OneCell_Simplify(input_size, self.hidden_size_dec, self.posi_ctrl, para=para)
 
         # self.gru_enc = torch.nn.GRU(input_size, hidden_size)
         # self.gru_dec = torch.nn.GRU(input_size, hidden_size)
@@ -246,7 +498,9 @@ class GRU_seq2seq(torch.nn.Module):
 
         # hinter = int(self.hidden_size / output_len)
 
-        self.h2o = torch.nn.Linear(hidden_size, output_size,bias=False)
+
+        self.h2o = torch.nn.Linear(self.hidden_size_dec, output_size, bias=True)
+        self.Wb = Linear_Mask(self.hidden_size_enc, self.hidden_size_dec, bias=False, cuda_device=self.cuda_device)
         # self.h2o = torch.nn.Linear(hinter, output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
@@ -352,6 +606,11 @@ class GRU_seq2seq(torch.nn.Module):
         """
         input_in = input
 
+        # if self.training==True:
+        #     print("Training")
+        # else:
+        #     print("Evaluation")
+
         if self.hidden_pruning_switch is not None:
             if self.hidden_pruning_switch=="mysampler":
                 exphgate=self.hgate.expand_as(hidden)
@@ -378,18 +637,22 @@ class GRU_seq2seq(torch.nn.Module):
         input_dec=torch.zeros((self.output_len,input.shape[1],input.shape[2]))
         if self.gpuavail:
             input_dec=input_dec.to(self.device)
-        hn=self.cdrop(hn) # dropout
-        hout, hn = self.gru_dec(input_dec, hn, schedule=schedule,pruning_mask=pruning_mask)
+
+        ## Bottleneck
+        hn_d=self.Wb(hn)
+        hn_d=self.cdrop(hn_d) # dropout
+
+        hout, hn = self.gru_dec(input_dec, hn_d, schedule=schedule,pruning_mask=pruning_mask)
         output = self.h2o(hout)
         if not logit_mode:
             output=self.softmax(output)
         return output,hn
 
     def initHidden(self,batch):
-        return Variable(torch.zeros(batch, self.hidden_size), requires_grad=True)
+        return Variable(torch.zeros(batch, self.hidden_size_enc), requires_grad=True)
 
     def initHidden_cuda(self,device, batch):
-        return Variable(torch.zeros(batch, self.hidden_size), requires_grad=True).to(device)
+        return Variable(torch.zeros(batch, self.hidden_size_enc), requires_grad=True).to(device)
 
 # class GRU_seq2seq_v2(torch.nn.Module):
 #     """
@@ -569,7 +832,7 @@ class GRU_Cell_Seq_ICA(torch.nn.Module):
         # ICA demixing using Amari's law
         # ht[1, batch, self.hidden_size]
 
-        if self.train():
+        if self.training == True:
 
             ht2=torch.zeros(ht.shape)
             ht2.data=ht.data
@@ -775,6 +1038,12 @@ class GRU_Cell_Seq(torch.nn.Module):
         :param result:
         :return:
         """
+
+        # if self.training==True:
+        #     print("Training 1")
+        # else:
+        #     print("Evaluation 1")
+
         assert len(input.shape)==3
         batch=input.shape[1]
         ht=hidden
@@ -1218,6 +1487,11 @@ class Dec_Cell_Simplify(torch.nn.Module):
         :param result:
         :return:
         """
+        # if self.training==True:
+        #     print("Training 2")
+        # else:
+        #     print("Evaluation 2")
+
         assert len(input.shape)==3
         batch=input.shape[1]
         ht=hidden.view(1, batch, self.hidden_size)
@@ -1299,6 +1573,11 @@ class Dec_OneCell_Simplify(torch.nn.Module):
         output=None
 
         lout=input.shape[0]
+
+        # if self.training==True:
+        #     print("Training 2")
+        # else:
+        #     print("Evaluation 2")
 
         for iis in range(lout):
             # ht output version

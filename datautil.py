@@ -168,7 +168,9 @@ class Plus_dataset(object):
         self.dataset_sup["label"] = []
         self.digits = None
 
-    def create_dataset(self,num,digits=3):
+        self.memmat=None
+
+    def create_dataset(self,num,digits=3,mode="normal",noise_level=None):
         """
         create dataset
         :param num: with number of example to be num
@@ -177,10 +179,26 @@ class Plus_dataset(object):
         """
         dataset=[]
         label=[]
+        self.memmat=np.zeros((10**digits-1,10**digits-1))
         for ii in range(num):
             dig1=int(np.random.rand()*(10**digits-1))
             dig2 = int(np.random.rand() * (10**digits-1))
-            dig_ans=int(dig1+dig2)
+            while self.memmat[dig1,dig2]==1: # overlap detection
+                dig1 = int(np.random.rand() * (10 ** digits - 1))
+                dig2 = int(np.random.rand() * (10 ** digits - 1))
+            self.memmat[dig1, dig2]=1
+            if mode=="normal":
+                dig_ans=int(dig1+dig2)
+            elif mode=="random":
+                dig_ans=int(np.random.rand() * (10**(digits+1)-1))
+            elif mode=="mixed":
+                assert noise_level is not None
+                if np.random.rand()>noise_level:
+                    dig_ans = int(dig1 + dig2)
+                else:
+                    dig_ans = int(np.random.rand() * (10 ** (digits + 1) - 1))
+            else:
+                raise Exception("Unknown mode")
             str1=str(dig1)
             # npad = digits - len(str1)
             # for ii in range(npad):

@@ -313,7 +313,8 @@ class Linear_Mask(torch.nn.Module):
             self.hard_mask = self.hard_mask.to(cuda_device)
 
     def set_hard_mask(self,hard_mask):
-        self.hard_mask = hard_mask
+        # self.hard_mask = torch.t(hard_mask) # to follow input-output mask element convention
+        self.hard_mask=hard_mask
         if self.gpuavail:
             self.hard_mask = self.hard_mask.to(self.cuda_device)
 
@@ -366,6 +367,75 @@ class Linear_Sparse(torch.nn.Module):
         if self.bias is not None:
             matm = matm + self.bias
         return matm
+
+class Hidden_Attention(torch.nn.Module):
+    """
+    A hidden attention module
+    """
+    def __init__(self, input_size, hidden_len, value_size,key_size, n_posiemb=0, bias=True, cuda_device="cuda:0"):
+        super(self.__class__, self).__init__()
+
+        self.input_size=input_size
+        self.hidden_len=hidden_len
+        self.value_size=value_size
+        self.key_size=key_size
+        self.n_posiemb=n_posiemb # Position embedding size
+
+        self.W_in2V = torch.nn.Linear(input_size + self.n_posiemb, self.value_size)  # Input to value
+        self.W_in2K = torch.nn.Linear(input_size + self.n_posiemb, self.key_size)  # Input to key
+
+        self.H_Q = torch.nn.Parameter(torch.rand((self.hidden_len, self.key_size)), requires_grad=True)  # Hidden query
+        torch.nn.init.normal_(self.H_Q, mean=0, std=np.sqrt(2.0 / (self.input_size + self.key_size)))
+
+        self.softmax0 = torch.nn.Softmax(dim=0)
+        self.gpuavail = torch.cuda.is_available()
+        if self.gpuavail:
+            self.cuda_device=cuda_device
+
+        self.sfm_KQ=None
+
+    def forward(self, input, add_logit=None, logit_mode=False, schedule=None,temperature=1.0):
+
+        # input: L, batch, l_size
+
+        length, batch, l_size = input.shape
+        input2V = self.W_in2V(input) # (l,b,v_size)
+        input2K = self.W_in2K(input)
+
+        KQ=torch.matmul(input2K,torch.t(self.H_Q)) # (l,b,k_size)*(k_size,h)=(l,b,h)
+        # KQ=KQ/np.sqrt(self.key_size)
+        # temperature=np.sqrt(self.key_size)
+        sfm_KQ=self.softmax0(KQ/temperature) # (l^,b,h)
+        hidden=torch.matmul(sfm_KQ.permute(1,2,0),input2V.permute(1,0,2)) #(b,h,l^)*(b,l,v_size)=(b,h,v_size)
+        hidden=hidden.permute(1,0,2) # (h,b,v_size)
+
+        self.sfm_KQ=sfm_KQ
+
+        return hidden
+
+
+class GaussNoise(torch.nn.Module):
+    """
+    A gaussian noise module
+    """
+    def __init__(self, shape, std=0.1, cuda_device="cuda:0"):
+
+        super(self.__class__, self).__init__()
+
+        self.noise = torch.autograd.Variable(torch.zeros(shape))
+        self.std = std
+
+        self.gpuavail = torch.cuda.is_available()
+        if self.gpuavail:
+            self.cuda_device=cuda_device
+            self.noise=self.noise.to(cuda_device)
+
+    def forward(self, x):
+        # if not self.training:
+        #     return x
+        # else:
+        self.noise.data.normal_(0, std=self.std)
+        return x + self.noise
 
 
 

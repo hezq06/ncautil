@@ -266,7 +266,7 @@ class NLPutil(object):
         fig,ax=plt.subplots()
         img=data[:,start:start+length]
         fig=ax.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)),np.amax(np.abs(data))), origin=origin)
-        if text!=None:
+        if text is not None:
             st,end=ax.get_xlim()
             ax.xaxis.set_ticks(np.arange(st+0.5,end+0.5,1))
             ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%d'))

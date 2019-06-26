@@ -354,7 +354,7 @@ def plot_corr(data,text=None,texty=None):
         mn = np.mean(data[ii, :])
         data[ii, :] = data[ii, :] - mn
     Cov = data.dot((data).T) / N
-    d=np.diag(1/np.sqrt(np.diag(Cov)))
+    d=np.diag(1/(np.sqrt(np.diag(Cov))+1e-9))
     Corr=d.dot(Cov).dot(d)
     fig, ax = plt.subplots()
     fig = ax.imshow(Corr, cmap='seismic', clim=(-np.amax(np.abs(Corr)), np.amax(np.abs(Corr))))
@@ -444,6 +444,20 @@ def cal_pdistance(data):
     dist=np.sum(np.abs(data-orin))*np.sum(np.abs(data-orin))/2
     return dist
 
+def cal_entropy_raw(data,data_discrete,data_bins=None):
+    """
+    Calculate entropy of raw data
+    :param data: [Ndata of value]
+    :param data_discrete: if data is discrete
+    :return:
+    """
+    assert len(data.shape) == 1
+    if data_discrete:
+        data_bins = len(set(data))
+    pdata, _ = np.histogram(data, bins=data_bins)
+    pdata=pdata/np.sum(pdata)
+    return cal_entropy(pdata)
+
 def cal_entropy(data,logit=False):
     """
     Cal entropy of a vector
@@ -451,6 +465,7 @@ def cal_entropy(data,logit=False):
     :param logit: if input data is logit mode
     :return:
     """
+    # print(data)
     if logit:
         data=np.exp(data)
     else:
@@ -460,6 +475,37 @@ def cal_entropy(data,logit=False):
     assert np.min(data)>0
     ent=-np.sum(data*np.log(data))
     return ent
+
+def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
+    """
+    Calculation of mutual information between x,y from raw data
+    :param x: [Ndata of value]
+    :param y: [Ndata of value]
+    :param x_discrete: if x is discrete
+    :param y_discrete: if y is discrete
+    :param x_res: x resolution (None if discrete)
+    :param y_res: y resolution (None if discrete)
+    :return: 
+    """
+    assert len(x) == len(y)
+    assert len(x.shape) == 1
+    assert len(y.shape) == 1
+
+    if x_discrete:
+        x_bins=len(set(x))
+    px,_ = np.histogram(x, bins=x_bins)
+    px = px/np.sum(px)
+
+    if y_discrete:
+        y_bins=len(set(y))
+    py, _ = np.histogram(y, bins=y_bins)
+    py = py / np.sum(py)
+
+    pxy,_,_= np.histogram2d(x,y,bins=[x_bins,y_bins])
+    pxy=pxy/np.sum(pxy)
+
+    return cal_mulinfo(px,py,pxy)
+
 
 def cal_mulinfo(p,q,pq):
     """
