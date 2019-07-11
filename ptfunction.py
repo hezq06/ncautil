@@ -200,6 +200,45 @@ def mysampler(input, cuda_device="cuda:0"):
     gl_cuda_device=cuda_device
     return MySampler.apply(input)
 
+class MyDiscrete(torch.autograd.Function): # A straight through estimation of sign
+    """
+    Discretize a layer of neuron
+    """
+
+    @staticmethod
+    def forward(ctx, input, prec):
+        """
+        Forward
+        :param ctx:
+        :param input:
+        :param prec:
+        :return:
+        """
+        gpuavail = torch.cuda.is_available()
+        device = torch.device(gl_cuda_device if gpuavail else "cpu")
+
+        ctx.save_for_backward(input)
+
+        output=(input/prec-torch.frac(input/prec))*prec
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        Straight through
+        :param ctx:
+        :param grad_output:
+        :return:
+        """
+
+        return grad_output, None
+
+def mydiscrete(input, prec, cuda_device="cuda:0"):
+    global gl_cuda_device
+    gl_cuda_device=cuda_device
+    return MyDiscrete.apply(input,prec)
+
 
 class Gumbel_Softmax(torch.nn.Module):
     """
@@ -406,6 +445,7 @@ class Hidden_Attention(torch.nn.Module):
         # KQ=KQ/np.sqrt(self.key_size)
         # temperature=np.sqrt(self.key_size)
         sfm_KQ=self.softmax0(KQ/temperature) # (l^,b,h)
+        # sfm_KQ=KQ
         hidden=torch.matmul(sfm_KQ.permute(1,2,0),input2V.permute(1,0,2)) #(b,h,l^)*(b,l,v_size)=(b,h,v_size)
         hidden=hidden.permute(1,0,2) # (h,b,v_size)
 
@@ -431,10 +471,10 @@ class GaussNoise(torch.nn.Module):
             self.noise=self.noise.to(cuda_device)
 
     def forward(self, x):
-        # if not self.training:
-        #     return x
-        # else:
-        self.noise.data.normal_(0, std=self.std)
+        if not self.training:
+            return x
+        else:
+            self.noise.data.normal_(0, std=self.std)
         return x + self.noise
 
 

@@ -15,8 +15,8 @@ import torch
 import copy
 from torch.autograd import Variable
 
-from sklearn.manifold import TSNE
 import matplotlib.ticker as ticker
+from mpl_toolkits.mplot3d import Axes3D
 
 from wordcloud import WordCloud
 import operator
@@ -26,42 +26,47 @@ from PIL import ImageDraw,ImageFont
 from tqdm import tqdm
 import datetime
 
-def pltfft(data):
-    """
-    Plot fft spectrum
-    :param data:
-    :return:
-    """
-    N = len(data)
-    data=np.array(data).reshape(1,-1)
-    fft = np.fft.rfft(data - np.mean(data),norm='ortho')
-    x = np.array(list(range(len(fft[0])))) * 2 * np.pi / N
-    y = abs(fft)[0]
-    plt.plot(x, y)
-    plt.show()
-
-def pltsne(data,D=2,perp=1):
-    """
-    Plot 2D w2v graph with tsne
-    Referencing part of code from: Basic word2vec example tensorflow
-    :param numpt: number of points
-    :return: null
-    """
-    tsnetrainer = TSNE(perplexity=perp, n_components=D, init='pca', n_iter=5000, method='exact')
-    tsne = tsnetrainer.fit_transform(data)
-    plt.figure()
+def pltscatter(data,dim=(0,1),labels=None,title=None,xlabel=None,ylabel=None):
+    assert data.shape[0]>data.shape[1]
     for i in range(len(data)):
-        x, y = tsne[i, :]
-        plt.scatter(x, y)
+        x,y=data[i,dim[0]], data[i,dim[1]]
+        plt.scatter(x,y)
+        if labels is not None:
+            label=labels[i]
+            plt.annotate(label, xy=(x, y), xytext=(5, 2), textcoords='offset points', ha='right', va='bottom')
+    if title is not None:
+        plt.title(title)
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
     plt.show()
-    return tsnetrainer
 
+def pltscatter3D(data,labels=None,title=None,xlabel=None,ylabel=None):
+    assert data.shape[0]>data.shape[1]
+    assert data.shape[1]==3
 
-def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,show=True):
+    fig = plt.figure()
+    ax = Axes3D(fig)
+
+    for ii in range(len(data)):  # plot each point + it's index as text above
+        ax.scatter(data[ii, 0], data[ii, 1], data[ii, 2], color='b')
+        ax.text(data[ii, 0], data[ii, 1], data[ii, 2], str(labels[ii]),color='k')
+
+    if title is not None:
+        plt.title(title)
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
+    plt.show()
+
+def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,show=True,xlabel=None,ylabel=None):
     if show:
         plt.figure()
     data=np.array(data)
-    assert len(data.shape) == 2
+    if len(data.shape) != 2:
+        data=data.reshape(1,-1)
     img=data[:,start:start+lim]
     if symmetric:
         plt.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)), np.amax(np.abs(data))))
@@ -73,6 +78,10 @@ def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,sho
     if tick_step is not None:
         plt.xticks(np.arange(0, len(img[0]), tick_step))
         plt.yticks(np.arange(0, len(img), tick_step))
+    if xlabel is not None:
+        plt.xlabel(xlabel)
+    if ylabel is not None:
+        plt.ylabel(ylabel)
     if show:
         plt.show()
 
@@ -103,7 +112,7 @@ def plot_mat_sub(datal,start=0,lim=1000,symmetric=True):
     fig.colorbar(im, cax=cbar_ax)
     plt.show()
 
-def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None, clim=None):
+def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None, clim=None,xlabel=None,ylabel=None):
     img = np.array(img)
     assert len(img.shape) == 2
     if clim is None:
@@ -114,6 +123,10 @@ def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None, clim=None)
     pltimg = ax.imshow(img, cmap='seismic', clim=clim,aspect="auto")
     if title is not None:
         ax.set_title(title)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel)
     if tick_step is not None:
         ax.set_xticks(np.arange(0, len(img[0]), tick_step))
         ax.set_yticks(np.arange(0, len(img), tick_step))
@@ -856,10 +869,9 @@ class PyTrain_Custom(PyTrain_Lite):
 
         # Interface 1
         self._init_data = getattr(self, self.custom_interface["init_data"])
-        # self._init_data = self._init_data_continous
-        # self._init_data = self._init_data_sup
-        # self._init_data = self._init_data_sent_sup
-        # self._init_data = self._init_data_seq2seq not working
+        self._evalmem = getattr(self, self.custom_interface["evalmem"])
+        self._example_data_collection = getattr(self, self.custom_interface["example_data_collection"])
+
         self.get_data = None
 
         # context controller
@@ -939,7 +951,9 @@ class PyTrain_Custom(PyTrain_Lite):
         :return:
         """
 
-        return self.custom_eval_mem_tdff(x, label, rnn)
+        # return self.custom_eval_mem_tdff(x, label, rnn)
+        # return self.custom_eval_mem_attn(x, label, rnn)
+        return self._evalmem(x, label, rnn)
 
     def custom_eval_mem_enc_dec(self, x, label, rnn):
         """
@@ -980,14 +994,17 @@ class PyTrain_Custom(PyTrain_Lite):
         :return:
         """
         if self.evalmem is None:
-            self.evalmem = [[] for ii in range(5)]  # x,label,attn1,attn2,attn_ff
+            # self.evalmem = [[] for ii in range(5)]  # x,label,attn1,attn2,attn_ff
+            self.evalmem = [[] for ii in range(5)]  # x,label,attn1,hd0,hdout
         else:
             try:
                 self.evalmem[0].append(x.cpu().data.numpy())
                 self.evalmem[1].append(label.cpu().data.numpy())
                 self.evalmem[2].append(rnn.attnM1.cpu().data.numpy())
-                self.evalmem[3].append(rnn.attnM2.cpu().data.numpy())
-                self.evalmem[4].append(rnn.attnM3.cpu().data.numpy())
+                self.evalmem[3].append(rnn.hd0.cpu().data.numpy())
+                # self.evalmem[3].append(rnn.attnM2.cpu().data.numpy())
+                # self.evalmem[4].append(rnn.attnM3.cpu().data.numpy())
+                self.evalmem[4].append(rnn.hdout.cpu().data.numpy())
             except:
                 # print("eval_mem failed")
                 pass
@@ -1509,7 +1526,7 @@ class PyTrain_Custom(PyTrain_Lite):
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
         # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
-        allname = ["Wiz", "Whz", "Win", "Whn"]
+        allname = ["W_in", "W_out", "W_hd"]
         wnorm1=0
         for namep in allname:
                 wattr = getattr(self.rnn.gru_enc, namep)
@@ -1519,12 +1536,12 @@ class PyTrain_Custom(PyTrain_Lite):
                     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
                 except:
                     pass
-        wattr = getattr(self.rnn, "h2o")
-        wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        wnorm1=wnorm1/(2*len(allname))
+        wnorm1=wnorm1/(len(allname))
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_WeightReg_Attn(self, outputl, outlab, model=None, cstep=None):
@@ -1537,15 +1554,18 @@ class PyTrain_Custom(PyTrain_Lite):
         for namep in allname:
             wattr = getattr(self.rnn.hd_attn1, namep)
             wnorm1= wnorm1+torch.mean(torch.abs(wattr.weight))
-            wattr = getattr(self.rnn.hd_attn2, namep)
+            # wattr = getattr(self.rnn.hd_attn2, namep)
+            # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+            # wattr = getattr(self.rnn.hd_att_ff, namep)
+            # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        allname = ["W_hff","W_ff"]
+        for namep in allname:
+            wattr = getattr(self.rnn, namep)
             wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-            wattr = getattr(self.rnn.hd_att_ff, namep)
-            wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        # wnorm1=wnorm1/(2*len(allname))
+        wnorm1=wnorm1/3
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_ExpertReg(self, outputl, outlab, model=None, cstep=None):
@@ -1591,8 +1611,30 @@ class PyTrain_Custom(PyTrain_Lite):
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        wnorm1=wnorm1/(len(allname)+self.rnn.num_layers)
+        wnorm1=wnorm1/len(allname)
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_WeightEnergyReg_TDFF(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        allname = ["W_in", "W_out","Whd0"]
+        wnorm1=0
+        for namep in allname:
+            wattr = getattr(self.rnn, namep)
+            wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+            # wnorm1 = wnorm1 + torch.mean(torch.mul(wattr.weight, wattr.weight))
+
+        wnorm1 = wnorm1 / len(allname)
+
+        energyloss=torch.mean(torch.mul(model.Wint,model.Wint))+torch.mean(torch.mul(model.hdt,model.hdt))
+
+        # energyloss = torch.mean(torch.abs(model.Wint))+ torch.mean(torch.abs(model.hdt))
+
+        # print(model.Wint.norm(2),model.hdt.norm(2))
+
+        return loss1+self.reg_lamda*(energyloss+wnorm1) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
@@ -1708,7 +1750,8 @@ class PyTrain_Custom(PyTrain_Lite):
         # return self.custom_example_data_collection_continuous(x, output, hidden)
         # return self.custom_example_data_collection_seq2seq(x, output, hidden, label,items=items)
         # return self.custom_example_data_collection_attention(x, output, hidden, label)
-        return self.custom_example_data_collection_tdff(x, output, hidden, label)
+        # return self.custom_example_data_collection_tdff(x, output, hidden, label)
+        return self._example_data_collection(x, output, hidden, label)
 
     def custom_example_data_collection_continuous(self, x, output, hidden, label):
 
@@ -1745,10 +1788,11 @@ class PyTrain_Custom(PyTrain_Lite):
         if self.data_col_mem is None:
             # Step 1 of example_data_collection
             self.data_col_mem=dict([])
-            self.data_col_mem["titlelist"]=["input","label","predict","attn1","attn2","attn3"]
+            self.data_col_mem["titlelist"]=["input","label","predict","attn1","hd0","hdout"]
             self.data_col_mem["sysmlist"]=[True,True,True,True,True,True]
             self.data_col_mem["mode"]="predict"
             self.data_col_mem["datalist"] = [None,None,None,None,None,None]
+            maxPred = np.max(output.cpu().data.numpy())
             self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None] ,[None, None], [None, None], [None, None]]
 
         if self.data_col_mem["datalist"][0] is None:
@@ -1756,9 +1800,10 @@ class PyTrain_Custom(PyTrain_Lite):
             self.data_col_mem["datalist"][0] = torch.squeeze(x)
             self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
             self.data_col_mem["datalist"][2] = torch.squeeze(output)
-            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.attnM1)
-            self.data_col_mem["datalist"][4] = torch.squeeze(self.rnn.attnM2)
-            self.data_col_mem["datalist"][5] = torch.squeeze(self.rnn.attnM3)
+            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.attnM1).transpose(1, 0)
+            self.data_col_mem["datalist"][4] = torch.squeeze(self.rnn.hd0)
+            self.data_col_mem["datalist"][5] = self.rnn.hdout.view(-1,1)
+            # self.data_col_mem["datalist"][5] = torch.squeeze(self.rnn.attnM3)
 
     def custom_example_data_collection_tdff(self, x, output, hidden, label):
 
@@ -1784,6 +1829,31 @@ class PyTrain_Custom(PyTrain_Lite):
             self.data_col_mem["datalist"][2] = torch.squeeze(output)
             self.data_col_mem["datalist"][3] = self.rnn.Wint.view(-1,1)
             self.data_col_mem["datalist"][4] = self.rnn.hdt[0].view(-1,1)
+            # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
+
+    def custom_example_data_collection_tdffrnn(self, x, output, hidden, label):
+
+        lsize = x.shape[-1]
+        anslength = label.shape[-1]
+        label_onehot = torch.zeros(anslength, lsize)
+        for ii in range(label.shape[-1]):
+            id = label[0, ii]
+            label_onehot[ii, id] = 1
+
+        if self.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.data_col_mem=dict([])
+            self.data_col_mem["titlelist"]=["input","label","predict","hiddenl"]
+            self.data_col_mem["sysmlist"]=[True,True,True,True]
+            self.data_col_mem["mode"]="predict"
+            self.data_col_mem["datalist"] = [None,None,None,None]
+            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None], [None, None]]
+
+        if self.data_col_mem["datalist"][0] is None:
+            self.data_col_mem["datalist"][0] = torch.squeeze(x)
+            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
+            self.data_col_mem["datalist"][2] = torch.squeeze(output)
+            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.hdt).transpose(1,0)
             # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
 
     def custom_example_data_collection_seq2seq(self, x, output, hidden, label, items=[3,4]):

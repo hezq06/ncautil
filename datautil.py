@@ -191,7 +191,7 @@ class Plus_dataset(object):
                 dig_ans=int(dig1+dig2)
             elif mode=="random":
                 dig_ans=int(np.random.rand() * (10**(digits+1)-1))
-            elif mode=="mixed":
+            elif mode=="noisy":
                 assert noise_level is not None
                 if np.random.rand()>noise_level:
                     dig_ans = int(dig1 + dig2)

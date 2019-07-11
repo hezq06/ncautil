@@ -15,6 +15,7 @@ import time, os, pickle
 from sklearn.cluster import KMeans
 import scipy.linalg as la
 import torch
+from sklearn.manifold import TSNE
 
 def cluster(data,n_clusters,mode="kmeans"):
     """
@@ -253,7 +254,7 @@ def ica_torch(data,LR=1e-2,step=1e4,show_step=1e2,cuda_device="cuda:0"):
 
     plt.plot(ltab)
     plt.show()
-    return Xh,W
+    return Xh.cpu().numpy(),W.cpu().numpy()
 
 def plot_eig_pca(data):
     """
@@ -271,7 +272,7 @@ def plot_eig_pca(data):
     endt = time.time()
     print("Time used in calculation:", endt - startt)
     plt.plot(S, 'b*-')
-    plt.yscale("log")
+    # plt.yscale("log")
     plt.show()
     return S
 
@@ -407,6 +408,39 @@ def plot_mucov(data1,data2):
     plt.colorbar()
     plt.show()
 
+def pltfft(data):
+    """
+    Plot fft spectrum
+    :param data:
+    :return:
+    """
+    N = len(data)
+    data=np.array(data).reshape(1,-1)
+    fft = np.fft.rfft(data - np.mean(data),norm='ortho')
+    x = np.array(list(range(len(fft[0])))) * 2 * np.pi / N
+    y = abs(fft)[0]
+    plt.plot(x, y)
+    plt.show()
+
+def pltsne(data,D=2,perp=1,labels=None):
+    """
+    Plot 2D w2v graph with tsne
+    Referencing part of code from: Basic word2vec example tensorflow
+    :param numpt: number of points
+    :return: null
+    """
+    tsnetrainer = TSNE(perplexity=perp, n_components=D, init='pca', n_iter=5000, method='exact')
+    tsne = tsnetrainer.fit_transform(data)
+    plt.figure()
+    for i in range(len(data)):
+        x, y = tsne[i, :]
+        plt.scatter(x, y)
+        if labels is not None:
+            label=labels[i]
+            plt.annotate(label, xy=(x, y), xytext=(5, 2), textcoords='offset points', ha='right', va='bottom')
+    plt.show()
+    return tsnetrainer
+
 def cal_cosdist(v1,v2):
     """
     Calculate cosine distance between two word embedding vectors
@@ -453,7 +487,14 @@ def cal_entropy_raw(data,data_discrete,data_bins=None):
     """
     assert len(data.shape) == 1
     if data_discrete:
-        data_bins = len(set(data))
+        if len(set(data))<=1:
+            return 0
+        np_data_bins=np.array(list(set(data)))
+        data_bins_s = np.sort(np_data_bins)
+        prec=data_bins_s[1]-data_bins_s[0]
+        data_bins = np.concatenate((data_bins_s.reshape(-1,1),np.array(data_bins_s[-1]+prec).reshape(1,1)),axis=0)
+        data_bins=data_bins.reshape(-1)
+        data_bins=data_bins-prec/2
     pdata, _ = np.histogram(data, bins=data_bins)
     pdata=pdata/np.sum(pdata)
     return cal_entropy(pdata)
@@ -468,12 +509,11 @@ def cal_entropy(data,logit=False):
     # print(data)
     if logit:
         data=np.exp(data)
-    else:
-        data=np.array(data)+1e-9
     data=data/np.sum(data)
     assert len(data.shape) == 1
-    assert np.min(data)>0
-    ent=-np.sum(data*np.log(data))
+    data_adj=np.zeros(data.shape)+data
+    data_adj[data_adj==0]=1e-9
+    ent=-np.sum(data*np.log(data_adj))
     return ent
 
 def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
@@ -487,6 +527,9 @@ def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
     :param y_res: y resolution (None if discrete)
     :return: 
     """
+    x=np.array(x)
+    y = np.array(y)
+
     assert len(x) == len(y)
     assert len(x.shape) == 1
     assert len(y.shape) == 1

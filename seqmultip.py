@@ -113,7 +113,8 @@ class TDNN_ATTN_FF(torch.nn.Module):
     def __init__(self, input_size, hidden_len, output_size, input_len, output_len, num_layers=1, para=None):
         super(self.__class__, self).__init__()
         self.input_size = input_size
-        self.hidden_len = hidden_len
+        self.hidden_len1 = hidden_len + 1
+        self.hidden_len2 = hidden_len - 1
         self.output_size = output_size
         self.input_len = input_len
         self.output_len = output_len
@@ -125,7 +126,7 @@ class TDNN_ATTN_FF(torch.nn.Module):
 
         self.posi_mat,self.n_posiemb=self.posi_embed(self.input_len,switch="log") #(self.input_len,self.n_posiemb)
 
-        self.hdemb_mat,self.n_hdemb=self.posi_embed(self.hidden_len,switch="log") #(self.input_len,self.n_posiemb)
+        # self.hdemb_mat,self.n_hdemb=self.posi_embed(self.hidden_len,switch="log") #(self.input_len,self.n_posiemb)
 
         self.key_size = 20
         self.value_size = 3
@@ -133,37 +134,42 @@ class TDNN_ATTN_FF(torch.nn.Module):
         # self.W_in=torch.nn.Linear(input_size*input_len, hidden_size)
         # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
 
-        self.hd_attn1 = Hidden_Attention(self.input_size, self.hidden_len, self.value_size, self.key_size, self.n_posiemb)
+        self.hd_attn1 = Hidden_Attention(self.input_size, self.hidden_len1, self.value_size, self.key_size, self.n_posiemb)
         # self.hd_attn2 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size)
-        self.hd_attn2 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size,self.n_hdemb)
+        # self.hd_attn2 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size,self.n_hdemb)
         # self.hd_attn3 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size,self.n_hdemb)
         # self.hd_attn3 = Hidden_Attention(self.value_size, self.hidden_len, self.value_size, self.key_size)
 
-        self.W_hff = torch.nn.Linear(self.value_size * self.hidden_len, hidden_len)
-        self.W_ff = torch.nn.Linear(hidden_len, output_size * output_len)
+        self.W_hff = torch.nn.Linear(self.value_size * self.hidden_len1, self.hidden_len2)
+        self.W_ff = torch.nn.Linear(self.hidden_len2, output_size * output_len)
 
-        self.hd_att_ff = Hidden_Attention(self.value_size, output_len, output_size, self.key_size,self.n_hdemb)
+        # self.hd_att_ff = Hidden_Attention(self.value_size, output_len, output_size, self.key_size,self.n_hdemb)
 
         # self.hd_layer_stack = torch.nn.ModuleList([
         #     torch.nn.Sequential(torch.nn.Dropout(p=0.1), torch.nn.Linear(hidden_size, hidden_size), torch.nn.ReLU())
         #     for _ in range(self.num_layers)])
 
-        # self.sigmoid = torch.nn.Sigmoid()
+        self.sigmoid = torch.nn.Sigmoid()
         # self.gsigmoid = Gumbel_Sigmoid(cda_device=self.cuda_device)
         # self.myhsample = myhsample
         # self.mysampler = mysampler
         # self.tanh = torch.nn.Tanh()
         self.layer_norm = torch.nn.LayerNorm(self.value_size)
-        self.layer_norm_ext = torch.nn.LayerNorm(self.value_size+self.n_hdemb)
-        self.layer_norm_ff = torch.nn.LayerNorm(output_size)
+        # self.layer_norm_ext = torch.nn.LayerNorm(self.value_size+self.n_hdemb)
+        # self.layer_norm_aff = torch.nn.LayerNorm(output_size)
+        self.layer_norm_ff = torch.nn.LayerNorm(self.hidden_len2)
         self.relu = torch.nn.ReLU()
         self.lsoftmax = torch.nn.LogSoftmax(dim=-1)
 
-        self.cdrop = torch.nn.Dropout(p=0.5)
+        self.cdrop = torch.nn.Dropout(p=0.2)
 
         self.attnM1 = None
         self.attnM2 = None
         self.attnM3 = None
+        self.hd0 = None
+        self.hdout = None
+
+        self.hdout_evalmask = None
 
     def posi_embed(self,emb_len,switch="onehot"):
         if switch=="log":
@@ -183,8 +189,52 @@ class TDNN_ATTN_FF(torch.nn.Module):
             posi_mat = posi_mat.to(self.cuda_device)
         return posi_mat,n_posiemb
 
+    def set_hdout_evalmask(self,mask):
+        self.hdout_evalmask=mask
+        if torch.cuda.is_available():
+            self.hdout_evalmask = self.hdout_evalmask.to(self.cuda_device)
+
     def para(self,para):
         self.cuda_device = para.get("cuda_device", "cuda:0")
+
+    def plot_layer_all(self):
+        srow=2
+        scol=5
+        plt.figure()
+
+        mat1 = self.hd_attn1.W_in2V.cpu().weight.data.numpy()
+        plt.subplot(srow, scol, 1)
+        plot_mat(mat1, title="Att1_W_in2V", symmetric=True, tick_step=1, show=False)
+        plt.subplot(srow, scol, 1+scol)
+        mat1_bias = self.hd_attn1.W_in2V.cpu().bias.data.numpy()
+        plot_mat(mat1_bias.reshape(1, -1), title="Att1_W_in2V"+"_bias", symmetric=True, tick_step=1, show=False)
+
+        mat2 = self.hd_attn1.W_in2K.cpu().weight.data.numpy()
+        plt.subplot(srow, scol, 2)
+        plot_mat(mat2, title="W_in2K", symmetric=True, tick_step=1, show=False)
+        plt.subplot(srow, scol, 2+scol)
+        mat2_bias = self.hd_attn1.W_in2K.cpu().bias.data.numpy()
+        plot_mat(mat2_bias.reshape(1, -1), title="Att1_W_in2K" + "_bias", symmetric=True, tick_step=1, show=False)
+
+        mat3 = self.hd_attn1.H_Q.cpu().data.numpy()
+        plt.subplot(srow, scol, 3)
+        plot_mat(mat3.T, title="H_Q", symmetric=True, tick_step=1, show=False)
+
+        mat4 = self.W_hff.cpu().weight.data.numpy()
+        plt.subplot(srow, scol, 4)
+        plot_mat(mat4, title="W_hff", symmetric=True, tick_step=1, show=False)
+        plt.subplot(srow, scol, 4 + scol)
+        mat4_bias = self.W_hff.cpu().bias.data.numpy()
+        plot_mat(mat4_bias.reshape(1, -1), title="W_hff" + "_bias", symmetric=True, tick_step=1, show=False)
+
+        mat5 = self.W_ff.cpu().weight.data.numpy()
+        plt.subplot(srow, scol, 5)
+        plot_mat(mat5, title="W_ff", symmetric=True, tick_step=1, show=False)
+        plt.subplot(srow, scol, 5 + scol)
+        mat5_bias = self.W_ff.cpu().bias.data.numpy()
+        plot_mat(mat5_bias.reshape(1, -1), title="W_ff" + "_bias", symmetric=True, tick_step=1, show=False)
+
+        plt.show()
 
 
     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None,switch="ff"):
@@ -195,7 +245,7 @@ class TDNN_ATTN_FF(torch.nn.Module):
         ext_input = torch.cat(
             (self.posi_mat.view(length, 1, self.n_posiemb).expand(length, batch, self.n_posiemb), input), dim=-1)
         hidden1 = self.hd_attn1(ext_input)
-        hidden1 = self.cdrop(hidden1) #(h,b,v_size)
+        # hidden1 = self.cdrop(hidden1) #(h,b,v_size)
         # hidden1 = self.layer_norm(hidden1)
 
         if switch=="attn": # pure attn
@@ -205,8 +255,8 @@ class TDNN_ATTN_FF(torch.nn.Module):
             # #
             hidden2=self.hd_attn2(ext_hidden1)
             hidden2=self.cdrop(hidden2)
-            # # hidden2=self.layer_norm(hidden2)
-            #
+            hidden2=self.layer_norm(hidden2)
+
             ext_hidden2 = torch.cat(
                 (self.hdemb_mat.view(self.hidden_len, 1, self.n_hdemb).expand(self.hidden_len, batch, self.n_hdemb),hidden2), dim=-1)
             ext_hidden2 = self.layer_norm_ext(ext_hidden2)
@@ -232,13 +282,21 @@ class TDNN_ATTN_FF(torch.nn.Module):
             self.attnM3 = self.hd_att_ff.sfm_KQ
 
         elif switch=="ff": # position-wise ff
-            hidden2 = hidden1.permute(1, 0, 2).contiguous().view(-1, self.value_size * self.hidden_len)
+            hidden2 = hidden1.permute(1, 0, 2).contiguous().view(-1, self.value_size * self.hidden_len1)
             hidden2 = self.W_hff(hidden2) # (b,output_size * output_len)
-            hidden2 = self.cdrop(hidden2)
             hidden2 = self.relu(hidden2)
-
+            # hidden2 = self.sigmoid(hidden2)
+            hidden2 = self.layer_norm_ff(hidden2)
+            hidden2 = self.cdrop(hidden2)
+            if self.training == False and self.hdout_evalmask is not None:
+                hidden2 = hidden2 * self.hdout_evalmask
             output = self.W_ff(hidden2) # (b,output_size * output_len)
             output = output.view(-1, self.output_len, self.output_size).permute(1, 0, 2)
+
+            self.attnM1 = self.hd_attn1.sfm_KQ
+            self.hd0=hidden1
+            self.hdout = hidden2
+
 
         return output,hidden
 
@@ -255,7 +313,8 @@ class TDNN_FF(torch.nn.Module):
     def __init__(self, input_size, hidden_size, output_size, input_len,output_len, num_layers=1, para=None):
         super(self.__class__, self).__init__()
         self.input_size = input_size
-        self.hidden_size = hidden_size
+        self.hidden_size1 = hidden_size + 1
+        self.hidden_size2 = hidden_size - 1
         self.output_size = output_size
         self.input_len = input_len
         self.output_len = output_len
@@ -265,14 +324,16 @@ class TDNN_FF(torch.nn.Module):
             para = dict([])
         self.para(para)
 
+        self.precision = 0.1
+
         # self.W_in=torch.nn.Linear(input_size*input_len, hidden_size)
         # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
 
-        self.W_in = Linear_Mask(input_size*input_len, hidden_size, bias=True, cuda_device=self.cuda_device)
-        self.noise_in = GaussNoise(hidden_size, cuda_device=self.cuda_device)
+        self.W_in = Linear_Mask(input_size*input_len, self.hidden_size1, bias=True, cuda_device=self.cuda_device)
+        self.noise_in = GaussNoise(self.hidden_size1, std=self.precision/5, cuda_device=self.cuda_device)
         # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
-        self.W_out = Linear_Mask(hidden_size, output_size * output_len, bias=True, cuda_device=self.cuda_device)
-        self.noise_out = GaussNoise(output_size * output_len, cuda_device=self.cuda_device)
+        self.W_out = Linear_Mask(self.hidden_size2, output_size * output_len, bias=True, cuda_device=self.cuda_device)
+        # self.noise_out = GaussNoise(output_size * output_len, std=self.precision/5,cuda_device=self.cuda_device)
 
         # self.hd_layer_stack = torch.nn.ModuleList([
         #     torch.nn.Sequential(torch.nn.Dropout(p=0.0), torch.nn.Linear(hidden_size, hidden_size), torch.nn.ReLU(), torch.nn.LayerNorm(hidden_size))
@@ -282,10 +343,11 @@ class TDNN_FF(torch.nn.Module):
         #                         torch.nn.LayerNorm(hidden_size))
         #     for _ in range(self.num_layers)])
 
-        self.Whd0 = Linear_Mask(hidden_size, hidden_size, bias=True, cuda_device=self.cuda_device)
-        self.noise_hd0 = GaussNoise(hidden_size, cuda_device=self.cuda_device)
+        self.Whd0 = Linear_Mask(self.hidden_size1, self.hidden_size2, bias=True, cuda_device=self.cuda_device)
+        self.noise_hd0 = GaussNoise(self.hidden_size2, std=self.precision/5, cuda_device=self.cuda_device)
         # self.Whd1 = Linear_Mask(hidden_size, hidden_size, bias=True, cuda_device=self.cuda_device)
 
+        self.hdout_evalmask=None
 
         self.sigmoid = torch.nn.Sigmoid()
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
@@ -294,18 +356,75 @@ class TDNN_FF(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.layernorm = torch.nn.LayerNorm(hidden_size)
+        self.layernorm1 = torch.nn.LayerNorm(self.hidden_size1)
+        self.layernorm2 = torch.nn.LayerNorm(self.hidden_size2)
 
-        self.cdrop = torch.nn.Dropout(p=0.5)
+        self.cdrop = torch.nn.Dropout(p=0.0)
 
         if self.drop_connect_mode=="adaptive":
             # self.Whr_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
             # self.W_in_mask = torch.nn.Parameter(torch.rand(hidden_size,input_size*input_len), requires_grad=True).to(self.cuda_device)
             # self.W_out_mask = torch.nn.Parameter(torch.rand(output_size * output_len, hidden_size), requires_grad=True).to(self.cuda_device)
-            self.Whd0_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True).to(self.cuda_device)
+            self.Whd0_mask = torch.nn.Parameter(torch.rand(self.hidden_size1, self.hidden_size2), requires_grad=True).to(self.cuda_device)
 
         self.Wint = None
         self.hdt = None
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
+
+        if schedule<0.8:
+            temperature = (0.808 - schedule)/0.8
+        else:
+            temperature = 0.01
+
+        W_in_mask_sample = None
+        W_out_mask_sample = None
+        Whd0_mask_sample = None
+        if self.drop_connect_mode == "adaptive":
+            if self.drop_connect_switch=="mysampler":
+                # W_in_siggate=self.sigmoid(self.W_in_mask)
+                # W_in_mask_sample = self.mysampler(W_in_siggate, cuda_device=self.cuda_device)
+                # W_out_siggate = self.sigmoid(self.W_out_mask)
+                # W_out_mask_sample = self.mysampler(W_out_siggate, cuda_device=self.cuda_device)
+                Whd0_mask_siggate = self.sigmoid(self.Whd0_mask)
+                Whd0_mask_sample=self.mysampler(Whd0_mask_siggate, cuda_device=self.cuda_device)
+            else:
+                raise Exception("Unknown switch",self.switch)
+        elif self.drop_connect_mode is None:
+            pass
+        else:
+            raise Exception("Unknown drop_connect_mode")
+
+        input=input.permute(1,0,2)
+        input=input.contiguous().view(-1,self.input_size*self.input_len)
+        hiddenin=self.W_in(input,W_in_mask_sample)
+        # hiddenin = self.layernorm1(hiddenin)
+        hiddenin = self.relu(hiddenin)
+        hiddenin = self.noise_in(hiddenin)
+        hiddenin = mydiscrete(hiddenin, self.precision, cuda_device=self.cuda_device)
+        self.Wint=hiddenin
+        # for ii,ff_layer in enumerate(self.hd_layer_stack):
+        #     hidden=ff_layer(hidden)
+        #     self.hdt[ii] = hidden
+        # assert len(self.hd_layer_stack)==2
+        hidden0 = self.Whd0(hiddenin,Whd0_mask_sample)
+        # hidden0 = self.layernorm2(hidden0)
+        hidden0 = self.relu(hidden0)
+        hidden0 = self.noise_hd0(hidden0)
+        hidden0 = mydiscrete(hidden0, self.precision, cuda_device=self.cuda_device)
+        hidden0 = self.cdrop(hidden0)
+        self.hdt = hidden0
+        if self.training == False and self.hdout_evalmask is not None:
+            hidden0=hidden0*self.hdout_evalmask
+        # hidden1 = self.Whd0(hidden0,Whd_mask_sample[1])
+        # hidden1 = self.relu(hidden1)
+        # hidden1 = self.layernorm(hidden1)
+        # hidden1 = self.cdrop(hidden1)
+        # self.hdt[1] = hidden1
+        output=self.W_out(hidden0,W_out_mask_sample)
+        output=output.view(-1,self.output_len,self.output_size).permute(1,0,2)
+        output=self.softmax(output)
+        return output, hidden
 
     def para(self,para):
         self.cuda_device = para.get("cuda_device", "cuda:0")
@@ -390,58 +509,194 @@ class TDNN_FF(torch.nn.Module):
         #     plt.title(nameitem)
         plt.show()
 
+    def set_hdout_evalmask(self,mask):
+        self.hdout_evalmask=mask
+        if torch.cuda.is_available():
+            self.hdout_evalmask = self.hdout_evalmask.to(self.cuda_device)
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
+
+class TDNN_FFRNN(torch.nn.Module):
+    """
+    Time delayed neural network feed forward
+    """
+    def __init__(self, input_size, hidden_size, output_size, input_len, output_len, step=20, step_noise=1.0,para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.input_len = input_len
+        self.output_len = output_len
+        self.step = step
+        self.step_noise=step_noise
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        # self.precision = 0.1
+
+        # self.W_in=torch.nn.Linear(input_size*input_len, hidden_size)
+        # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
+
+        self.W_in = Linear_Mask(input_size*input_len, self.hidden_size, bias=True, cuda_device=self.cuda_device)
+
+        self.W_out = Linear_Mask(self.hidden_size, output_size * output_len, bias=True, cuda_device=self.cuda_device)
+
+        self.W_hd = Linear_Mask(self.hidden_size, self.hidden_size, bias=False, cuda_device=self.cuda_device)
+
+        self.hdout_evalmask=None
+
+        # self.sigmoid = torch.nn.Sigmoid()
+        # self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        # self.myhsample = myhsample
+        # self.mysampler = mysampler
+        # self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.layernorm = torch.nn.LayerNorm(self.hidden_size)
+
+        self.hdt = None
+
     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
 
-        if schedule<0.8:
-            temperature = (0.808 - schedule)/0.8
-        else:
-            temperature = 0.01
+        # if schedule<0.8:
+        #     temperature = (0.808 - schedule)/0.8
+        # else:
+        #     temperature = 0.01
 
         W_in_mask_sample = None
         W_out_mask_sample = None
-        Whd0_mask_sample = None
-        if self.drop_connect_mode == "adaptive":
-            if self.drop_connect_switch=="mysampler":
-                # W_in_siggate=self.sigmoid(self.W_in_mask)
-                # W_in_mask_sample = self.mysampler(W_in_siggate, cuda_device=self.cuda_device)
-                # W_out_siggate = self.sigmoid(self.W_out_mask)
-                # W_out_mask_sample = self.mysampler(W_out_siggate, cuda_device=self.cuda_device)
-                Whd0_mask_siggate = self.sigmoid(self.Whd0_mask)
-                Whd0_mask_sample=self.mysampler(Whd0_mask_siggate, cuda_device=self.cuda_device)
-            else:
-                raise Exception("Unknown switch",self.switch)
-        elif self.drop_connect_mode is None:
-            pass
-        else:
-            raise Exception("Unknown drop_connect_mode")
+
+        # if self.drop_connect_mode == "adaptive":
+        #     if self.drop_connect_switch=="mysampler":
+        #         # W_in_siggate=self.sigmoid(self.W_in_mask)
+        #         # W_in_mask_sample = self.mysampler(W_in_siggate, cuda_device=self.cuda_device)
+        #         # W_out_siggate = self.sigmoid(self.W_out_mask)
+        #         # W_out_mask_sample = self.mysampler(W_out_siggate, cuda_device=self.cuda_device)
+        #         Whd0_mask_siggate = self.sigmoid(self.Whd0_mask)
+        #         Whd0_mask_sample=self.mysampler(Whd0_mask_siggate, cuda_device=self.cuda_device)
+        #     else:
+        #         raise Exception("Unknown switch",self.switch)
+        # elif self.drop_connect_mode is None:
+        #     pass
+        # else:
+        #     raise Exception("Unknown drop_connect_mode")
 
         input=input.permute(1,0,2)
         input=input.contiguous().view(-1,self.input_size*self.input_len)
-        hiddenin=self.W_in(input,W_in_mask_sample)
-        hiddenin=self.relu(hiddenin)
-        hiddenin = self.layernorm(hiddenin)
-        hiddenin = self.noise_in(hiddenin)
-        self.Wint=hiddenin
-        # for ii,ff_layer in enumerate(self.hd_layer_stack):
-        #     hidden=ff_layer(hidden)
-        #     self.hdt[ii] = hidden
-        # assert len(self.hd_layer_stack)==2
-        hidden0 = self.Whd0(hiddenin,Whd0_mask_sample)
-        hidden0 = self.relu(hidden0)
-        hidden0 = self.layernorm(hidden0)
-        hidden0 = self.noise_hd0(hidden0)
-        hidden0 = self.cdrop(hidden0)
-        self.hdt = hidden0
-        # hidden1 = self.Whd0(hidden0,Whd_mask_sample[1])
-        # hidden1 = self.relu(hidden1)
-        # hidden1 = self.layernorm(hidden1)
-        # hidden1 = self.cdrop(hidden1)
-        # self.hdt[1] = hidden1
-        output=self.W_out(hidden0,W_out_mask_sample)
-        output=self.noise_out(output)
+        hidden=self.W_in(input,W_in_mask_sample)
+        hdtl=hidden.view(1,hidden.shape[0],hidden.shape[-1])
+
+
+        for ii_step in range(self.step):
+            hidden=hidden+self.step_noise*np.random.random()*self.W_hd(hidden)
+            hidden=self.layernorm(hidden)
+            hidden = self.relu(hidden)
+            hdtl=torch.cat((hdtl,hidden.view(1,hidden.shape[0],hidden.shape[-1])),dim=0)
+            # hiddenin = mydiscrete(hiddenin, self.precision, cuda_device=self.cuda_device)
+
+        if self.training == False and self.hdout_evalmask is not None:
+            hidden=hidden*self.hdout_evalmask
+
+        self.hdt=hdtl
+
+        output=self.W_out(hidden,W_out_mask_sample)
         output=output.view(-1,self.output_len,self.output_size).permute(1,0,2)
         output=self.softmax(output)
         return output, hidden
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.drop_connect_mode = para.get("drop_connect_mode", None) # "None, adaptive, random"
+        self.drop_connect_switch = para.get("drop_connect_switch", "mysampler") # "mysampler","gsigmoid","myhsample"
+        self.drop_connect_rate = para.get("drop_connect_rate", 0.0) # Used for random drop connect
+
+    def plot_layer_all(self):
+        srow=2
+        scol=3
+        # allname = ["Wiz", "Win", "Wir", "Whz", "Whn", "Whr"]
+        allname = ["W_in", "W_out","W_hd"]
+        plt.figure()
+        for nn,nameitem in enumerate(allname):
+            try:
+                hard_mask=getattr(self, nameitem).cpu().hard_mask.data.numpy()
+            except:
+                hard_mask=1
+            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
+            plt.subplot(srow, scol, 1+nn)
+            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
+            plt.subplot(srow, scol, 1+nn + scol)
+            try:
+                mat = getattr(self, nameitem).cpu().bias.data.numpy()
+                plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
+            except:
+                pass
+        # for ii in range(self.num_layers):
+        #     mat = self.hd_layer_stack[ii][1].cpu().weight.data.numpy()
+        #     plt.subplot(srow, scol, 3 + ii)
+        #     plot_mat(mat, title="hidden"+str(ii), symmetric=True, tick_step=1, show=False)
+        #     plt.subplot(srow, scol, 3 + ii + scol)
+        #     try:
+        #         mat = self.hd_layer_stack[ii][1].cpu().bias.data.numpy()
+        #         plot_mat(mat.reshape(1, -1), title="hidden"+str(ii) + "_bias", symmetric=True, tick_step=1, show=False)
+        #     except:
+        #         pass
+        plt.show()
+
+    def weight_pruning(self, perc):
+        """
+        Pruning by setting hard mask by percentage
+        :return:
+        """
+        allname = ["W_in", "W_out","Whd0"]
+        if type(perc) is not list:
+            perc=[perc]*len(allname)
+        for nn, nameitem in enumerate(allname):
+            rnn_w = getattr(self, nameitem).weight
+            sort_rnn_w=np.sort(np.abs(rnn_w.cpu().data.numpy().reshape(-1)))
+            thd=sort_rnn_w[int(perc[nn]*len(sort_rnn_w))]
+            print(nameitem,thd)
+            hard_mask=torch.ones(rnn_w.shape)
+            hard_mask[torch.abs(rnn_w) <= thd] = 0.0
+            print(rnn_w.shape,hard_mask.shape)
+            getattr(self, nameitem).set_hard_mask(hard_mask)
+
+    def plot_weight_dist(self):
+        # plt.figure()
+        srow = 3
+        scol = 1
+        allname = ["W_in", "W_out","Whd0"]
+        for nn, nameitem in enumerate(allname):
+            try:
+                hard_mask=getattr(self, nameitem).hard_mask.cpu().data.numpy()
+            except:
+                print(nameitem," no hard mask")
+                hard_mask=1
+            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
+            plt.subplot(srow, scol, 1 + nn)
+            wvec=mat.reshape(-1)
+            wvec=np.sort(wvec)
+            plt.plot(wvec)
+            plt.title(nameitem)
+        # allname = ["Whz_mask", "Whn_mask"]
+        # for nn, nameitem in enumerate(allname):
+        #     mat = self.sigmoid(getattr(self, nameitem)).data.numpy()
+        #     plt.subplot(srow, scol, 5 + nn)
+        #     wvec=mat.reshape(-1)
+        #     wvec=np.sort(wvec)
+        #     plt.plot(wvec)
+        #     plt.title(nameitem)
+        plt.show()
+
+    def set_hdout_evalmask(self,mask):
+        self.hdout_evalmask=mask
+        if torch.cuda.is_available():
+            self.hdout_evalmask = self.hdout_evalmask.to(self.cuda_device)
 
     def initHidden(self,batch):
         return None
