@@ -559,6 +559,7 @@ class PyTrain_Lite(object):
 
         self.lossf = None
         self.lossf_eval = None
+        self.loss = None
 
         # profiler
         self.prtstep = int(step / 20)
@@ -651,10 +652,10 @@ class PyTrain_Lite(object):
                         outputl = output.view(1, self.batch, self.lsize_out)
                     else:
                         outputl = torch.cat((outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)), dim=0)
-            loss = self.lossf(outputl, label, self.rnn, iis)
-            self._profiler(iis, loss)
+            self.loss = self.lossf(outputl, label, self.rnn, iis)
+            self._profiler(iis, self.loss)
             self.optimizer.zero_grad()
-            loss.backward()
+            self.loss.backward()
             self.optimizer.step()
             self.while_training(iis)
 

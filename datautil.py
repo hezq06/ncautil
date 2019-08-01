@@ -220,6 +220,58 @@ class Plus_dataset(object):
         self.data_precess()
         self.digits=digits
 
+    def create_dataset_simple(self,num,digits=3,mode="normal",noise_level=None):
+        """
+        create dataset
+        :param num: with number of example to be num
+        :param max_range: and maximum digit less than max_range
+        :return:
+        """
+        dataset=[]
+        label=[]
+        self.memmat=np.zeros((10**digits-1,10**digits-1))
+        for ii in range(num):
+            dig1=int(np.random.rand()*(10**digits-1))
+            dig2 = int(np.random.rand() * (10**digits-1))
+            while self.memmat[dig1,dig2]==1: # overlap detection
+                dig1 = int(np.random.rand() * (10 ** digits - 1))
+                dig2 = int(np.random.rand() * (10 ** digits - 1))
+            self.memmat[dig1, dig2]=1
+            if mode=="normal":
+                dig_ans=int(dig1+dig2)
+            elif mode=="random":
+                dig_ans=int(np.random.rand() * (10**(digits+1)-1))
+            elif mode=="noisy":
+                assert noise_level is not None
+                if np.random.rand()>noise_level:
+                    dig_ans = int(dig1 + dig2)
+                else:
+                    dig_ans = int(np.random.rand() * (10 ** (digits + 1) - 1))
+            else:
+                raise Exception("Unknown mode")
+            str1=str(dig1)
+            npad = digits - len(str1)
+            for ii in range(npad):
+                str1 = "0"+str1
+            str2 = str(dig2)
+            npad = digits - len(str2)
+            for ii in range(npad):
+                str2 = "0" + str2
+            strdata=str1+str2
+            dataset.append(list(strdata))
+            ansdata=str(dig_ans)
+            npad = digits+ 1 - len(ansdata)
+            for ii in range(npad):
+                ansdata = "0"+ansdata
+            label.append(list(ansdata))
+        self.num=self.num+num
+        # self.dataset_raw["dataset"]=data_padding(dataset)
+        # self.dataset_raw["label"]=data_padding(label)
+        self.dataset_raw["dataset"]=dataset
+        self.dataset_raw["label"]=label
+        self.data_precess()
+        self.digits=digits
+
     def data_precess(self):
         """
         Transfer data to digits

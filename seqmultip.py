@@ -353,6 +353,7 @@ class TDNN_FF(torch.nn.Module):
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
         self.myhsample = myhsample
         self.mysampler = mysampler
+        self.myhsig = myhsig
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
@@ -360,6 +361,8 @@ class TDNN_FF(torch.nn.Module):
         self.layernorm2 = torch.nn.LayerNorm(self.hidden_size2)
 
         self.cdrop = torch.nn.Dropout(p=0.0)
+
+        self.hard_flag=False
 
         if self.drop_connect_mode=="adaptive":
             # self.Whr_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
@@ -372,10 +375,7 @@ class TDNN_FF(torch.nn.Module):
 
     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
 
-        if schedule<0.8:
-            temperature = (0.808 - schedule)/0.8
-        else:
-            temperature = 0.01
+        temperature = np.exp(-schedule*5)
 
         W_in_mask_sample = None
         W_out_mask_sample = None
@@ -400,8 +400,15 @@ class TDNN_FF(torch.nn.Module):
         hiddenin=self.W_in(input,W_in_mask_sample)
         # hiddenin = self.layernorm1(hiddenin)
         hiddenin = self.relu(hiddenin)
-        hiddenin = self.noise_in(hiddenin)
-        hiddenin = mydiscrete(hiddenin, self.precision, cuda_device=self.cuda_device)
+        # hiddenin = mydiscrete(hiddenin, self.precision, cuda_device=self.cuda_device)
+        # hiddenin = self.gsigmoid(hiddenin, temperature= temperature)
+        # if self.hard_flag:
+        #     # hiddenin = self.myhsig(hiddenin)
+        #     # hiddenin = self.gsigmoid(hiddenin, temperature=temperature)
+        #     hiddenin = self.sigmoid(hiddenin / 1e-10)
+        # else:
+        #     hiddenin = self.sigmoid(hiddenin/temperature)
+        # hiddenin = self.noise_in(hiddenin)
         self.Wint=hiddenin
         # for ii,ff_layer in enumerate(self.hd_layer_stack):
         #     hidden=ff_layer(hidden)
@@ -410,9 +417,16 @@ class TDNN_FF(torch.nn.Module):
         hidden0 = self.Whd0(hiddenin,Whd0_mask_sample)
         # hidden0 = self.layernorm2(hidden0)
         hidden0 = self.relu(hidden0)
-        hidden0 = self.noise_hd0(hidden0)
-        hidden0 = mydiscrete(hidden0, self.precision, cuda_device=self.cuda_device)
-        hidden0 = self.cdrop(hidden0)
+        # hidden0 = mydiscrete(hidden0, self.precision, cuda_device=self.cuda_device)
+        # hidden0 = self.gsigmoid(hidden0, temperature= temperature)
+        # if self.hard_flag:
+        #     # hidden0 = self.myhsig(hidden0)
+        #     # hidden0 = self.gsigmoid(hidden0, temperature=temperature)
+        #     hidden0 = self.sigmoid(hidden0 / 1e-10)
+        # else:
+        #     hidden0 = self.sigmoid(hidden0/temperature)
+        # hidden0 = self.noise_hd0(hidden0)
+        # hidden0 = self.cdrop(hidden0)
         self.hdt = hidden0
         if self.training == False and self.hdout_evalmask is not None:
             hidden0=hidden0*self.hdout_evalmask
@@ -440,7 +454,7 @@ class TDNN_FF(torch.nn.Module):
         plt.figure()
         for nn,nameitem in enumerate(allname):
             try:
-                hard_mask=getattr(self, nameitem).cpu().hard_mask.data.numpy()
+                hard_mask = getattr(self, nameitem).hard_mask.cpu().data.numpy()
             except:
                 hard_mask=1
             mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask

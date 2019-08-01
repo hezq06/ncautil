@@ -499,6 +499,39 @@ def cal_entropy_raw(data,data_discrete,data_bins=None):
     pdata=pdata/np.sum(pdata)
     return cal_entropy(pdata)
 
+def cal_entropy_raw_ND_discrete(data):
+    """
+    Calculate entropy of raw data
+    N dimensional discrete data
+    :param data: [Ndata of value]
+    :param data_discrete: if data is discrete
+    :return:
+    """
+    datanp=np.array(data)
+    assert len(datanp.shape) == 2
+    assert datanp.shape[0]>datanp.shape[1]
+
+    datatup=[]
+    for iin in range(len(data)):
+        datatup.append(tuple(data[iin]))
+
+    itemsets=list(set(datatup))
+    nsets=len(itemsets)
+
+    hashtab = dict([])
+    for ii in range(nsets):
+        hashtab[itemsets[ii]] = 0
+    for ii in range(len(datatup)):
+        hashtab[datatup[ii]] = hashtab[datatup[ii]] + 1
+
+    pvec=np.zeros(nsets)
+    for ii,val in enumerate(hashtab.values()):
+        pvec[ii]=val
+
+    pvec = pvec / np.sum(pvec)
+
+    return cal_entropy(pvec)
+
 def cal_entropy(data,logit=False):
     """
     Cal entropy of a vector
