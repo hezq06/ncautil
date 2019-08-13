@@ -313,8 +313,13 @@ class TDNN_FF(torch.nn.Module):
     def __init__(self, input_size, hidden_size, output_size, input_len,output_len, num_layers=1, para=None):
         super(self.__class__, self).__init__()
         self.input_size = input_size
-        self.hidden_size1 = hidden_size + 1
-        self.hidden_size2 = hidden_size - 1
+        if type(hidden_size) is list:
+            assert len(hidden_size)==2
+            self.hidden_size1 = hidden_size[0]
+            self.hidden_size2 = hidden_size[1]
+        else:
+            self.hidden_size1 = hidden_size + 1
+            self.hidden_size2 = hidden_size - 1
         self.output_size = output_size
         self.input_len = input_len
         self.output_len = output_len
@@ -344,10 +349,14 @@ class TDNN_FF(torch.nn.Module):
         #     for _ in range(self.num_layers)])
 
         self.Whd0 = Linear_Mask(self.hidden_size1, self.hidden_size2, bias=True, cuda_device=self.cuda_device)
-        self.noise_hd0 = GaussNoise(self.hidden_size2, std=self.precision/5, cuda_device=self.cuda_device)
+        # self.noise_hd0 = GaussNoise(self.hidden_size2, std=self.precision/5, cuda_device=self.cuda_device)
         # self.Whd1 = Linear_Mask(hidden_size, hidden_size, bias=True, cuda_device=self.cuda_device)
 
         self.hdout_evalmask=None
+        self.hdout_mask = None
+        self.input_gate = torch.nn.Parameter(torch.rand(input_len) + 1.0, requires_grad=True)
+        # self.hiddenin_mask=None
+        # self.hidden0_mask = None
 
         self.sigmoid = torch.nn.Sigmoid()
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
@@ -357,21 +366,30 @@ class TDNN_FF(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.layernorm1 = torch.nn.LayerNorm(self.hidden_size1)
-        self.layernorm2 = torch.nn.LayerNorm(self.hidden_size2)
+        # self.layernorm1 = torch.nn.LayerNorm(self.hidden_size1)
+        # self.layernorm2 = torch.nn.LayerNorm(self.hidden_size2)
 
-        self.cdrop = torch.nn.Dropout(p=0.0)
+        # self.cdrop = torch.nn.Dropout(p=0.0)
 
         self.hard_flag=False
 
-        if self.drop_connect_mode=="adaptive":
-            # self.Whr_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
-            # self.W_in_mask = torch.nn.Parameter(torch.rand(hidden_size,input_size*input_len), requires_grad=True).to(self.cuda_device)
-            # self.W_out_mask = torch.nn.Parameter(torch.rand(output_size * output_len, hidden_size), requires_grad=True).to(self.cuda_device)
-            self.Whd0_mask = torch.nn.Parameter(torch.rand(self.hidden_size1, self.hidden_size2), requires_grad=True).to(self.cuda_device)
+        # if self.drop_connect_mode=="adaptive":
+        #     # self.Whr_mask = torch.nn.Parameter(torch.rand(hidden_size, hidden_size), requires_grad=True)
+        #     # self.W_in_mask = torch.nn.Parameter(torch.rand(hidden_size,input_size*input_len), requires_grad=True).to(self.cuda_device)
+        #     # self.W_out_mask = torch.nn.Parameter(torch.rand(output_size * output_len, hidden_size), requires_grad=True).to(self.cuda_device)
+        #     self.Whd0_mask = torch.nn.Parameter(torch.rand(self.hidden_size1, self.hidden_size2), requires_grad=True).to(self.cuda_device)
 
         self.Wint = None
         self.hdt = None
+
+        self.input_grad_mem = []
+        self.hiddenin_grad_mem = []
+        self.hidden0_grad_mem = []
+
+        # self.input_mem = []
+        # self.hiddenin_mem = []
+        # self.hidden0_mem = []
+
 
     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
 
@@ -395,11 +413,25 @@ class TDNN_FF(torch.nn.Module):
         else:
             raise Exception("Unknown drop_connect_mode")
 
-        input=input.permute(1,0,2)
+        input = input.permute(1, 2, 0)
+        exphgate = self.input_gate.expand_as(input)
+        input = input.permute(0,2,1)
+        exphgate = exphgate.permute(0,2,1)
+        siggate = self.sigmoid(exphgate)
+        input_pruning_mask = self.mysampler(siggate, cuda_device=self.cuda_device)
+
         input=input.contiguous().view(-1,self.input_size*self.input_len)
-        hiddenin=self.W_in(input,W_in_mask_sample)
+        input_pruning_mask=input_pruning_mask.contiguous().view(-1,self.input_size*self.input_len)
+        # input.register_hook(lambda grad: self.input_grad_mem.append(grad.cpu()))
+        # self.input_mem.append(input.cpu().detach())
+        input=input*input_pruning_mask
+        hiddenin0=self.W_in(input,W_in_mask_sample)
         # hiddenin = self.layernorm1(hiddenin)
-        hiddenin = self.relu(hiddenin)
+        hiddenin = self.relu(hiddenin0)
+        # hiddenin.register_hook(lambda grad: self.hiddenin_grad_mem.append(grad.cpu()))
+        # if self.hiddenin_mask is not None:
+        #     hiddenin = hiddenin * self.hiddenin_mask
+        # self.hiddenin_mem.append(hiddenin.cpu().detach())
         # hiddenin = mydiscrete(hiddenin, self.precision, cuda_device=self.cuda_device)
         # hiddenin = self.gsigmoid(hiddenin, temperature= temperature)
         # if self.hard_flag:
@@ -414,9 +446,13 @@ class TDNN_FF(torch.nn.Module):
         #     hidden=ff_layer(hidden)
         #     self.hdt[ii] = hidden
         # assert len(self.hd_layer_stack)==2
-        hidden0 = self.Whd0(hiddenin,Whd0_mask_sample)
+        hidden00 = self.Whd0(hiddenin,Whd0_mask_sample)
         # hidden0 = self.layernorm2(hidden0)
-        hidden0 = self.relu(hidden0)
+        hidden0 = self.relu(hidden00)
+        # hidden0.register_hook(lambda grad: self.hidden0_grad_mem.append(grad.cpu()))
+        # if self.hidden0_mask is not None:
+        #     hidden0 = hidden0 * self.hidden0_mask
+        # self.hidden0_mem.append(hidden0.cpu().detach())
         # hidden0 = mydiscrete(hidden0, self.precision, cuda_device=self.cuda_device)
         # hidden0 = self.gsigmoid(hidden0, temperature= temperature)
         # if self.hard_flag:
@@ -428,15 +464,16 @@ class TDNN_FF(torch.nn.Module):
         # hidden0 = self.noise_hd0(hidden0)
         # hidden0 = self.cdrop(hidden0)
         self.hdt = hidden0
-        if self.training == False and self.hdout_evalmask is not None:
-            hidden0=hidden0*self.hdout_evalmask
         # hidden1 = self.Whd0(hidden0,Whd_mask_sample[1])
         # hidden1 = self.relu(hidden1)
         # hidden1 = self.layernorm(hidden1)
         # hidden1 = self.cdrop(hidden1)
         # self.hdt[1] = hidden1
         output=self.W_out(hidden0,W_out_mask_sample)
-        output=output.view(-1,self.output_len,self.output_size).permute(1,0,2)
+        output=output.view(-1,self.output_len,self.output_size).permute(0,2,1)
+        if self.hdout_mask is not None:
+            output=output*self.hdout_mask
+        output = output.permute(2,0,1)
         output=self.softmax(output)
         return output, hidden
 
@@ -523,10 +560,17 @@ class TDNN_FF(torch.nn.Module):
         #     plt.title(nameitem)
         plt.show()
 
-    def set_hdout_evalmask(self,mask):
-        self.hdout_evalmask=mask
+    def set_mask(self,mask,lname):
         if torch.cuda.is_available():
-            self.hdout_evalmask = self.hdout_evalmask.to(self.cuda_device)
+            if getattr(self, lname) is None:
+                setattr(self, lname, mask.to(self.cuda_device))
+            else:
+                setattr(self, lname, getattr(self, lname)*mask.to(self.cuda_device))
+        else:
+            if getattr(self, lname) is None:
+                setattr(self, lname, mask)
+            else:
+                setattr(self, lname, getattr(self, lname)*mask)
 
     def initHidden(self,batch):
         return None
@@ -1959,7 +2003,7 @@ class FF_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
@@ -1970,15 +2014,23 @@ class FF_NLP(torch.nn.Module):
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.relu = torch.nn.ReLU()
 
         gpuavail = torch.cuda.is_available()
         self.device = torch.device("cuda:0" if gpuavail else "cpu")
 
         self.hout = None
 
+        if para is None:
+            para = dict([])
+        self.para(para)
+
         # dummy base
         # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
         # self.ones=torch.ones(50,30,1).to(self.device)
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
 
     def forward(self, input, hidden1=None, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -1988,7 +2040,8 @@ class FF_NLP(torch.nn.Module):
         :return:
         """
         hidden = self.i2h(input)
-        hidden = self.tanh(hidden)
+        # hidden = self.tanh(hidden)
+        hidden = self.relu(hidden)
         output = self.h2o(hidden)
 
         if add_logit is not None:

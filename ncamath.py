@@ -272,7 +272,7 @@ def plot_eig_pca(data):
     endt = time.time()
     print("Time used in calculation:", endt - startt)
     plt.plot(S, 'b*-')
-    # plt.yscale("log")
+    plt.yscale("log")
     plt.show()
     return S
 
@@ -341,7 +341,7 @@ def plot_cov(data,text=None,texty=None):
     plt.show()
     return Cov
 
-def plot_corr(data,text=None,texty=None):
+def plot_corr(data,text=None,texty=None, ax=None,title=None):
     """
     Plot correlation
     :param data: data matrix
@@ -357,7 +357,8 @@ def plot_corr(data,text=None,texty=None):
     Cov = data.dot((data).T) / N
     d=np.diag(1/(np.sqrt(np.diag(Cov))+1e-9))
     Corr=d.dot(Cov).dot(d)
-    fig, ax = plt.subplots()
+    if ax is None:
+        fig, ax = plt.subplots()
     fig = ax.imshow(Corr, cmap='seismic', clim=(-np.amax(np.abs(Corr)), np.amax(np.abs(Corr))))
     if text != None:
         st, end = ax.get_xlim()
@@ -380,7 +381,10 @@ def plot_corr(data,text=None,texty=None):
         ax.set_yticklabels(labels, rotation=0)
     plt.xlabel("Data 1")
     plt.ylabel("Data 1")
-    plt.title("corr(|D1|,|D1|)")
+    if title is None:
+        plt.title("corr(|D1|,|D1|)")
+    else:
+        plt.title(title)
     plt.colorbar(fig)
     plt.show()
     return Corr

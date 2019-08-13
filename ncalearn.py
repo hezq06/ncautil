@@ -585,13 +585,13 @@ class PyTrain_Lite(object):
         # If we are on a CUDA machine, then this should print a CUDA device:
         print(self.device)
 
-        # Evaluation memory
-        self.evalmem= None
-
         currentDT = datetime.datetime.now()
         self.log="Time of creation: "+str(currentDT)+"\n"
 
+        # Evaluation memory
+        self.evalmem = None
         self.data_col_mem = None
+        self.training_data_mem=None
 
     def para(self,para):
         self.save_fig = para.get("save_fig", None)
@@ -818,7 +818,7 @@ class PyTrain_Lite(object):
         raise Exception("NotImplementedException")
 
     def while_training(self,iis):
-        pass
+        raise Exception("NotImplementedException")
 
     def _profiler(self, iis, loss):
 
@@ -872,6 +872,8 @@ class PyTrain_Custom(PyTrain_Lite):
         self._init_data = getattr(self, self.custom_interface["init_data"])
         self._evalmem = getattr(self, self.custom_interface["evalmem"])
         self._example_data_collection = getattr(self, self.custom_interface["example_data_collection"])
+        self._while_training = getattr(self, self.custom_interface.get("while_training","while_training_default"))
+
 
         self.get_data = None
 
@@ -1031,6 +1033,9 @@ class PyTrain_Custom(PyTrain_Lite):
 
     def while_training(self,iis):
         # self.context_monitor(iis)
+        return self._while_training(iis)
+
+    def while_training_default(self,iis):
         pass
 
     def context_monitor(self,iis):
@@ -1075,6 +1080,23 @@ class PyTrain_Custom(PyTrain_Lite):
             print("Warning, large dataset, not pre-processed.")
             self.databp=None
             self.data_init=False
+
+    def _init_data_sup_backwardreverse(self,limit=1e9):
+        """
+        _init_data_sup_backwardreverse 2019.8.13
+
+        :param limit:
+        :return:
+        """
+        assert self.supervise_mode
+        assert len(self.dataset["dataset"]) == 2 # data_set,pvec_l
+        assert self.digit_input
+        assert self.id_2_vec is None # No embedding, one-hot representation
+
+        self.databp=torch.zeros((len(self.dataset["dataset"][0]),self.lsize_in))
+        for ii, data in enumerate(self.dataset["dataset"][0]):
+            self.databp[ii,data] = 1.0
+        self.data_init = True
 
     def _init_data_seq2seq(self,limit=1e9):
 
@@ -1340,6 +1362,40 @@ class PyTrain_Custom(PyTrain_Lite):
             x_dec = x_dec.to(self.device)
 
         return [x_in,x_dec], outlab, inlab
+
+    def get_data_sup_backwardreverse(self,batch=None):
+        assert self.supervise_mode
+        assert len(self.dataset["dataset"][0]) == 2  # data_set,pvec_l
+        assert self.data_init
+
+        if batch is None:
+            batch=self.batch
+
+        rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
+        qlen = len(self.dataset["dataset"][0])
+        anslen=len(self.dataset["label"][0])
+        xl = np.zeros((batch, qlen))
+        outl = np.zeros((batch, anslen))
+        for iib in range(batch):
+            xl[iib, :] = np.array(self.dataset["dataset"][int(rstartv[iib])])
+            outl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib])])
+        inlab = torch.from_numpy(xl)
+        inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(outl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(self.window, batch, self.lsize_in)
+        for iib in range(batch):
+            vec1=self.databp[int(rstartv[iib])]
+            vec1m[:,iib,:]=vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if self.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.device)
+            x = x.to(self.device)
+
+        return x, outlab, inlab
 
     def custom_do_test(self,step_test=300,schedule=1.0):
         """
@@ -1637,14 +1693,19 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return loss1+self.reg_lamda*(energyloss+wnorm1) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
-    def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None):
+    def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None, posi_ctrl=3):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
+        if posi_ctrl is None:
+            loss1 = lossc(outputl, outlab)
+        else:
+            loss1 = lossc(outputl[:,:,posi_ctrl], outlab[:,posi_ctrl])
 
-        loss_gate = (torch.mean(model.sigmoid(model.W_in_mask))
-                     + torch.mean(model.sigmoid(model.W_out_mask))
-                     + torch.mean(model.sigmoid(model.Whd0_mask))) / 2
+        # loss_gate = (torch.mean(model.sigmoid(model.W_in_mask))
+        #              + torch.mean(model.sigmoid(model.W_out_mask))
+        #              + torch.mean(model.sigmoid(model.Whd0_mask))) / 2
+
+        loss_gate = torch.mean(model.sigmoid(model.input_gate))
 
         allname = ["W_in", "W_out","Whd0"]
         wnorm1=0
@@ -1656,8 +1717,7 @@ class PyTrain_Custom(PyTrain_Lite):
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        wnorm1=wnorm1/2
-        return loss1+self.reg_lamda*(wnorm1+loss_gate) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1 + 0.01*wnorm1 + self.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
 
 
@@ -1680,8 +1740,23 @@ class PyTrain_Custom(PyTrain_Lite):
         wnorm1=wnorm1/6
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
-    def raw_loss(self, output, label, rnn, iis):
-        return output
+    # def raw_loss(self, output, label, rnn, iis):
+    #     return output
+
+    def custom_whiletraining_gradcollect_tdff(self,iis):
+        """
+        Customed gradient information collection function for tdff
+        :return:
+        """
+        if self.training_data_mem is None:
+            self.training_data_mem=dict([])
+            self.training_data_mem["gradInfo"]=dict([])
+            for item in ["W_in","Whd0","W_out"]:
+                self.training_data_mem["gradInfo"][item]=[]
+        for item in ["W_in","Whd0","W_out"]:
+            attr=getattr(self.rnn,item)
+            grad=attr.weight.grad
+            self.training_data_mem["gradInfo"][item].append(grad)
 
 
     def custom_loss_pos_auto_0(self, outputl, outlab, model=None, cstep=None):
