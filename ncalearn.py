@@ -1022,78 +1022,16 @@ class PyTrain_Custom(PyTrain_Lite):
                 # print("eval_mem failed")
                 pass
 
-    def custom_eval_mem_tdff(self, x, label, rnn):
-        """
-        Archiving date
-        :param output:
-        :param hidden:
-        :return:
-        """
-        if self.evalmem is None:
-            self.evalmem = [[] for ii in range(5)]  # x,label,hd_in,hd0, output
-        else:
-            try:
-                self.evalmem[0].append(x.cpu().data.numpy())
-                self.evalmem[1].append(label.cpu().data.numpy())
-                self.evalmem[2].append(rnn.Wint.cpu().data.numpy())
-                self.evalmem[3].append(rnn.hdt.cpu().data.numpy())
-                self.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
-
-    def custom_eval_mem_backwardreverse(self, x, label, rnn):
-        """
-        Archiving date
-        :param output:
-        :param hidden:
-        :return:
-        """
-        if self.evalmem is None:
-            self.evalmem = [[] for ii in range(3)]  # label,p_vec, output
-        else:
-            try:
-                self.evalmem[0].append(x[0].cpu().data.numpy())
-                self.evalmem[1].append(x[1].cpu().data.numpy())
-                self.evalmem[2].append(rnn.lgoutput.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
-
 
     def while_training(self,iis):
         # self.context_monitor(iis)
         return self._while_training(iis)
-
-    def evalmem_default(self,*kwargs,**args):
-        pass
-
-    def while_training_default(self,*kwargs,**args):
-        pass
-
-    def example_data_collection_default(self,*kwargs,**args):
-        pass
-
 
     def context_monitor(self,iis):
         """Monitor progress"""
         pass
         # self.context_id=int(iis/100)%self.context_total
         # self.context_switch(self.context_id)
-
-    def _init_data_continous(self,limit=1e9):
-        assert self.digit_input
-        assert not self.supervise_mode
-        datab = []
-        for data in self.dataset:
-            if self.id_2_vec is None:  # No embedding, one-hot representation
-                datavec = np.zeros(self.lsize_in)
-                datavec[data] = 1.0
-            else:
-                datavec = np.array(self.id_2_vec[data])
-            datab.append(datavec)
-        self.databp = torch.from_numpy(np.array(datab))
-        self.databp = self.databp.type(torch.FloatTensor)
 
     def _init_data_sent_sup(self,limit=1e9):
         assert self.supervise_mode
@@ -1115,63 +1053,6 @@ class PyTrain_Custom(PyTrain_Lite):
                 datab_sent = torch.from_numpy(np.array(datab_sent))
                 datab_sent = datab_sent.type(torch.FloatTensor)
                 self.databp.append(datab_sent)
-            self.data_init = True
-        else:
-            print("Warning, large dataset, not pre-processed.")
-            self.databp=None
-            self.data_init=False
-
-    def _init_data_sup_backwardreverse(self,limit=1e9):
-        """
-        _init_data_sup_backwardreverse 2019.8.13
-
-        :param limit:
-        :return:
-        """
-        assert self.supervise_mode
-        assert len(self.dataset["dataset"]) == 2 # data_set,pvec_l
-        assert self.digit_input
-        assert self.id_2_vec is None # No embedding, one-hot representation
-
-        self.dataset_length = len(self.dataset["dataset"][0])
-        print("Dataset length ", self.dataset_length)
-
-        self.databp=torch.zeros((len(self.dataset["dataset"][0]),self.lsize_in))
-        for ii, data in enumerate(self.dataset["dataset"][0]):
-            self.databp[ii,data] = 1.0
-        self.data_init = True
-
-    def _init_data_seq2seq(self,limit=1e9):
-
-        assert self.supervise_mode
-        assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
-        assert self.digit_input
-        assert self.id_2_vec is None # No embedding, one-hot representation
-
-        if len(self.dataset)*self.lsize_in<limit:
-            self.databp=[]
-            for sent in self.dataset["dataset"]:
-                datab_sent=[]
-                for data in sent:
-                    datavec = np.zeros(self.lsize_in)
-                    datavec[data] = 1.0
-                    datab_sent.append(datavec)
-                datab_sent = torch.from_numpy(np.array(datab_sent))
-                datab_sent = datab_sent.type(torch.FloatTensor)
-                self.databp.append(datab_sent)
-            self.databp_lab=[]
-            for sent in self.dataset["label"]:
-                datab_sent=[]
-                datavec = np.zeros(self.lsize_in)
-                datab_sent.append(datavec)
-                for data in sent:
-                    datavec = np.zeros(self.lsize_in)
-                    datavec[data] = 1.0
-                    datab_sent.append(datavec)
-                del datab_sent[-1] # shift label right
-                datab_sent = torch.from_numpy(np.array(datab_sent))
-                datab_sent = datab_sent.type(torch.FloatTensor)
-                self.databp_lab.append(datab_sent)
             self.data_init = True
         else:
             print("Warning, large dataset, not pre-processed.")
@@ -1280,57 +1161,6 @@ class PyTrain_Custom(PyTrain_Lite):
             raise Exception("Not Implemented")
         return databp
 
-    def get_data_continous(self,batch=None):
-
-        if batch is None:
-            batch=self.batch
-
-        if not self.supervise_mode:
-            # Generating output label
-            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset) - self.window - 1))
-            yl = np.zeros((batch,self.window))
-            xl = np.zeros((batch,self.window))
-            for iib in range(batch):
-                xl[iib,:]=self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
-                yl[iib,:]=self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]
-            # inlab = torch.from_numpy(xl)
-            # inlab = inlab.type(torch.LongTensor)
-            outlab = torch.from_numpy(yl)
-            outlab = outlab.type(torch.LongTensor)
-
-        else:
-            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - self.window - 1))
-            xl = np.zeros((batch, self.window))
-            for iib in range(batch):
-                xl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib]):int(rstartv[iib]) + self.window])
-            outlab = torch.from_numpy(xl)
-            outlab = outlab.type(torch.LongTensor)
-            # inlab = outlab
-
-        vec1m = torch.zeros(self.window, batch, self.lsize_in)
-        # vec2m = torch.zeros(self.window, batch, self.lsize_in)
-        for iib in range(batch):
-            # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
-            # vec1_rnd = torch.rand(vec1_raw.shape)
-            # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
-            # vec1 = vec1_raw + vec1_add
-            if self.data_init:
-                vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
-            else:
-                vec1=self._build_databp(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
-            # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
-            vec1m[:,iib,:]=vec1
-            # vec2m[:, iib, :] = vec2
-        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
-        # y = Variable(vec2m, requires_grad=True)
-
-        if self.gpuavail:
-            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
-            outlab = outlab.to(self.device)
-            x = x.to(self.device)
-
-        return x, outlab, None
-
     def get_data_sent_sup(self,batch=None, rstartv=None):
         assert self.supervise_mode
         assert type(self.dataset["dataset"][0]) == list  # we assume sentence structure
@@ -1369,90 +1199,6 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return x, outlab, inlab
 
-    def get_data_seq2seq(self,batch=None):
-        assert self.supervise_mode
-        assert type(self.dataset["dataset"][0]) == list  # we assume sentence structure
-        assert self.data_init
-
-        if batch is None:
-            batch=self.batch
-
-        rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
-        qlen = len(self.dataset["dataset"][0])
-        anslen=len(self.dataset["label"][0])
-        xl = np.zeros((batch, qlen))
-        outl = np.zeros((batch, anslen))
-        for iib in range(batch):
-            xl[iib, :] = np.array(self.dataset["dataset"][int(rstartv[iib])])
-            outl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib])])
-        inlab = torch.from_numpy(xl)
-        inlab = inlab.type(torch.LongTensor)
-        outlab = torch.from_numpy(outl)
-        outlab = outlab.type(torch.LongTensor)
-
-        vec1m = torch.zeros(qlen, batch, self.lsize_in)
-        for iib in range(batch):
-            vec1=self.databp[int(rstartv[iib])]
-            vec1m[:,iib,:]=vec1
-        x_in = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
-
-        vec2m = torch.zeros(anslen, batch, self.lsize_in)
-        for iib in range(batch):
-            vec2 = self.databp_lab[int(rstartv[iib])]
-            vec2m[:, iib, :] = vec2
-        x_dec = Variable(vec2m, requires_grad=True).type(torch.FloatTensor)
-
-        if self.gpuavail:
-            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
-            outlab = outlab.to(self.device)
-            x_in = x_in.to(self.device)
-            x_dec = x_dec.to(self.device)
-
-        return [x_in,x_dec], outlab, inlab
-
-    def get_data_sup_backwardreverse(self,batch=None, rstartv=None):
-        assert self.supervise_mode
-        assert len(self.dataset["dataset"]) == 2  # data_set,pvec_l
-        assert self.data_init
-
-        if batch is None:
-            batch=self.batch
-
-        if rstartv is None: # random mode
-            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"][0]) - 1))
-        else:
-            assert len(rstartv)==batch
-
-        xl = np.zeros(batch)
-        outl = np.zeros(batch)
-        for iib in range(batch):
-            xl[iib] = self.dataset["dataset"][0][int(rstartv[iib])]
-            outl[iib] = self.dataset["label"][int(rstartv[iib])]
-        inlab = torch.from_numpy(xl)
-        inlab = inlab.type(torch.LongTensor)
-        outlab = torch.from_numpy(outl)
-        outlab = outlab.type(torch.LongTensor)
-
-        vec1m = torch.zeros(batch, self.lsize_in)
-        for iib in range(batch):
-            vec1=self.databp[int(rstartv[iib])]
-            vec1m[iib,:]=vec1
-        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
-
-        pvec_mat = torch.zeros(batch, self.lsize_in)
-        for iib in range(batch):
-            vec1=self.dataset["dataset"][1][int(rstartv[iib])]
-            pvec_mat[iib,:]=torch.from_numpy(vec1)
-        pvec_matv = Variable(pvec_mat, requires_grad=True).type(torch.FloatTensor)
-
-        if self.gpuavail:
-            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
-            outlab = outlab.to(self.device)
-            x = x.to(self.device)
-            pvec_matv = pvec_matv.to(self.device)
-
-        # print(x.shape,pvec_matv.shape)
-        return (x, pvec_matv) , outlab, inlab
 
     def custom_do_test(self,step_test=300,schedule=1.0):
         """
@@ -1658,56 +1404,6 @@ class PyTrain_Custom(PyTrain_Lite):
         wnorm1=wnorm1/(len(allname))
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
-    def KNWLoss_backwardreverse(self, outputl, outlab, model=None, cstep=None):
-
-        assert len(outputl)==2
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(model.softmax(outputl[0]+outputl[1]), outlab)
-        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
-        # allname = ["W_in", "W_out", "W_hd"]
-        # wnorm1=0
-        # for namep in allname:
-        #         wattr = getattr(self.rnn.gru_enc, namep)
-        #         wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
-        #         try:
-        #             wattr = getattr(self.rnn.gru_dec, namep)
-        #             wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        #         except:
-        #             pass
-        # wattr = getattr(self.rnn, "h2o")
-        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-
-        loss2=torch.nn.functional.kl_div(model.nsoftmax(outputl[0]),model.nsoftmax(outputl[1]))
-
-        return loss1-loss2 #+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
-    def KNWLoss_WeightReg_Attn(self, outputl, outlab, model=None, cstep=None):
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
-        allname = ["W_in2V"]
-        wnorm1=0
-        for namep in allname:
-            wattr = getattr(self.rnn.hd_attn1, namep)
-            wnorm1= wnorm1+torch.mean(torch.abs(wattr.weight))
-            # wattr = getattr(self.rnn.hd_attn2, namep)
-            # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-            # wattr = getattr(self.rnn.hd_att_ff, namep)
-            # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        allname = ["W_hff","W_ff"]
-        for namep in allname:
-            wattr = getattr(self.rnn, namep)
-            wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-        wnorm1=wnorm1/3
-        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
     def KNWLoss_ExpertReg(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
@@ -1734,74 +1430,6 @@ class PyTrain_Custom(PyTrain_Lite):
         # wnorm1=wnorm1/(2*len(allname))
         return loss1+ self.reg_lamda * lossh2o # + self.reg_lamda *wnorm1 # + 0.001 * l1_reg #  + 0.01 * l1_reg
 
-    def KNWLoss_WeightReg_TDFF(self, outputl, outlab, model=None, cstep=None):
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
-        allname = ["W_in", "W_out","Whd0"]
-        wnorm1=0
-        for namep in allname:
-            wattr = getattr(self.rnn, namep)
-            wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
-        # for ii in range(self.rnn.num_layers):
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(self.rnn.hd_layer_stack[ii][1].weight))
-        # wattr = getattr(self.rnn, "h2o")
-        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-        wnorm1=wnorm1/len(allname)
-        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
-    def KNWLoss_WeightEnergyReg_TDFF(self, outputl, outlab, model=None, cstep=None):
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
-        allname = ["W_in", "W_out","Whd0"]
-        wnorm1=0
-        for namep in allname:
-            wattr = getattr(self.rnn, namep)
-            wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
-            # wnorm1 = wnorm1 + torch.mean(torch.mul(wattr.weight, wattr.weight))
-
-        wnorm1 = wnorm1 / len(allname)
-
-        energyloss=torch.mean(torch.mul(model.Wint,model.Wint))+torch.mean(torch.mul(model.hdt,model.hdt))
-
-        # energyloss = torch.mean(torch.abs(model.Wint))+ torch.mean(torch.abs(model.hdt))
-
-        # print(model.Wint.norm(2),model.hdt.norm(2))
-
-        return loss1+self.reg_lamda*(energyloss+wnorm1) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
-    def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None, posi_ctrl=1):
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        if posi_ctrl is None:
-            loss1 = lossc(outputl, outlab)
-        else:
-            loss1 = lossc(outputl[:,:,posi_ctrl], outlab[:,posi_ctrl])
-
-        # loss_gate = (torch.mean(model.sigmoid(model.W_in_mask))
-        #              + torch.mean(model.sigmoid(model.W_out_mask))
-        #              + torch.mean(model.sigmoid(model.Whd0_mask))) / 2
-
-        loss_gate = torch.mean(model.sigmoid(model.input_gate))
-
-        allname = ["W_in", "W_out","Whd0"]
-        wnorm1=0
-        for namep in allname:
-                wattr = getattr(self.rnn, namep)
-                wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
-        # wattr = getattr(self.rnn, "h2o")
-        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-        return loss1 + 0.01*wnorm1 + self.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
 
 
     def KNWLoss_WeightReg_GRU(self, outputl, outlab, model=None, cstep=None):
@@ -1825,21 +1453,6 @@ class PyTrain_Custom(PyTrain_Lite):
 
     # def raw_loss(self, output, label, rnn, iis):
     #     return output
-
-    def custom_whiletraining_gradcollect_tdff(self,iis):
-        """
-        Customed gradient information collection function for tdff
-        :return:
-        """
-        if self.training_data_mem is None:
-            self.training_data_mem=dict([])
-            self.training_data_mem["gradInfo"]=dict([])
-            for item in ["W_in","Whd0","W_out"]:
-                self.training_data_mem["gradInfo"][item]=[]
-        for item in ["W_in","Whd0","W_out"]:
-            attr=getattr(self.rnn,item)
-            grad=attr.weight.grad
-            self.training_data_mem["gradInfo"][item].append(grad)
 
 
     def custom_loss_pos_auto_0(self, outputl, outlab, model=None, cstep=None):
@@ -1912,6 +1525,116 @@ class PyTrain_Custom(PyTrain_Lite):
         # return self.custom_example_data_collection_tdff(x, output, hidden, label)
         return self._example_data_collection(x, output, hidden, label)
 
+class PyTrain_Interface_Default(object):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
+
+    def evalmem(self,*kwargs,**args):
+        """
+        Defalt evalmem
+        called in do_eval
+        usage self.eval_mem(x, label, self.rnn)
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        pass
+
+    def while_training(self,*kwargs,**args):
+        """
+        Default while_training function
+        called while training
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        pass
+
+    def example_data_collection(self,*kwargs,**args):
+        """
+        Default example_data_collection function
+        called by plot_example
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        pass
+
+class PyTrain_Interface_continous(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
+
+    def _init_data_continous(self,limit=1e9):
+        assert self.digit_input
+        assert not self.supervise_mode
+        datab = []
+        for data in self.dataset:
+            if self.id_2_vec is None:  # No embedding, one-hot representation
+                datavec = np.zeros(self.lsize_in)
+                datavec[data] = 1.0
+            else:
+                datavec = np.array(self.id_2_vec[data])
+            datab.append(datavec)
+        self.databp = torch.from_numpy(np.array(datab))
+        self.databp = self.databp.type(torch.FloatTensor)
+
+    def get_data_continous(self,batch=None):
+
+        if batch is None:
+            batch=self.batch
+
+        if not self.supervise_mode:
+            # Generating output label
+            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset) - self.window - 1))
+            yl = np.zeros((batch,self.window))
+            xl = np.zeros((batch,self.window))
+            for iib in range(batch):
+                xl[iib,:]=self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+                yl[iib,:]=self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]
+            # inlab = torch.from_numpy(xl)
+            # inlab = inlab.type(torch.LongTensor)
+            outlab = torch.from_numpy(yl)
+            outlab = outlab.type(torch.LongTensor)
+
+        else:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - self.window - 1))
+            xl = np.zeros((batch, self.window))
+            for iib in range(batch):
+                xl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib]):int(rstartv[iib]) + self.window])
+            outlab = torch.from_numpy(xl)
+            outlab = outlab.type(torch.LongTensor)
+            # inlab = outlab
+
+        vec1m = torch.zeros(self.window, batch, self.lsize_in)
+        # vec2m = torch.zeros(self.window, batch, self.lsize_in)
+        for iib in range(batch):
+            # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            # vec1_rnd = torch.rand(vec1_raw.shape)
+            # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
+            # vec1 = vec1_raw + vec1_add
+            if self.data_init:
+                vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            else:
+                vec1=self._build_databp(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+            # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
+            vec1m[:,iib,:]=vec1
+            # vec2m[:, iib, :] = vec2
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
+        # y = Variable(vec2m, requires_grad=True)
+
+        if self.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.device)
+            x = x.to(self.device)
+
+        return x, outlab, None
+
     def custom_example_data_collection_continuous(self, x, output, hidden, label):
 
         if self.data_col_mem is None:
@@ -1935,103 +1658,90 @@ class PyTrain_Custom(PyTrain_Lite):
             self.data_col_mem["datalist"][3] = torch.cat((self.data_col_mem["datalist"][3], self.rnn.zt.view(1, -1)), dim=0)
             self.data_col_mem["datalist"][4] = torch.cat((self.data_col_mem["datalist"][4], self.rnn.nt.view(1, -1)), dim=0)
 
-    def custom_example_data_collection_attention(self, x, output, hidden, label):
+class PyTrain_Interface_seq2seq(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
 
-        lsize = x.shape[-1]
-        anslength = label.shape[-1]
-        label_onehot = torch.zeros(anslength, lsize)
-        for ii in range(label.shape[-1]):
-            id = label[0, ii]
-            label_onehot[ii, id] = 1
+    def _init_data_seq2seq(self,limit=1e9):
 
-        if self.data_col_mem is None:
-            # Step 1 of example_data_collection
-            self.data_col_mem=dict([])
-            self.data_col_mem["titlelist"]=["input","label","predict","attn1","hd0","hdout"]
-            self.data_col_mem["sysmlist"]=[True,True,True,True,True,True]
-            self.data_col_mem["mode"]="predict"
-            self.data_col_mem["datalist"] = [None,None,None,None,None,None]
-            maxPred = np.max(output.cpu().data.numpy())
-            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None] ,[None, None], [None, None], [None, None]]
+        assert self.supervise_mode
+        assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
+        assert self.digit_input
+        assert self.id_2_vec is None # No embedding, one-hot representation
 
-        if self.data_col_mem["datalist"][0] is None:
-            print(x.shape,output.shape,self.rnn.attnM1.shape)
-            self.data_col_mem["datalist"][0] = torch.squeeze(x)
-            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
-            self.data_col_mem["datalist"][2] = torch.squeeze(output)
-            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.attnM1).transpose(1, 0)
-            self.data_col_mem["datalist"][4] = torch.squeeze(self.rnn.hd0)
-            self.data_col_mem["datalist"][5] = self.rnn.hdout.view(-1,1)
-            # self.data_col_mem["datalist"][5] = torch.squeeze(self.rnn.attnM3)
+        if len(self.dataset)*self.lsize_in<limit:
+            self.databp=[]
+            for sent in self.dataset["dataset"]:
+                datab_sent=[]
+                for data in sent:
+                    datavec = np.zeros(self.lsize_in)
+                    datavec[data] = 1.0
+                    datab_sent.append(datavec)
+                datab_sent = torch.from_numpy(np.array(datab_sent))
+                datab_sent = datab_sent.type(torch.FloatTensor)
+                self.databp.append(datab_sent)
+            self.databp_lab=[]
+            for sent in self.dataset["label"]:
+                datab_sent=[]
+                datavec = np.zeros(self.lsize_in)
+                datab_sent.append(datavec)
+                for data in sent:
+                    datavec = np.zeros(self.lsize_in)
+                    datavec[data] = 1.0
+                    datab_sent.append(datavec)
+                del datab_sent[-1] # shift label right
+                datab_sent = torch.from_numpy(np.array(datab_sent))
+                datab_sent = datab_sent.type(torch.FloatTensor)
+                self.databp_lab.append(datab_sent)
+            self.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.databp=None
+            self.data_init=False
 
-    def custom_example_data_collection_tdff(self, x, output, hidden, label):
+    def get_data_seq2seq(self,batch=None):
+        assert self.supervise_mode
+        assert type(self.dataset["dataset"][0]) == list  # we assume sentence structure
+        assert self.data_init
 
-        lsize = x.shape[-1]
-        anslength = label.shape[-1]
-        label_onehot = torch.zeros(anslength, lsize)
-        for ii in range(label.shape[-1]):
-            id = label[0, ii]
-            label_onehot[ii, id] = 1
+        if batch is None:
+            batch=self.batch
 
-        if self.data_col_mem is None:
-            # Step 1 of example_data_collection
-            self.data_col_mem=dict([])
-            self.data_col_mem["titlelist"]=["input","label","predict","Wint","hd1"]
-            self.data_col_mem["sysmlist"]=[True,True,True,True,True]
-            self.data_col_mem["mode"]="predict"
-            self.data_col_mem["datalist"] = [None,None,None,None,None]
-            self.data_col_mem["climlist"] = [[None, None], [None, None], [1, -20] ,[None, None], [None, None]]
+        rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
+        qlen = len(self.dataset["dataset"][0])
+        anslen=len(self.dataset["label"][0])
+        xl = np.zeros((batch, qlen))
+        outl = np.zeros((batch, anslen))
+        for iib in range(batch):
+            xl[iib, :] = np.array(self.dataset["dataset"][int(rstartv[iib])])
+            outl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib])])
+        inlab = torch.from_numpy(xl)
+        inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(outl)
+        outlab = outlab.type(torch.LongTensor)
 
-        if self.data_col_mem["datalist"][0] is None:
-            self.data_col_mem["datalist"][0] = torch.squeeze(x)
-            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
-            self.data_col_mem["datalist"][2] = torch.squeeze(output)
-            self.data_col_mem["datalist"][3] = self.rnn.Wint.view(-1,1)
-            self.data_col_mem["datalist"][4] = self.rnn.hdt[0].view(-1,1)
-            # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
+        vec1m = torch.zeros(qlen, batch, self.lsize_in)
+        for iib in range(batch):
+            vec1=self.databp[int(rstartv[iib])]
+            vec1m[:,iib,:]=vec1
+        x_in = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
 
-    def custom_example_data_collection_tdffrnn(self, x, output, hidden, label):
+        vec2m = torch.zeros(anslen, batch, self.lsize_in)
+        for iib in range(batch):
+            vec2 = self.databp_lab[int(rstartv[iib])]
+            vec2m[:, iib, :] = vec2
+        x_dec = Variable(vec2m, requires_grad=True).type(torch.FloatTensor)
 
-        lsize = x.shape[-1]
-        anslength = label.shape[-1]
-        label_onehot = torch.zeros(anslength, lsize)
-        for ii in range(label.shape[-1]):
-            id = label[0, ii]
-            label_onehot[ii, id] = 1
+        if self.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.device)
+            x_in = x_in.to(self.device)
+            x_dec = x_dec.to(self.device)
 
-        if self.data_col_mem is None:
-            # Step 1 of example_data_collection
-            self.data_col_mem=dict([])
-            self.data_col_mem["titlelist"]=["input","label","predict","hiddenl"]
-            self.data_col_mem["sysmlist"]=[True,True,True,True]
-            self.data_col_mem["mode"]="predict"
-            self.data_col_mem["datalist"] = [None,None,None,None]
-            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None], [None, None]]
-
-        if self.data_col_mem["datalist"][0] is None:
-            self.data_col_mem["datalist"][0] = torch.squeeze(x)
-            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
-            self.data_col_mem["datalist"][2] = torch.squeeze(output)
-            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.hdt).transpose(1,0)
-            # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
-
-    def custom_example_data_collection_backwardreverse(self, x, output, hidden, label):
-
-        print(output)
-
-        if self.data_col_mem is None:
-            # Step 1 of example_data_collection
-            self.data_col_mem=dict([])
-            self.data_col_mem["titlelist"]=["input","p_vec","sample_vec"]
-            self.data_col_mem["sysmlist"]=[True,True,True]
-            self.data_col_mem["mode"]="predict"
-            self.data_col_mem["datalist"] = [None,None,None]
-            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None]]
-
-        if self.data_col_mem["datalist"][0] is None:
-            self.data_col_mem["datalist"][0] = x[0]
-            self.data_col_mem["datalist"][1] = x[1]
-            self.data_col_mem["datalist"][2] = output[0]
+        return [x_in,x_dec], outlab, inlab
 
     def custom_example_data_collection_seq2seq(self, x, output, hidden, label, items=[3,4]):
 
@@ -2087,4 +1797,362 @@ class PyTrain_Custom(PyTrain_Lite):
                 self.data_col_mem["sysmlist"].append(temp_data_col_mem["sysmlist"][num])
                 self.data_col_mem["datalist"].append(temp_data_col_mem["datalist"][num])
                 self.data_col_mem["climlist"].append(temp_data_col_mem["climlist"][num])
+
+class PyTrain_Interface_attn(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
+
+    def KNWLoss_WeightReg_Attn(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        allname = ["W_in2V"]
+        wnorm1=0
+        for namep in allname:
+            wattr = getattr(self.rnn.hd_attn1, namep)
+            wnorm1= wnorm1+torch.mean(torch.abs(wattr.weight))
+            # wattr = getattr(self.rnn.hd_attn2, namep)
+            # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+            # wattr = getattr(self.rnn.hd_att_ff, namep)
+            # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        allname = ["W_hff","W_ff"]
+        for namep in allname:
+            wattr = getattr(self.rnn, namep)
+            wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        wnorm1=wnorm1/3
+        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+    
+    def custom_example_data_collection_attention(self, x, output, hidden, label):
+
+        lsize = x.shape[-1]
+        anslength = label.shape[-1]
+        label_onehot = torch.zeros(anslength, lsize)
+        for ii in range(label.shape[-1]):
+            id = label[0, ii]
+            label_onehot[ii, id] = 1
+
+        if self.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.data_col_mem=dict([])
+            self.data_col_mem["titlelist"]=["input","label","predict","attn1","hd0","hdout"]
+            self.data_col_mem["sysmlist"]=[True,True,True,True,True,True]
+            self.data_col_mem["mode"]="predict"
+            self.data_col_mem["datalist"] = [None,None,None,None,None,None]
+            maxPred = np.max(output.cpu().data.numpy())
+            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None] ,[None, None], [None, None], [None, None]]
+
+        if self.data_col_mem["datalist"][0] is None:
+            print(x.shape,output.shape,self.rnn.attnM1.shape)
+            self.data_col_mem["datalist"][0] = torch.squeeze(x)
+            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
+            self.data_col_mem["datalist"][2] = torch.squeeze(output)
+            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.attnM1).transpose(1, 0)
+            self.data_col_mem["datalist"][4] = torch.squeeze(self.rnn.hd0)
+            self.data_col_mem["datalist"][5] = self.rnn.hdout.view(-1,1)
+            # self.data_col_mem["datalist"][5] = torch.squeeze(self.rnn.attnM3)
+
+
+
+class PyTrain_Interface_tdff(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
+
+    def KNWLoss_WeightReg_TDFF(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        allname = ["W_in", "W_out","Whd0"]
+        wnorm1=0
+        for namep in allname:
+            wattr = getattr(self.rnn, namep)
+            wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+        # for ii in range(self.rnn.num_layers):
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(self.rnn.hd_layer_stack[ii][1].weight))
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        wnorm1=wnorm1/len(allname)
+        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_WeightEnergyReg_TDFF(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        allname = ["W_in", "W_out","Whd0"]
+        wnorm1=0
+        for namep in allname:
+            wattr = getattr(self.rnn, namep)
+            wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+            # wnorm1 = wnorm1 + torch.mean(torch.mul(wattr.weight, wattr.weight))
+
+        wnorm1 = wnorm1 / len(allname)
+
+        energyloss=torch.mean(torch.mul(model.Wint,model.Wint))+torch.mean(torch.mul(model.hdt,model.hdt))
+
+        # energyloss = torch.mean(torch.abs(model.Wint))+ torch.mean(torch.abs(model.hdt))
+
+        # print(model.Wint.norm(2),model.hdt.norm(2))
+
+        return loss1+self.reg_lamda*(energyloss+wnorm1) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None, posi_ctrl=1):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        if posi_ctrl is None:
+            loss1 = lossc(outputl, outlab)
+        else:
+            loss1 = lossc(outputl[:,:,posi_ctrl], outlab[:,posi_ctrl])
+
+        # loss_gate = (torch.mean(model.sigmoid(model.W_in_mask))
+        #              + torch.mean(model.sigmoid(model.W_out_mask))
+        #              + torch.mean(model.sigmoid(model.Whd0_mask))) / 2
+
+        loss_gate = torch.mean(model.sigmoid(model.input_gate))
+
+        allname = ["W_in", "W_out","Whd0"]
+        wnorm1=0
+        for namep in allname:
+                wattr = getattr(self.rnn, namep)
+                wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1 + 0.01*wnorm1 + self.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def custom_eval_mem_tdff(self, x, label, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.evalmem is None:
+            self.evalmem = [[] for ii in range(5)]  # x,label,hd_in,hd0, output
+        else:
+            try:
+                self.evalmem[0].append(x.cpu().data.numpy())
+                self.evalmem[1].append(label.cpu().data.numpy())
+                self.evalmem[2].append(rnn.Wint.cpu().data.numpy())
+                self.evalmem[3].append(rnn.hdt.cpu().data.numpy())
+                self.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
+            except:
+                # print("eval_mem failed")
+                pass
+
+    def custom_whiletraining_gradcollect_tdff(self,iis):
+        """
+        Customed gradient information collection function for tdff
+        :return:
+        """
+        if self.training_data_mem is None:
+            self.training_data_mem=dict([])
+            self.training_data_mem["gradInfo"]=dict([])
+            for item in ["W_in","Whd0","W_out"]:
+                self.training_data_mem["gradInfo"][item]=[]
+        for item in ["W_in","Whd0","W_out"]:
+            attr=getattr(self.rnn,item)
+            grad=attr.weight.grad
+            self.training_data_mem["gradInfo"][item].append(grad)
+
+    def custom_example_data_collection_tdff(self, x, output, hidden, label):
+
+        lsize = x.shape[-1]
+        anslength = label.shape[-1]
+        label_onehot = torch.zeros(anslength, lsize)
+        for ii in range(label.shape[-1]):
+            id = label[0, ii]
+            label_onehot[ii, id] = 1
+
+        if self.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.data_col_mem=dict([])
+            self.data_col_mem["titlelist"]=["input","label","predict","Wint","hd1"]
+            self.data_col_mem["sysmlist"]=[True,True,True,True,True]
+            self.data_col_mem["mode"]="predict"
+            self.data_col_mem["datalist"] = [None,None,None,None,None]
+            self.data_col_mem["climlist"] = [[None, None], [None, None], [1, -20] ,[None, None], [None, None]]
+
+        if self.data_col_mem["datalist"][0] is None:
+            self.data_col_mem["datalist"][0] = torch.squeeze(x)
+            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
+            self.data_col_mem["datalist"][2] = torch.squeeze(output)
+            self.data_col_mem["datalist"][3] = self.rnn.Wint.view(-1,1)
+            self.data_col_mem["datalist"][4] = self.rnn.hdt[0].view(-1,1)
+            # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
+
+    def custom_example_data_collection_tdffrnn(self, x, output, hidden, label):
+
+        lsize = x.shape[-1]
+        anslength = label.shape[-1]
+        label_onehot = torch.zeros(anslength, lsize)
+        for ii in range(label.shape[-1]):
+            id = label[0, ii]
+            label_onehot[ii, id] = 1
+
+        if self.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.data_col_mem=dict([])
+            self.data_col_mem["titlelist"]=["input","label","predict","hiddenl"]
+            self.data_col_mem["sysmlist"]=[True,True,True,True]
+            self.data_col_mem["mode"]="predict"
+            self.data_col_mem["datalist"] = [None,None,None,None]
+            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None], [None, None]]
+
+        if self.data_col_mem["datalist"][0] is None:
+            self.data_col_mem["datalist"][0] = torch.squeeze(x)
+            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
+            self.data_col_mem["datalist"][2] = torch.squeeze(output)
+            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.hdt).transpose(1,0)
+            # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
+
+
+class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+
+    def __init__(self):
+        pass
+
+    def _init_data_sup_backwardreverse(self,limit=1e9):
+        """
+        _init_data_sup_backwardreverse 2019.8.13
+
+        :param limit:
+        :return:
+        """
+        assert self.supervise_mode
+        assert len(self.dataset["dataset"]) == 2 # data_set,pvec_l
+        assert self.digit_input
+        assert self.id_2_vec is None # No embedding, one-hot representation
+
+        self.dataset_length = len(self.dataset["dataset"][0])
+        print("Dataset length ", self.dataset_length)
+
+        self.databp=torch.zeros((len(self.dataset["dataset"][0]),self.lsize_in))
+        for ii, data in enumerate(self.dataset["dataset"][0]):
+            self.databp[ii,data] = 1.0
+        self.data_init = True
+
+    def get_data_sup_backwardreverse(self,batch=None, rstartv=None):
+        assert self.supervise_mode
+        assert len(self.dataset["dataset"]) == 2  # data_set,pvec_l
+        assert self.data_init
+
+        if batch is None:
+            batch=self.batch
+
+        if rstartv is None: # random mode
+            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"][0]) - 1))
+        else:
+            assert len(rstartv)==batch
+
+        xl = np.zeros(batch)
+        outl = np.zeros(batch)
+        for iib in range(batch):
+            xl[iib] = self.dataset["dataset"][0][int(rstartv[iib])]
+            outl[iib] = self.dataset["label"][int(rstartv[iib])]
+        inlab = torch.from_numpy(xl)
+        inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(outl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(batch, self.lsize_in)
+        for iib in range(batch):
+            vec1=self.databp[int(rstartv[iib])]
+            vec1m[iib,:]=vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        pvec_mat = torch.zeros(batch, self.lsize_in)
+        for iib in range(batch):
+            vec1=self.dataset["dataset"][1][int(rstartv[iib])]
+            pvec_mat[iib,:]=torch.from_numpy(vec1)
+        pvec_matv = Variable(pvec_mat, requires_grad=True).type(torch.FloatTensor)
+
+        if self.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.device)
+            x = x.to(self.device)
+            pvec_matv = pvec_matv.to(self.device)
+
+        # print(x.shape,pvec_matv.shape)
+        return (x, pvec_matv) , outlab, inlab
+
+    def KNWLoss_backwardreverse(self, outputl, outlab, model=None, cstep=None):
+
+        assert len(outputl)==2
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(model.softmax(outputl[0]+outputl[1]), outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        # allname = ["W_in", "W_out", "W_hd"]
+        # wnorm1=0
+        # for namep in allname:
+        #         wattr = getattr(self.rnn.gru_enc, namep)
+        #         wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+        #         try:
+        #             wattr = getattr(self.rnn.gru_dec, namep)
+        #             wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        #         except:
+        #             pass
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+
+        loss2=torch.nn.functional.kl_div(model.nsoftmax(outputl[0]),model.nsoftmax(outputl[1]))
+
+        return loss1-loss2 #+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def custom_eval_mem_backwardreverse(self, x, label, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.evalmem is None:
+            self.evalmem = [[] for ii in range(3)]  # label,p_vec, output
+        else:
+            try:
+                self.evalmem[0].append(x[0].cpu().data.numpy())
+                self.evalmem[1].append(x[1].cpu().data.numpy())
+                self.evalmem[2].append(rnn.lgoutput.cpu().data.numpy())
+            except:
+                # print("eval_mem failed")
+                pass
+
+    def custom_example_data_collection_backwardreverse(self, x, output, hidden, label):
+
+        print(output)
+
+        if self.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.data_col_mem=dict([])
+            self.data_col_mem["titlelist"]=["input","p_vec","sample_vec"]
+            self.data_col_mem["sysmlist"]=[True,True,True]
+            self.data_col_mem["mode"]="predict"
+            self.data_col_mem["datalist"] = [None,None,None]
+            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None]]
+
+        if self.data_col_mem["datalist"][0] is None:
+            self.data_col_mem["datalist"][0] = x[0]
+            self.data_col_mem["datalist"][1] = x[1]
+            self.data_col_mem["datalist"][2] = output[0]
 
