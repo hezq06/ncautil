@@ -381,6 +381,7 @@ class TDNN_FF(torch.nn.Module):
 
         self.Wint = None
         self.hdt = None
+        self.lgoutput = None
 
         self.input_grad_mem = []
         self.hiddenin_grad_mem = []
@@ -474,6 +475,7 @@ class TDNN_FF(torch.nn.Module):
         if self.hdout_mask is not None:
             output=output*self.hdout_mask
         output = output.permute(2,0,1)
+        self.lgoutput=output
         output=self.softmax(output)
         return output, hidden
 
@@ -2014,12 +2016,14 @@ class FF_NLP(torch.nn.Module):
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
         self.relu = torch.nn.ReLU()
 
         gpuavail = torch.cuda.is_available()
         self.device = torch.device("cuda:0" if gpuavail else "cpu")
 
         self.hout = None
+        self.lgoutput = None
 
         if para is None:
             para = dict([])
@@ -2032,6 +2036,23 @@ class FF_NLP(torch.nn.Module):
     def para(self,para):
         self.cuda_device = para.get("cuda_device", "cuda:0")
 
+    def plot_layer_all(self):
+        srow=2
+        scol=3
+        allname = ["i2h", "h2o"]
+        plt.figure()
+        for nn,nameitem in enumerate(allname):
+            mat = getattr(self, nameitem).cpu().weight.data.numpy()
+            plt.subplot(srow, scol, 1+nn)
+            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
+            plt.subplot(srow, scol, 1+nn + scol)
+            try:
+                mat = getattr(self, nameitem).cpu().bias.data.numpy()
+                plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
+            except:
+                pass
+        plt.show()
+
     def forward(self, input, hidden1=None, add_logit=None, logit_mode=False, schedule=None):
         """
         Forward
@@ -2039,16 +2060,22 @@ class FF_NLP(torch.nn.Module):
         :param hidden:
         :return:
         """
-        hidden = self.i2h(input)
+        # Adjusted for backward sampling
+        assert len(input)==2
+        input0 = input[0]
+
+        hidden = self.i2h(input0)
         # hidden = self.tanh(hidden)
         hidden = self.relu(hidden)
         output = self.h2o(hidden)
+        self.lgoutput = output
 
-        if add_logit is not None:
-            output=output+add_logit
-        if not logit_mode:
-            output=self.softmax(output)
-        return output,None
+        # if add_logit is not None:
+        #     output=output+add_logit
+        # if not logit_mode:
+        #     output=self.softmax(output)
+
+        return (output,input[1]),None
 
     def initHidden(self,batch):
         return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)

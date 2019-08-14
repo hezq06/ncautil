@@ -669,18 +669,25 @@ class PyTrain_Lite(object):
     def eval_mem(self,*args):
         pass
 
-    def do_eval(self,step_eval=300,schedule=1.0,posi_ctrl=None):
+    def do_eval(self,step_eval=300,schedule=1.0,posi_ctrl=None,allordermode=False):
         startt = time.time()
         self.rnn.eval()
         if self.gpuavail:
             self.rnn.to(self.device)
         perpl=[]
+        if allordermode:
+            step_eval=int(self.dataset_length/self.batch)
+            print(step_eval)
         for iis in range(step_eval):
             if self.gpuavail:
                 hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
-            x, label, _ = self.get_data()
+            if allordermode:
+                rstartv=iis*self.batch+np.linspace(0,self.batch-1,self.batch)
+                x, label, _ = self.get_data(rstartv=rstartv)
+            else:
+                x, label, _ = self.get_data()
             if self.seqtrain:
                 output, hidden = self.rnn(x, hidden, schedule=schedule)
                 if posi_ctrl is None:
@@ -783,6 +790,7 @@ class PyTrain_Lite(object):
         else:
             hidden = self.rnn.initHidden(1)
         x, label, _ = self.get_data(batch=1)
+
         if self.seqtrain:
             output, hidden = self.rnn(x, hidden, schedule=1.0)
             self.example_data_collection(x, output, hidden, label,items=items)
@@ -867,11 +875,13 @@ class PyTrain_Custom(PyTrain_Lite):
         self.data_init = None
         self.databp = None
         self.databp_lab = None
+        self.dataset_length = None
 
         # Interface 1
         self._init_data = getattr(self, self.custom_interface["init_data"])
-        self._evalmem = getattr(self, self.custom_interface["evalmem"])
-        self._example_data_collection = getattr(self, self.custom_interface["example_data_collection"])
+        # self._evalmem = getattr(self, self.custom_interface["evalmem"])
+        self._evalmem = getattr(self, self.custom_interface.get("evalmem", "evalmem_default"))
+        self._example_data_collection = getattr(self, self.custom_interface.get("example_data_collection","example_data_collection_default"))
         self._while_training = getattr(self, self.custom_interface.get("while_training","while_training_default"))
 
 
@@ -933,9 +943,9 @@ class PyTrain_Custom(PyTrain_Lite):
         limit = 1e9
         self.dataset = dataset
         if type(dataset) is list:
-            print("Data size: ",len(self.dataset) * self.lsize_in)
+            print("Data symbol size: ",len(self.dataset) * self.lsize_in)
         elif type(dataset) is dict:
-            print("Data size: ", len(self.dataset["dataset"]) * self.lsize_in)
+            print("Data symbol size: ", len(self.dataset["dataset"]) * self.lsize_in)
         if len(self.dataset) * self.lsize_in < limit:
             self.data_init = True
             self._init_data()
@@ -1020,23 +1030,50 @@ class PyTrain_Custom(PyTrain_Lite):
         :return:
         """
         if self.evalmem is None:
-            self.evalmem = [[] for ii in range(4)]  # x,label,hd_in,hd0
+            self.evalmem = [[] for ii in range(5)]  # x,label,hd_in,hd0, output
         else:
             try:
                 self.evalmem[0].append(x.cpu().data.numpy())
                 self.evalmem[1].append(label.cpu().data.numpy())
                 self.evalmem[2].append(rnn.Wint.cpu().data.numpy())
                 self.evalmem[3].append(rnn.hdt.cpu().data.numpy())
+                self.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
             except:
                 # print("eval_mem failed")
                 pass
+
+    def custom_eval_mem_backwardreverse(self, x, label, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.evalmem is None:
+            self.evalmem = [[] for ii in range(3)]  # label,p_vec, output
+        else:
+            try:
+                self.evalmem[0].append(x[0].cpu().data.numpy())
+                self.evalmem[1].append(x[1].cpu().data.numpy())
+                self.evalmem[2].append(rnn.lgoutput.cpu().data.numpy())
+            except:
+                # print("eval_mem failed")
+                pass
+
 
     def while_training(self,iis):
         # self.context_monitor(iis)
         return self._while_training(iis)
 
-    def while_training_default(self,iis):
+    def evalmem_default(self,*kwargs,**args):
         pass
+
+    def while_training_default(self,*kwargs,**args):
+        pass
+
+    def example_data_collection_default(self,*kwargs,**args):
+        pass
+
 
     def context_monitor(self,iis):
         """Monitor progress"""
@@ -1063,6 +1100,9 @@ class PyTrain_Custom(PyTrain_Lite):
         assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
         assert self.digit_input
         assert self.id_2_vec is None # No embedding, one-hot representation
+
+        self.dataset_length=len(self.dataset["dataset"])
+        print("Dataset length ",self.dataset_length)
 
         if len(self.dataset)*self.lsize_in<limit:
             self.databp=[]
@@ -1092,6 +1132,9 @@ class PyTrain_Custom(PyTrain_Lite):
         assert len(self.dataset["dataset"]) == 2 # data_set,pvec_l
         assert self.digit_input
         assert self.id_2_vec is None # No embedding, one-hot representation
+
+        self.dataset_length = len(self.dataset["dataset"][0])
+        print("Dataset length ", self.dataset_length)
 
         self.databp=torch.zeros((len(self.dataset["dataset"][0]),self.lsize_in))
         for ii, data in enumerate(self.dataset["dataset"][0]):
@@ -1288,7 +1331,7 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return x, outlab, None
 
-    def get_data_sent_sup(self,batch=None):
+    def get_data_sent_sup(self,batch=None, rstartv=None):
         assert self.supervise_mode
         assert type(self.dataset["dataset"][0]) == list  # we assume sentence structure
         assert self.data_init
@@ -1296,7 +1339,11 @@ class PyTrain_Custom(PyTrain_Lite):
         if batch is None:
             batch=self.batch
 
-        rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
+        else:
+            assert len(rstartv)==batch
+
         qlen = len(self.dataset["dataset"][0])
         anslen=len(self.dataset["label"][0])
         xl = np.zeros((batch, qlen))
@@ -1363,39 +1410,49 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return [x_in,x_dec], outlab, inlab
 
-    def get_data_sup_backwardreverse(self,batch=None):
+    def get_data_sup_backwardreverse(self,batch=None, rstartv=None):
         assert self.supervise_mode
-        assert len(self.dataset["dataset"][0]) == 2  # data_set,pvec_l
+        assert len(self.dataset["dataset"]) == 2  # data_set,pvec_l
         assert self.data_init
 
         if batch is None:
             batch=self.batch
 
-        rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
-        qlen = len(self.dataset["dataset"][0])
-        anslen=len(self.dataset["label"][0])
-        xl = np.zeros((batch, qlen))
-        outl = np.zeros((batch, anslen))
+        if rstartv is None: # random mode
+            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"][0]) - 1))
+        else:
+            assert len(rstartv)==batch
+
+        xl = np.zeros(batch)
+        outl = np.zeros(batch)
         for iib in range(batch):
-            xl[iib, :] = np.array(self.dataset["dataset"][int(rstartv[iib])])
-            outl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib])])
+            xl[iib] = self.dataset["dataset"][0][int(rstartv[iib])]
+            outl[iib] = self.dataset["label"][int(rstartv[iib])]
         inlab = torch.from_numpy(xl)
         inlab = inlab.type(torch.LongTensor)
         outlab = torch.from_numpy(outl)
         outlab = outlab.type(torch.LongTensor)
 
-        vec1m = torch.zeros(self.window, batch, self.lsize_in)
+        vec1m = torch.zeros(batch, self.lsize_in)
         for iib in range(batch):
             vec1=self.databp[int(rstartv[iib])]
-            vec1m[:,iib,:]=vec1
+            vec1m[iib,:]=vec1
         x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        pvec_mat = torch.zeros(batch, self.lsize_in)
+        for iib in range(batch):
+            vec1=self.dataset["dataset"][1][int(rstartv[iib])]
+            pvec_mat[iib,:]=torch.from_numpy(vec1)
+        pvec_matv = Variable(pvec_mat, requires_grad=True).type(torch.FloatTensor)
 
         if self.gpuavail:
             # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
             outlab = outlab.to(self.device)
             x = x.to(self.device)
+            pvec_matv = pvec_matv.to(self.device)
 
-        return x, outlab, inlab
+        # print(x.shape,pvec_matv.shape)
+        return (x, pvec_matv) , outlab, inlab
 
     def custom_do_test(self,step_test=300,schedule=1.0):
         """
@@ -1601,6 +1658,32 @@ class PyTrain_Custom(PyTrain_Lite):
         wnorm1=wnorm1/(len(allname))
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
+    def KNWLoss_backwardreverse(self, outputl, outlab, model=None, cstep=None):
+
+        assert len(outputl)==2
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(model.softmax(outputl[0]+outputl[1]), outlab)
+        # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        # allname = ["W_in", "W_out", "W_hd"]
+        # wnorm1=0
+        # for namep in allname:
+        #         wattr = getattr(self.rnn.gru_enc, namep)
+        #         wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+        #         try:
+        #             wattr = getattr(self.rnn.gru_dec, namep)
+        #             wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        #         except:
+        #             pass
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+
+        loss2=torch.nn.functional.kl_div(model.nsoftmax(outputl[0]),model.nsoftmax(outputl[1]))
+
+        return loss1-loss2 #+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
     def KNWLoss_WeightReg_Attn(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
@@ -1693,7 +1776,7 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return loss1+self.reg_lamda*(energyloss+wnorm1) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
-    def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None, posi_ctrl=3):
+    def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None, posi_ctrl=1):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
         if posi_ctrl is None:
@@ -1931,6 +2014,24 @@ class PyTrain_Custom(PyTrain_Lite):
             self.data_col_mem["datalist"][2] = torch.squeeze(output)
             self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.hdt).transpose(1,0)
             # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
+
+    def custom_example_data_collection_backwardreverse(self, x, output, hidden, label):
+
+        print(output)
+
+        if self.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.data_col_mem=dict([])
+            self.data_col_mem["titlelist"]=["input","p_vec","sample_vec"]
+            self.data_col_mem["sysmlist"]=[True,True,True]
+            self.data_col_mem["mode"]="predict"
+            self.data_col_mem["datalist"] = [None,None,None]
+            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None]]
+
+        if self.data_col_mem["datalist"][0] is None:
+            self.data_col_mem["datalist"][0] = x[0]
+            self.data_col_mem["datalist"][1] = x[1]
+            self.data_col_mem["datalist"][2] = output[0]
 
     def custom_example_data_collection_seq2seq(self, x, output, hidden, label, items=[3,4]):
 
