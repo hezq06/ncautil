@@ -865,7 +865,7 @@ class PyTrain_Custom(PyTrain_Lite):
     """
     A pytrain custom object aiding PyTrain_Lite
     """
-    def __init__(self, dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, para=None):
+    def __init__(self, dataset, lsize, rnn, step, interface, learning_rate=1e-2, batch=20, window=30, para=None):
         """
         PyTrain custom
         :param para:
@@ -877,61 +877,54 @@ class PyTrain_Custom(PyTrain_Lite):
         self.databp_lab = None
         self.dataset_length = None
 
-        # Interface 1
-        self._init_data = getattr(self, self.custom_interface["init_data"])
-        # self._evalmem = getattr(self, self.custom_interface["evalmem"])
-        self._evalmem = getattr(self, self.custom_interface.get("evalmem", "evalmem_default"))
-        self._example_data_collection = getattr(self, self.custom_interface.get("example_data_collection","example_data_collection_default"))
-        self._while_training = getattr(self, self.custom_interface.get("while_training","while_training_default"))
+        self.interface=interface
+        self.interface.pt=self
 
+        self.get_data = self.interface.get_data
 
-        self.get_data = None
+        self.lossf = self.interface.lossf
+
+        self.lossf_eval = self.interface.lossf_eval
+
+        self.eval_mem=self.interface.eval_mem
+
+        self.while_training=self.interface.while_training
+
+        self.example_data_collection=self.interface.example_data_collection
 
         # context controller
         self.context_id=0
 
         # Last step
         self.data(dataset)
-        self.context_switch(0)
+        # self.context_switch(0)
 
-    def context_switch(self,context_id):
-        # assert context_id<self.context_total
-        # self.rnn.context_id=context_id
-        # if context_id==0:
-        #     # self.lossf=self.custom_loss_pos_auto_0
-        #     # self.get_data=self.custom_get_data_pos_auto
-        #     # Interface 2
-        #     self.lossf = self.raw_loss
-        #     self.get_data = self.get_data_continous
-            # self.__init_data =
-        # elif context_id==1:
-        #     self.lossf=self.custom_loss_pos_auto_1
-        #     self.get_data=self.custom_get_data_pos_auto
-
-        if context_id==0:
-            self.lossf = getattr(self, self.custom_interface["lossf"])
-            # Interface
-            # self.lossf = self.KNWLoss
-            # self.lossf = self.KNWLoss_GateReg_hgate
-            # self.lossf = self.KNWLoss_WeightReg
-            # self.lossf = self.KNWLoss_WeightReg_GRU
-            self.lossf_eval = getattr(self, self.custom_interface["lossf_eval"])
-            # self.lossf_eval = self.KNWLoss
-            self.get_data = getattr(self, self.custom_interface["get_data"])
-            # self.get_data = self.get_data_continous
-            # self.get_data = self.get_data_sent_sup
-            # self.get_data = self.get_data_seq2seq not working
-        # elif context_id==1:
-        #     # Interface
-        #     # self.lossf = self.KNWLoss
-        #     self.lossf = self.KNWLoss_GateReg_hgate
-        #     # self.lossf = self.KNWLoss_WeightReg
-        #     # self.lossf = self.KNWLoss_WeightReg_GRU
-        #     self.lossf_eval = self.KNWLoss
-        #     self.get_data = self.get_data_sent_sup
-        #     # self.get_data = self.get_data_seq2seq
-        else:
-            raise Exception("Unknown context")
+    # def context_switch(self,context_id):
+    #
+    #     if context_id==0:
+    #         self.lossf = getattr(self, self.custom_interface["lossf"])
+    #         # Interface
+    #         # self.lossf = self.KNWLoss
+    #         # self.lossf = self.KNWLoss_GateReg_hgate
+    #         # self.lossf = self.KNWLoss_WeightReg
+    #         # self.lossf = self.KNWLoss_WeightReg_GRU
+    #         self.lossf_eval = getattr(self, self.custom_interface["lossf_eval"])
+    #         # self.lossf_eval = self.KNWLoss
+    #         self.get_data = getattr(self, self.custom_interface["get_data"])
+    #         # self.get_data = self.get_data_continous
+    #         # self.get_data = self.get_data_sent_sup
+    #         # self.get_data = self.get_data_seq2seq not working
+    #     # elif context_id==1:
+    #     #     # Interface
+    #     #     # self.lossf = self.KNWLoss
+    #     #     self.lossf = self.KNWLoss_GateReg_hgate
+    #     #     # self.lossf = self.KNWLoss_WeightReg
+    #     #     # self.lossf = self.KNWLoss_WeightReg_GRU
+    #     #     self.lossf_eval = self.KNWLoss
+    #     #     self.get_data = self.get_data_sent_sup
+    #     #     # self.get_data = self.get_data_seq2seq
+    #     else:
+    #         raise Exception("Unknown context")
 
 
     def data(self,dataset):
@@ -948,7 +941,7 @@ class PyTrain_Custom(PyTrain_Lite):
             print("Data symbol size: ", len(self.dataset["dataset"]) * self.lsize_in)
         if len(self.dataset) * self.lsize_in < limit:
             self.data_init = True
-            self._init_data()
+            self.interface.init_data()
         else:
             self.data_init = False
             print("Warning, large dataset, not pre-processed.")
@@ -956,22 +949,22 @@ class PyTrain_Custom(PyTrain_Lite):
         if (type(dataset) is dict) != self.supervise_mode:
             raise Exception("Supervise mode Error.")
 
-    def eval_mem(self, x, label, rnn):
-        """
-        Archiving date
-        :param output:
-        :param hidden:
-        :return:
-        """
+    # def eval_mem(self, x, label, rnn):
+    #     """
+    #     Archiving date
+    #     :param output:
+    #     :param hidden:
+    #     :return:
+    #     """
+    #
+    #     # return self.custom_eval_mem_tdff(x, label, rnn)
+    #     # return self.custom_eval_mem_attn(x, label, rnn)
+    #     return self.interface.evalmem(x, label, rnn)
 
-        # return self.custom_eval_mem_tdff(x, label, rnn)
-        # return self.custom_eval_mem_attn(x, label, rnn)
-        return self._evalmem(x, label, rnn)
 
-
-    def while_training(self,iis):
-        # self.context_monitor(iis)
-        return self._while_training(iis)
+    # def while_training(self,iis):
+    #     # self.context_monitor(iis)
+    #     return self.interface.while_training(iis)
 
     def context_monitor(self,iis):
         """Monitor progress"""
@@ -994,44 +987,6 @@ class PyTrain_Custom(PyTrain_Lite):
         else:
             raise Exception("Not Implemented")
         return databp
-
-    def get_data_sent_sup(self,batch=None, rstartv=None):
-        assert self.supervise_mode
-        assert type(self.dataset["dataset"][0]) == list  # we assume sentence structure
-        assert self.data_init
-
-        if batch is None:
-            batch=self.batch
-
-        if rstartv is None:
-            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - 1))
-        else:
-            assert len(rstartv)==batch
-
-        qlen = len(self.dataset["dataset"][0])
-        anslen=len(self.dataset["label"][0])
-        xl = np.zeros((batch, qlen))
-        outl = np.zeros((batch, anslen))
-        for iib in range(batch):
-            xl[iib, :] = np.array(self.dataset["dataset"][int(rstartv[iib])])
-            outl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib])])
-        inlab = torch.from_numpy(xl)
-        inlab = inlab.type(torch.LongTensor)
-        outlab = torch.from_numpy(outl)
-        outlab = outlab.type(torch.LongTensor)
-
-        vec1m = torch.zeros(self.window, batch, self.lsize_in)
-        for iib in range(batch):
-            vec1=self.databp[int(rstartv[iib])]
-            vec1m[:,iib,:]=vec1
-        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
-
-        if self.gpuavail:
-            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
-            outlab = outlab.to(self.device)
-            x = x.to(self.device)
-
-        return x, outlab, inlab
 
 
     def custom_do_test(self,step_test=300,schedule=1.0):
@@ -1121,7 +1076,180 @@ class PyTrain_Custom(PyTrain_Lite):
 
         return x, [poslab,autolab]
 
+
+    # def example_data_collection(self, x, output, hidden, label,items="all"):
+    #
+    #     return self.interface.example_data_collection(x, output, hidden, label)
+
+class PyTrain_Interface_Default(object):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+
+        self.pt=None
+        self.test_print_interface=False
+        self.print_interface()
+
+    def print_interface(self):
+        """
+        Test print interface
+        :return:
+        """
+        self.test_print_interface=True
+        print("Testing init_data: ")
+        self.init_data()
+        print("Testing get_data: ")
+        self.get_data()
+        print("Testing lossf: ")
+        self.lossf(None,None)
+        print("Testing lossf_eval: ")
+        self.lossf_eval(None,None)
+        print("Testing eval_mem: ")
+        self.eval_mem()
+        print("Testing while_training: ")
+        self.while_training()
+        print("Testing example_data_collection: ")
+        self.example_data_collection()
+        self.test_print_interface = False
+
+    def init_data(self,*args,**kwargs):
+        """
+        Data initialization
+
+        :param args:
+        :param kwargs:
+        :return:
+        """
+        return self.init_data_sent_sup()
+
+    def get_data(self, batch=None, rstartv=None):
+        return self.get_data_sent_sup(batch=batch, rstartv=rstartv)
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+
+
+    def eval_mem(self,*args,**kwargs):
+        """
+        Defalt evalmem
+        called in do_eval
+        usage self.eval_mem(x, label, self.rnn)
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        if self.test_print_interface:
+            print("Eval mem interface: default to nothing")
+            return True
+
+    def while_training(self,*args,**kwargs):
+        """
+        Default while_training function
+        called while training
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        if self.test_print_interface:
+            print("While training interface: default to nothing")
+            return True
+
+    def example_data_collection(self,*args,**kwargs):
+        """
+        Default example_data_collection function
+        called by plot_example
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        if self.test_print_interface:
+            print("Example data collection interface: default to nothing")
+            return True
+
+    def init_data_sent_sup(self,limit=1e9):
+        if self.test_print_interface:
+            print("Init data interface: init_data_sent_sup")
+            return True
+
+        assert self.pt.supervise_mode
+        assert type(self.pt.dataset["dataset"][0]) == list # we assume sentence structure
+        assert self.pt.digit_input
+        assert self.pt.id_2_vec is None # No embedding, one-hot representation
+
+        self.dataset_length=len(self.pt.dataset["dataset"])
+        print("Dataset length ",self.dataset_length)
+
+        if len(self.pt.dataset)*self.pt.lsize_in<limit:
+            self.pt.databp=[]
+            for sent in self.pt.dataset["dataset"]:
+                datab_sent=[]
+                for data in sent:
+                    datavec = np.zeros(self.pt.lsize_in)
+                    datavec[data] = 1.0
+                    datab_sent.append(datavec)
+                datab_sent = torch.from_numpy(np.array(datab_sent))
+                datab_sent = datab_sent.type(torch.FloatTensor)
+                self.pt.databp.append(datab_sent)
+            self.pt.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.pt.databp=None
+            self.pt.data_init=False
+
+    def get_data_sent_sup(self, batch=None, rstartv=None):
+
+        if self.test_print_interface:
+            print("Get data interface: get_data_sent_sup")
+            return True
+
+        assert self.pt.supervise_mode
+        assert type(self.pt.dataset["dataset"][0]) == list  # we assume sentence structure
+        assert self.pt.data_init
+
+        if batch is None:
+            batch=self.pt.batch
+
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset["dataset"]) - 1))
+        else:
+            assert len(rstartv)==batch
+
+        qlen = len(self.pt.dataset["dataset"][0])
+        anslen=len(self.pt.dataset["label"][0])
+        xl = np.zeros((batch, qlen))
+        outl = np.zeros((batch, anslen))
+        for iib in range(batch):
+            xl[iib, :] = np.array(self.pt.dataset["dataset"][int(rstartv[iib])])
+            outl[iib, :] = np.array(self.pt.dataset["label"][int(rstartv[iib])])
+        inlab = torch.from_numpy(xl)
+        inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(outl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(self.pt.window, batch, self.pt.lsize_in)
+        for iib in range(batch):
+            vec1=self.pt.databp[int(rstartv[iib])]
+            vec1m[:,iib,:]=vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if self.pt.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.pt.device)
+            x = x.to(self.pt.device)
+
+        return x, outlab, inlab
+
+
     def KNWLoss(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: default KNWLoss")
+            return True
+
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
@@ -1131,131 +1259,59 @@ class PyTrain_Custom(PyTrain_Lite):
         # l1_reg = model.h2o.weight.norm(2)
         return loss1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
-
-    def example_data_collection(self, x, output, hidden, label,items="all"):
-        # return self.custom_example_data_collection_continuous(x, output, hidden)
-        # return self.custom_example_data_collection_seq2seq(x, output, hidden, label,items=items)
-        # return self.custom_example_data_collection_attention(x, output, hidden, label)
-        # return self.custom_example_data_collection_tdff(x, output, hidden, label)
-        return self._example_data_collection(x, output, hidden, label)
-
-class PyTrain_Interface_Default(object):
+class PyTrain_Interface_common(PyTrain_Interface_Default):
     """
     A pytrain interface object to plug into PyTrain_Custom
     """
     def __init__(self):
-        pass
-
-    def evalmem(self,*kwargs,**args):
-        """
-        Defalt evalmem
-        called in do_eval
-        usage self.eval_mem(x, label, self.rnn)
-        :param kwargs:
-        :param args:
-        :return:
-        """
-        pass
-
-    def while_training(self,*kwargs,**args):
-        """
-        Default while_training function
-        called while training
-        :param kwargs:
-        :param args:
-        :return:
-        """
-        pass
-
-    def example_data_collection(self,*kwargs,**args):
-        """
-        Default example_data_collection function
-        called by plot_example
-        :param kwargs:
-        :param args:
-        :return:
-        """
-        pass
-
-class PyTrain_Interface_others(PyTrain_Interface_Default):
-    """
-    A pytrain interface object to plug into PyTrain_Custom
-    """
-    def __init__(self):
-        pass
-
-    def _init_data_sent_sup(self,limit=1e9):
-        assert self.supervise_mode
-        assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
-        assert self.digit_input
-        assert self.id_2_vec is None # No embedding, one-hot representation
-
-        self.dataset_length=len(self.dataset["dataset"])
-        print("Dataset length ",self.dataset_length)
-
-        if len(self.dataset)*self.lsize_in<limit:
-            self.databp=[]
-            for sent in self.dataset["dataset"]:
-                datab_sent=[]
-                for data in sent:
-                    datavec = np.zeros(self.lsize_in)
-                    datavec[data] = 1.0
-                    datab_sent.append(datavec)
-                datab_sent = torch.from_numpy(np.array(datab_sent))
-                datab_sent = datab_sent.type(torch.FloatTensor)
-                self.databp.append(datab_sent)
-            self.data_init = True
-        else:
-            print("Warning, large dataset, not pre-processed.")
-            self.databp=None
-            self.data_init=False
+        super(self.__class__, self).__init__()
 
     def _init_data_all(self,limit=1e9):
-        if len(self.dataset)*self.lsize_in<limit:
+        if len(self.pt.dataset)*self.pt.lsize_in<limit:
             datab = []
-            if self.digit_input:
-                if self.id_2_vec is None: # No embedding, one-hot representation
-                    self.PAD_VEC=np.zeros(self.lsize_in, dtype=np.float32)
-                    self.PAD_VEC[self.SYM_PAD] = 1.0
-            if type(self.dataset[0]) != list:
-                if self.digit_input:
-                    if self.id_2_vec is None:  # No embedding, one-hot representation
-                        for data in self.dataset:
-                            datavec = np.zeros(self.lsize_in)
+            if self.pt.digit_input:
+                if self.pt.id_2_vec is None: # No embedding, one-hot representation
+                    self.PAD_VEC=np.zeros(self.pt.lsize_in, dtype=np.float32)
+                    self.PAD_VEC[self.pt.SYM_PAD] = 1.0
+            if type(self.pt.dataset[0]) != list:
+                if self.pt.digit_input:
+                    if self.pt.id_2_vec is None:  # No embedding, one-hot representation
+                        for data in self.pt.dataset:
+                            datavec = np.zeros(self.pt.lsize_in)
                             datavec[data] = 1.0
                             datab.append(datavec)
                     else:
-                        for data in self.dataset:
-                            datavec = np.array(self.id_2_vec[data])
+                        for data in self.pt.dataset:
+                            datavec = np.array(self.pt.id_2_vec[data])
                             datab.append(datavec)
                 else:  # if not digit input, raw data_set is used
-                    datab = self.dataset
+                    datab = self.pt.dataset
                 self.databp = torch.from_numpy(np.array(datab))
                 self.databp = self.databp.type(torch.FloatTensor)
             else: # we assume sentence structure
                 self.databp=[]
-                if self.digit_input:
-                    if self.id_2_vec is None:  # No embedding, one-hot representation
-                        for sent in self.dataset:
+                if self.pt.digit_input:
+                    if self.pt.id_2_vec is None:  # No embedding, one-hot representation
+                        for sent in self.pt.dataset:
                             datab_sent=[]
                             for data in sent:
-                                datavec = np.zeros(self.lsize_in)
+                                datavec = np.zeros(self.pt.lsize_in)
                                 datavec[data] = 1.0
                                 datab_sent.append(datavec)
                             datab_sent = torch.from_numpy(np.array(datab_sent))
                             datab_sent = datab_sent.type(torch.FloatTensor)
                             self.databp.append(datab_sent)
                     else:
-                        for sent in self.dataset:
+                        for sent in self.pt.dataset:
                             datab_sent = []
                             for data in sent:
-                                datavec = np.array(self.id_2_vec[data])
+                                datavec = np.array(self.pt.id_2_vec[data])
                                 datab_sent.append(datavec)
                             datab_sent=torch.from_numpy(np.array(datab_sent))
                             datab_sent = datab_sent.type(torch.FloatTensor)
                             self.databp.append(datab_sent)
                 else:  # if not digit input, raw data_set is used
-                    for sent in self.dataset:
+                    for sent in self.pt.dataset:
                         datab_sent = torch.from_numpy(np.array(sent))
                         datab_sent = datab_sent.type(torch.FloatTensor)
                         self.databp.append(datab_sent)
@@ -1267,18 +1323,18 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
 
     def _init_data_sup(self):
 
-        assert self.digit_input
-        assert self.id_2_vec is not None
-        assert self.supervise_mode
+        assert self.pt.digit_input
+        assert self.pt.id_2_vec is not None
+        assert self.pt.supervise_mode
 
-        dataset=self.dataset["dataset"]
-        datab=np.zeros((len(dataset),len(self.id_2_vec[0])))
+        dataset=self.pt.dataset["dataset"]
+        datab=np.zeros((len(dataset),len(self.pt.id_2_vec[0])))
         for ii in range(len(dataset)):
-            datavec = np.array(self.id_2_vec[dataset[ii]])
+            datavec = np.array(self.pt.id_2_vec[dataset[ii]])
             datab[ii]=datavec
-        self.databp = torch.from_numpy(np.array(datab))
-        self.databp = self.databp.type(torch.FloatTensor)
-        self.data_init = True
+        self.pt.databp = torch.from_numpy(np.array(datab))
+        self.pt.databp = self.pt.databp.type(torch.FloatTensor)
+        self.pt.data_init = True
 
     # def __build_databp(self,inlabs):
     #     """
@@ -1318,7 +1374,7 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        return loss1+self.reg_lamda*torch.mean(loss_gate)#+self.reg_lamda*wnorm1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1+self.pt.reg_lamda*torch.mean(loss_gate)#+self.reg_lamda*wnorm1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
@@ -1328,10 +1384,10 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
         allname = ["W_in", "W_out", "W_hd"]
         wnorm1=0
         for namep in allname:
-                wattr = getattr(self.rnn.gru_enc, namep)
+                wattr = getattr(self.pt.rnn.gru_enc, namep)
                 wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
                 try:
-                    wattr = getattr(self.rnn.gru_dec, namep)
+                    wattr = getattr(self.pt.rnn.gru_dec, namep)
                     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
                 except:
                     pass
@@ -1341,7 +1397,7 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
         wnorm1=wnorm1/(len(allname))
-        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1+self.pt.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_ExpertReg(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
@@ -1351,14 +1407,14 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
         allname = ["Wiz", "Whz", "Win", "Whn"]
         wnorm1=0
         for namep in allname:
-                wattr = getattr(self.rnn.gru_enc, namep)
+                wattr = getattr(self.pt.rnn.gru_enc, namep)
                 wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
                 try:
-                    wattr = getattr(self.rnn.gru_dec, namep)
+                    wattr = getattr(self.pt.rnn.gru_dec, namep)
                     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
                 except:
                     pass
-        wattr = getattr(self.rnn, "h2o")
+        wattr = getattr(self.pt.rnn, "h2o")
         logith2o = wattr.weight# + wattr.bias.view(-1)
         pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
@@ -1367,7 +1423,7 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
         # wnorm1=wnorm1/(2*len(allname))
-        return loss1+ self.reg_lamda * lossh2o # + self.reg_lamda *wnorm1 # + 0.001 * l1_reg #  + 0.01 * l1_reg
+        return loss1+ self.pt.reg_lamda * lossh2o # + self.reg_lamda *wnorm1 # + 0.001 * l1_reg #  + 0.01 * l1_reg
 
 
 
@@ -1377,18 +1433,18 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
         # loss1 = self.lossc(outputl, outlab)
         loss1 = lossc(outputl, outlab)
         wnorm1=0
-        if self.rnn.weight_dropout>0:
-            weight_ih=self.rnn.gru.module.weight_ih_l0
-            weight_hh = self.rnn.gru.module.weight_hh_l0
+        if self.pt.rnn.weight_dropout>0:
+            weight_ih=self.pt.rnn.gru.module.weight_ih_l0
+            weight_hh = self.pt.rnn.gru.module.weight_hh_l0
         else:
-            weight_ih = self.rnn.gru.weight_ih_l0
-            weight_hh = self.rnn.gru.weight_hh_l0
+            weight_ih = self.pt.rnn.gru.weight_ih_l0
+            weight_hh = self.pt.rnn.gru.weight_hh_l0
         wnorm1 = wnorm1 + torch.mean(torch.abs(weight_ih)) + torch.mean(torch.abs(weight_hh))
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
         wnorm1=wnorm1/6
-        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1+self.pt.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     # def raw_loss(self, output, label, rnn, iis):
     #     return output
@@ -1432,16 +1488,16 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
     def do_eval_custom_pos_auto(self,step_eval=300):
 
         startt = time.time()
-        self.rnn.eval()
+        self.pt.rnn.eval()
         perpl=[[],[],[],[]]
         for iis in range(step_eval):
-            if self.gpuavail:
-                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+            if self.pt.gpuavail:
+                hidden = self.pt.rnn.initHidden_cuda(self.pt.device, self.pt.batch)
             else:
-                hidden = self.rnn.initHidden(self.batch)
-            x, label = self.get_data()
+                hidden = self.pt.rnn.initHidden(self.pt.batch)
+            x, label = self.pt.get_data()
             output, hidden = self.rnn(x, hidden, schedule=1.0)
-            loss11, loss12, loss21, loss22 = self.custom_loss_pos_auto_eval(output, label, self.rnn, iis)
+            loss11, loss12, loss21, loss22 = self.custom_loss_pos_auto_eval(output, label, self.pt.rnn, iis)
             perpl[0].append(loss11.cpu().item())
             perpl[1].append(loss12.cpu().item())
             perpl[2].append(loss21.cpu().item())
@@ -1453,7 +1509,7 @@ class PyTrain_Interface_others(PyTrain_Interface_Default):
         print("Evaluation Perplexity 22: ", np.mean(np.array(perpl[3])))
         endt = time.time()
         print("Time used in evaluation:", endt - startt)
-        if self.gpuavail:
+        if self.pt.gpuavail:
             torch.cuda.empty_cache()
 
 
@@ -1463,7 +1519,7 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
     A pytrain interface object to plug into PyTrain_Custom
     """
     def __init__(self):
-        pass
+        super(self.__class__, self).__init__()
 
     def _init_data_continous(self,limit=1e9):
         assert self.digit_input
@@ -1558,7 +1614,7 @@ class PyTrain_Interface_encdec(PyTrain_Interface_Default):
     A pytrain interface object to plug into PyTrain_Custom
     """
     def __init__(self):
-        pass
+        super(self.__class__, self).__init__()
 
     def custom_eval_mem_enc_dec(self, x, label, rnn):
         """
@@ -1631,7 +1687,7 @@ class PyTrain_Interface_seq2seq(PyTrain_Interface_Default):
     A pytrain interface object to plug into PyTrain_Custom
     """
     def __init__(self):
-        pass
+        super(self.__class__, self).__init__()
 
     def _init_data_seq2seq(self,limit=1e9):
 
@@ -1771,7 +1827,7 @@ class PyTrain_Interface_attn(PyTrain_Interface_Default):
     A pytrain interface object to plug into PyTrain_Custom
     """
     def __init__(self):
-        pass
+        super(self.__class__, self).__init__()
 
     def KNWLoss_WeightReg_Attn(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
@@ -1856,9 +1912,20 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
     A pytrain interface object to plug into PyTrain_Custom
     """
     def __init__(self):
-        pass
+        super(self.__class__, self).__init__()
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
 
     def KNWLoss_WeightReg_TDFF(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_WeightReg_TDFF")
+            return True
+
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
@@ -1866,7 +1933,7 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         allname = ["W_in", "W_out","Whd0"]
         wnorm1=0
         for namep in allname:
-            wattr = getattr(self.rnn, namep)
+            wattr = getattr(self.pt.rnn, namep)
             wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
         # for ii in range(self.rnn.num_layers):
         #     wnorm1 = wnorm1 + torch.mean(torch.abs(self.rnn.hd_layer_stack[ii][1].weight))
@@ -1876,9 +1943,14 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
         wnorm1=wnorm1/len(allname)
-        return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1+self.pt.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_WeightEnergyReg_TDFF(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_WeightEnergyReg_TDFF")
+            return True
+
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
@@ -1886,7 +1958,7 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         allname = ["W_in", "W_out","Whd0"]
         wnorm1=0
         for namep in allname:
-            wattr = getattr(self.rnn, namep)
+            wattr = getattr(self.pt.rnn, namep)
             wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
             # wnorm1 = wnorm1 + torch.mean(torch.mul(wattr.weight, wattr.weight))
 
@@ -1898,9 +1970,14 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
 
         # print(model.Wint.norm(2),model.hdt.norm(2))
 
-        return loss1+self.reg_lamda*(energyloss+wnorm1) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1+self.pt.reg_lamda*(energyloss+wnorm1) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_GateReg_TDFF_L1(self, outputl, outlab, model=None, cstep=None, posi_ctrl=1):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_GateReg_TDFF_L1")
+            return True
+
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
         if posi_ctrl is None:
@@ -1917,14 +1994,14 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         allname = ["W_in", "W_out","Whd0"]
         wnorm1=0
         for namep in allname:
-                wattr = getattr(self.rnn, namep)
+                wattr = getattr(self.pt.rnn, namep)
                 wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
         # wattr = getattr(self.rnn, "h2o")
         # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        return loss1 + 0.01*wnorm1 + self.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        return loss1 + 0.01*wnorm1 + self.pt.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def custom_eval_mem_tdff(self, x, label, rnn):
         """
@@ -1957,7 +2034,7 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
             for item in ["W_in","Whd0","W_out"]:
                 self.training_data_mem["gradInfo"][item]=[]
         for item in ["W_in","Whd0","W_out"]:
-            attr=getattr(self.rnn,item)
+            attr=getattr(self.pt.rnn,item)
             grad=attr.weight.grad
             self.training_data_mem["gradInfo"][item].append(grad)
 
@@ -1983,8 +2060,8 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
             self.data_col_mem["datalist"][0] = torch.squeeze(x)
             self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
             self.data_col_mem["datalist"][2] = torch.squeeze(output)
-            self.data_col_mem["datalist"][3] = self.rnn.Wint.view(-1,1)
-            self.data_col_mem["datalist"][4] = self.rnn.hdt[0].view(-1,1)
+            self.data_col_mem["datalist"][3] = self.pt.rnn.Wint.view(-1,1)
+            self.data_col_mem["datalist"][4] = self.pt.rnn.hdt[0].view(-1,1)
             # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
 
     def custom_example_data_collection_tdffrnn(self, x, output, hidden, label):
@@ -2009,7 +2086,7 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
             self.data_col_mem["datalist"][0] = torch.squeeze(x)
             self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
             self.data_col_mem["datalist"][2] = torch.squeeze(output)
-            self.data_col_mem["datalist"][3] = torch.squeeze(self.rnn.hdt).transpose(1,0)
+            self.data_col_mem["datalist"][3] = torch.squeeze(self.pt.rnn.hdt).transpose(1,0)
             # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
 
 
@@ -2019,7 +2096,7 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
     """
 
     def __init__(self):
-        pass
+        super(self.__class__, self).__init__()
 
     def _init_data_sup_backwardreverse(self,limit=1e9):
         """
@@ -2028,59 +2105,59 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
         :param limit:
         :return:
         """
-        assert self.supervise_mode
-        assert len(self.dataset["dataset"]) == 2 # data_set,pvec_l
-        assert self.digit_input
-        assert self.id_2_vec is None # No embedding, one-hot representation
+        assert self.pt.supervise_mode
+        assert len(self.pt.dataset["dataset"]) == 2 # data_set,pvec_l
+        assert self.pt.digit_input
+        assert self.pt.id_2_vec is None # No embedding, one-hot representation
 
-        self.dataset_length = len(self.dataset["dataset"][0])
+        self.dataset_length = len(self.pt.dataset["dataset"][0])
         print("Dataset length ", self.dataset_length)
 
-        self.databp=torch.zeros((len(self.dataset["dataset"][0]),self.lsize_in))
-        for ii, data in enumerate(self.dataset["dataset"][0]):
+        self.databp=torch.zeros((len(self.pt.dataset["dataset"][0]),self.pt.lsize_in))
+        for ii, data in enumerate(self.pt.dataset["dataset"][0]):
             self.databp[ii,data] = 1.0
         self.data_init = True
 
     def get_data_sup_backwardreverse(self,batch=None, rstartv=None):
-        assert self.supervise_mode
-        assert len(self.dataset["dataset"]) == 2  # data_set,pvec_l
-        assert self.data_init
+        assert self.pt.supervise_mode
+        assert len(self.pt.dataset["dataset"]) == 2  # data_set,pvec_l
+        assert self.pt.data_init
 
         if batch is None:
-            batch=self.batch
+            batch=self.pt.batch
 
         if rstartv is None: # random mode
-            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"][0]) - 1))
+            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset["dataset"][0]) - 1))
         else:
             assert len(rstartv)==batch
 
         xl = np.zeros(batch)
         outl = np.zeros(batch)
         for iib in range(batch):
-            xl[iib] = self.dataset["dataset"][0][int(rstartv[iib])]
-            outl[iib] = self.dataset["label"][int(rstartv[iib])]
+            xl[iib] = self.pt.dataset["dataset"][0][int(rstartv[iib])]
+            outl[iib] = self.pt.dataset["label"][int(rstartv[iib])]
         inlab = torch.from_numpy(xl)
         inlab = inlab.type(torch.LongTensor)
         outlab = torch.from_numpy(outl)
         outlab = outlab.type(torch.LongTensor)
 
-        vec1m = torch.zeros(batch, self.lsize_in)
+        vec1m = torch.zeros(batch, self.pt.lsize_in)
         for iib in range(batch):
             vec1=self.databp[int(rstartv[iib])]
             vec1m[iib,:]=vec1
         x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
 
-        pvec_mat = torch.zeros(batch, self.lsize_in)
+        pvec_mat = torch.zeros(batch, self.pt.lsize_in)
         for iib in range(batch):
-            vec1=self.dataset["dataset"][1][int(rstartv[iib])]
+            vec1=self.pt.dataset["dataset"][1][int(rstartv[iib])]
             pvec_mat[iib,:]=torch.from_numpy(vec1)
         pvec_matv = Variable(pvec_mat, requires_grad=True).type(torch.FloatTensor)
 
-        if self.gpuavail:
+        if self.pt.gpuavail:
             # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
-            outlab = outlab.to(self.device)
-            x = x.to(self.device)
-            pvec_matv = pvec_matv.to(self.device)
+            outlab = outlab.to(self.pt.device)
+            x = x.to(self.pt.device)
+            pvec_matv = pvec_matv.to(self.pt.device)
 
         # print(x.shape,pvec_matv.shape)
         return (x, pvec_matv) , outlab, inlab
