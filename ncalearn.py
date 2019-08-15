@@ -793,7 +793,7 @@ class PyTrain_Lite(object):
 
         if self.seqtrain:
             output, hidden = self.rnn(x, hidden, schedule=1.0)
-            self.example_data_collection(x, output, hidden, label,items=items)
+            self.example_data_collection(x, output, hidden, label, items=items)
         else:
             for iiw in range(self.window):
                 output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=1.0)
@@ -1097,19 +1097,19 @@ class PyTrain_Interface_Default(object):
         :return:
         """
         self.test_print_interface=True
-        print("Testing init_data: ")
+        print("init_data: ")
         self.init_data()
-        print("Testing get_data: ")
+        print("get_data: ")
         self.get_data()
-        print("Testing lossf: ")
+        print("lossf: ")
         self.lossf(None,None)
-        print("Testing lossf_eval: ")
+        print("lossf_eval: ")
         self.lossf_eval(None,None)
-        print("Testing eval_mem: ")
-        self.eval_mem()
-        print("Testing while_training: ")
+        print("eval_mem: ")
+        self.eval_mem(None,None,None)
+        print("while_training: ")
         self.while_training()
-        print("Testing example_data_collection: ")
+        print("example_data_collection: ")
         self.example_data_collection()
         self.test_print_interface = False
 
@@ -1180,8 +1180,8 @@ class PyTrain_Interface_Default(object):
         assert self.pt.digit_input
         assert self.pt.id_2_vec is None # No embedding, one-hot representation
 
-        self.dataset_length=len(self.pt.dataset["dataset"])
-        print("Dataset length ",self.dataset_length)
+        self.pt.dataset_length=len(self.pt.dataset["dataset"])
+        print("Dataset length ",self.pt.dataset_length)
 
         if len(self.pt.dataset)*self.pt.lsize_in<limit:
             self.pt.databp=[]
@@ -1920,6 +1920,18 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
         return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
 
+    def eval_mem(self, x, label, rnn):
+        """
+        Defalt evalmem
+        called in do_eval
+        usage self.eval_mem(x, label, self.rnn)
+        :param kwargs:
+        :param args:
+        :return:
+        """
+
+        return self.custom_eval_mem_tdff(x, label, rnn)
+
     def KNWLoss_WeightReg_TDFF(self, outputl, outlab, model=None, cstep=None):
 
         if self.test_print_interface:
@@ -1947,7 +1959,7 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
 
     def KNWLoss_WeightEnergyReg_TDFF(self, outputl, outlab, model=None, cstep=None):
 
-        if self.test_print_interface:
+        if self.pt.test_print_interface:
             print("KNWLoss interface: KNWLoss_WeightEnergyReg_TDFF")
             return True
 
@@ -2010,15 +2022,20 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         :param hidden:
         :return:
         """
-        if self.evalmem is None:
-            self.evalmem = [[] for ii in range(5)]  # x,label,hd_in,hd0, output
+        if self.test_print_interface:
+            print("Eval mem interface: custom_eval_mem_tdff")
+            return True
+
+
+        if self.pt.evalmem is None:
+            self.pt.evalmem = [[] for ii in range(5)]  # x,label,hd_in,hd0, output
         else:
             try:
-                self.evalmem[0].append(x.cpu().data.numpy())
-                self.evalmem[1].append(label.cpu().data.numpy())
-                self.evalmem[2].append(rnn.Wint.cpu().data.numpy())
-                self.evalmem[3].append(rnn.hdt.cpu().data.numpy())
-                self.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
+                self.pt.evalmem[0].append(x.cpu().data.numpy())
+                self.pt.evalmem[1].append(label.cpu().data.numpy())
+                self.pt.evalmem[2].append(rnn.Wint.cpu().data.numpy())
+                self.pt.evalmem[3].append(rnn.hdt.cpu().data.numpy())
+                self.pt.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
             except:
                 # print("eval_mem failed")
                 pass
@@ -2098,27 +2115,54 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
     def __init__(self):
         super(self.__class__, self).__init__()
 
-    def _init_data_sup_backwardreverse(self,limit=1e9):
+    def init_data(self,*args,**kwargs):
+        return self.init_data_sup_backwardreverse()
+
+    def get_data(self, batch=None, rstartv=None):
+        return self.get_data_sup_backwardreverse(batch=batch, rstartv=rstartv)
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss_backwardreverse(outputl, outlab, model=model, cstep=cstep)
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss_backwardreverse(outputl, outlab, model=model, cstep=cstep)
+
+    def eval_mem(self, x, label, rnn):
+        return self.custom_eval_mem_backwardreverse(x, label, rnn)
+
+    def example_data_collection(self,x, output, hidden, label, items=None):
+        return self.custom_example_data_collection_backwardreverse(x, output, hidden, label)
+
+    def init_data_sup_backwardreverse(self,limit=1e9):
         """
         _init_data_sup_backwardreverse 2019.8.13
 
         :param limit:
         :return:
         """
+        if self.test_print_interface:
+            print("Init data: _init_data_sup_backwardreverse")
+            return True
+
         assert self.pt.supervise_mode
         assert len(self.pt.dataset["dataset"]) == 2 # data_set,pvec_l
         assert self.pt.digit_input
         assert self.pt.id_2_vec is None # No embedding, one-hot representation
 
-        self.dataset_length = len(self.pt.dataset["dataset"][0])
-        print("Dataset length ", self.dataset_length)
+        self.pt.dataset_length = len(self.pt.dataset["dataset"][0])
+        print("Dataset length ", self.pt.dataset_length)
 
-        self.databp=torch.zeros((len(self.pt.dataset["dataset"][0]),self.pt.lsize_in))
+        self.pt.databp=torch.zeros((len(self.pt.dataset["dataset"][0]),self.pt.lsize_in))
         for ii, data in enumerate(self.pt.dataset["dataset"][0]):
-            self.databp[ii,data] = 1.0
-        self.data_init = True
+            self.pt.databp[ii,data] = 1.0
+        self.pt.data_init = True
 
     def get_data_sup_backwardreverse(self,batch=None, rstartv=None):
+
+        if self.test_print_interface:
+            print("Get data: get_data_sup_backwardreverse")
+            return True
+
         assert self.pt.supervise_mode
         assert len(self.pt.dataset["dataset"]) == 2  # data_set,pvec_l
         assert self.pt.data_init
@@ -2143,7 +2187,7 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
 
         vec1m = torch.zeros(batch, self.pt.lsize_in)
         for iib in range(batch):
-            vec1=self.databp[int(rstartv[iib])]
+            vec1=self.pt.databp[int(rstartv[iib])]
             vec1m[iib,:]=vec1
         x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
 
@@ -2163,6 +2207,10 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
         return (x, pvec_matv) , outlab, inlab
 
     def KNWLoss_backwardreverse(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLos: KNWLoss_backwardreverse")
+            return True
 
         assert len(outputl)==2
         lossc=torch.nn.CrossEntropyLoss()
@@ -2195,32 +2243,38 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
         :param hidden:
         :return:
         """
-        if self.evalmem is None:
-            self.evalmem = [[] for ii in range(3)]  # label,p_vec, output
+        if self.test_print_interface:
+            print("evalmem: custom_eval_mem_backwardreverse")
+            return True
+
+        if self.pt.evalmem is None:
+            self.pt.evalmem = [[] for ii in range(3)]  # label,p_vec, output
         else:
             try:
-                self.evalmem[0].append(x[0].cpu().data.numpy())
-                self.evalmem[1].append(x[1].cpu().data.numpy())
-                self.evalmem[2].append(rnn.lgoutput.cpu().data.numpy())
+                self.pt.evalmem[0].append(x[0].cpu().data.numpy())
+                self.pt.evalmem[1].append(x[1].cpu().data.numpy())
+                self.pt.evalmem[2].append(rnn.lgoutput.cpu().data.numpy())
             except:
                 # print("eval_mem failed")
                 pass
 
-    def custom_example_data_collection_backwardreverse(self, x, output, hidden, label):
+    def custom_example_data_collection_backwardreverse(self, x, output, hidden, label, items=None):
 
-        print(output)
+        if self.test_print_interface:
+            print("example_data_collection: custom_example_data_collection_backwardreverse")
+            return True
 
-        if self.data_col_mem is None:
+        if self.pt.data_col_mem is None:
             # Step 1 of example_data_collection
-            self.data_col_mem=dict([])
-            self.data_col_mem["titlelist"]=["input","p_vec","sample_vec"]
-            self.data_col_mem["sysmlist"]=[True,True,True]
-            self.data_col_mem["mode"]="predict"
-            self.data_col_mem["datalist"] = [None,None,None]
-            self.data_col_mem["climlist"] = [[None, None], [None, None], [None, None]]
+            self.pt.data_col_mem=dict([])
+            self.pt.data_col_mem["titlelist"]=["input","p_vec","sample_vec"]
+            self.pt.data_col_mem["sysmlist"]=[True,True,True]
+            self.pt.data_col_mem["mode"]="predict"
+            self.pt.data_col_mem["datalist"] = [None,None,None]
+            self.pt.data_col_mem["climlist"] = [[None, None], [None, None], [None, None]]
 
-        if self.data_col_mem["datalist"][0] is None:
-            self.data_col_mem["datalist"][0] = x[0]
-            self.data_col_mem["datalist"][1] = x[1]
-            self.data_col_mem["datalist"][2] = output[0]
+        if self.pt.data_col_mem["datalist"][0] is None:
+            self.pt.data_col_mem["datalist"][0] = x[0]
+            self.pt.data_col_mem["datalist"][1] = x[1]
+            self.pt.data_col_mem["datalist"][2] = output[0]
 
