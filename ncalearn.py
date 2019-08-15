@@ -968,60 +968,6 @@ class PyTrain_Custom(PyTrain_Lite):
         # return self.custom_eval_mem_attn(x, label, rnn)
         return self._evalmem(x, label, rnn)
 
-    def custom_eval_mem_enc_dec(self, x, label, rnn):
-        """
-                Archiving date
-                :param output:
-                :param hidden:
-                :return:
-                """
-
-        # temp_data_col_mem["datalist"][2] = [self.rnn.gru_enc.ht.view(length, hdsize),
-        #                                     self.rnn.gru_dec.ht.view(anslength, hdsize)]
-        # temp_data_col_mem["datalist"][3] = [self.rnn.gru_enc.zt.view(length, hdsize),
-        #                                     self.rnn.gru_dec.zt.view(anslength, hdsize)]
-        # temp_data_col_mem["datalist"][4] = [self.rnn.gru_enc.nt.view(length, hdsize),
-        #                                     self.rnn.gru_dec.nt.view(anslength, hdsize)]
-
-        if self.evalmem is None:
-            self.evalmem = [[] for ii in range(8)]  # x,label,enc(ht,zt,nt),dec(ht,zt,nt)
-        else:
-            try:
-                self.evalmem[0].append(x.cpu().data.numpy())
-                self.evalmem[1].append(label.cpu().data.numpy())
-                self.evalmem[2].append(rnn.gru_enc.ht.cpu().data.numpy())
-                self.evalmem[3].append(rnn.gru_enc.zt.cpu().data.numpy())
-                self.evalmem[4].append(rnn.gru_enc.nt.cpu().data.numpy())
-                self.evalmem[5].append(rnn.gru_dec.ht.cpu().data.numpy())
-                self.evalmem[6].append(rnn.gru_dec.zt.cpu().data.numpy())
-                self.evalmem[7].append(rnn.gru_dec.nt.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
-
-    def custom_eval_mem_attn(self, x, label, rnn):
-        """
-        Archiving date
-        :param output:
-        :param hidden:
-        :return:
-        """
-        if self.evalmem is None:
-            # self.evalmem = [[] for ii in range(5)]  # x,label,attn1,attn2,attn_ff
-            self.evalmem = [[] for ii in range(5)]  # x,label,attn1,hd0,hdout
-        else:
-            try:
-                self.evalmem[0].append(x.cpu().data.numpy())
-                self.evalmem[1].append(label.cpu().data.numpy())
-                self.evalmem[2].append(rnn.attnM1.cpu().data.numpy())
-                self.evalmem[3].append(rnn.hd0.cpu().data.numpy())
-                # self.evalmem[3].append(rnn.attnM2.cpu().data.numpy())
-                # self.evalmem[4].append(rnn.attnM3.cpu().data.numpy())
-                self.evalmem[4].append(rnn.hdout.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
-
 
     def while_training(self,iis):
         # self.context_monitor(iis)
@@ -1032,118 +978,6 @@ class PyTrain_Custom(PyTrain_Lite):
         pass
         # self.context_id=int(iis/100)%self.context_total
         # self.context_switch(self.context_id)
-
-    def _init_data_sent_sup(self,limit=1e9):
-        assert self.supervise_mode
-        assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
-        assert self.digit_input
-        assert self.id_2_vec is None # No embedding, one-hot representation
-
-        self.dataset_length=len(self.dataset["dataset"])
-        print("Dataset length ",self.dataset_length)
-
-        if len(self.dataset)*self.lsize_in<limit:
-            self.databp=[]
-            for sent in self.dataset["dataset"]:
-                datab_sent=[]
-                for data in sent:
-                    datavec = np.zeros(self.lsize_in)
-                    datavec[data] = 1.0
-                    datab_sent.append(datavec)
-                datab_sent = torch.from_numpy(np.array(datab_sent))
-                datab_sent = datab_sent.type(torch.FloatTensor)
-                self.databp.append(datab_sent)
-            self.data_init = True
-        else:
-            print("Warning, large dataset, not pre-processed.")
-            self.databp=None
-            self.data_init=False
-
-    def _init_data_all(self,limit=1e9):
-        if len(self.dataset)*self.lsize_in<limit:
-            datab = []
-            if self.digit_input:
-                if self.id_2_vec is None: # No embedding, one-hot representation
-                    self.PAD_VEC=np.zeros(self.lsize_in, dtype=np.float32)
-                    self.PAD_VEC[self.SYM_PAD] = 1.0
-            if type(self.dataset[0]) != list:
-                if self.digit_input:
-                    if self.id_2_vec is None:  # No embedding, one-hot representation
-                        for data in self.dataset:
-                            datavec = np.zeros(self.lsize_in)
-                            datavec[data] = 1.0
-                            datab.append(datavec)
-                    else:
-                        for data in self.dataset:
-                            datavec = np.array(self.id_2_vec[data])
-                            datab.append(datavec)
-                else:  # if not digit input, raw data_set is used
-                    datab = self.dataset
-                self.databp = torch.from_numpy(np.array(datab))
-                self.databp = self.databp.type(torch.FloatTensor)
-            else: # we assume sentence structure
-                self.databp=[]
-                if self.digit_input:
-                    if self.id_2_vec is None:  # No embedding, one-hot representation
-                        for sent in self.dataset:
-                            datab_sent=[]
-                            for data in sent:
-                                datavec = np.zeros(self.lsize_in)
-                                datavec[data] = 1.0
-                                datab_sent.append(datavec)
-                            datab_sent = torch.from_numpy(np.array(datab_sent))
-                            datab_sent = datab_sent.type(torch.FloatTensor)
-                            self.databp.append(datab_sent)
-                    else:
-                        for sent in self.dataset:
-                            datab_sent = []
-                            for data in sent:
-                                datavec = np.array(self.id_2_vec[data])
-                                datab_sent.append(datavec)
-                            datab_sent=torch.from_numpy(np.array(datab_sent))
-                            datab_sent = datab_sent.type(torch.FloatTensor)
-                            self.databp.append(datab_sent)
-                else:  # if not digit input, raw data_set is used
-                    for sent in self.dataset:
-                        datab_sent = torch.from_numpy(np.array(sent))
-                        datab_sent = datab_sent.type(torch.FloatTensor)
-                        self.databp.append(datab_sent)
-            self.data_init = True
-        else:
-            print("Warning, large dataset, not pre-processed.")
-            self.databp=None
-            self.data_init=False
-
-    def _init_data_sup(self):
-
-        assert self.digit_input
-        assert self.id_2_vec is not None
-        assert self.supervise_mode
-
-        dataset=self.dataset["dataset"]
-        datab=np.zeros((len(dataset),len(self.id_2_vec[0])))
-        for ii in range(len(dataset)):
-            datavec = np.array(self.id_2_vec[dataset[ii]])
-            datab[ii]=datavec
-        self.databp = torch.from_numpy(np.array(datab))
-        self.databp = self.databp.type(torch.FloatTensor)
-        self.data_init = True
-
-    # def __build_databp(self,inlabs):
-    #     """
-    #     Build databp from inlab (when dataset too large)
-    #     :param inlab:
-    #     :return:
-    #     """
-    #     assert self.digit_input
-    #     assert self.id_2_vec is not None
-    #     assert self.supervise_mode
-    #
-    #     datab=np.zeros((len(inlabs),self.lsize_in))
-    #     for ii_b in range(len(inlabs)):
-    #         datab[ii_b,inlabs[ii_b]]=np.array(self.id_2_vec[inlabs[ii_b]])
-    #     databp = torch.from_numpy(np.array(datab))
-    #     return databp
 
     def _build_databp(self,inlabs):
         """
@@ -1297,6 +1131,171 @@ class PyTrain_Custom(PyTrain_Lite):
         # l1_reg = model.h2o.weight.norm(2)
         return loss1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
+
+    def example_data_collection(self, x, output, hidden, label,items="all"):
+        # return self.custom_example_data_collection_continuous(x, output, hidden)
+        # return self.custom_example_data_collection_seq2seq(x, output, hidden, label,items=items)
+        # return self.custom_example_data_collection_attention(x, output, hidden, label)
+        # return self.custom_example_data_collection_tdff(x, output, hidden, label)
+        return self._example_data_collection(x, output, hidden, label)
+
+class PyTrain_Interface_Default(object):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
+
+    def evalmem(self,*kwargs,**args):
+        """
+        Defalt evalmem
+        called in do_eval
+        usage self.eval_mem(x, label, self.rnn)
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        pass
+
+    def while_training(self,*kwargs,**args):
+        """
+        Default while_training function
+        called while training
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        pass
+
+    def example_data_collection(self,*kwargs,**args):
+        """
+        Default example_data_collection function
+        called by plot_example
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        pass
+
+class PyTrain_Interface_others(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
+
+    def _init_data_sent_sup(self,limit=1e9):
+        assert self.supervise_mode
+        assert type(self.dataset["dataset"][0]) == list # we assume sentence structure
+        assert self.digit_input
+        assert self.id_2_vec is None # No embedding, one-hot representation
+
+        self.dataset_length=len(self.dataset["dataset"])
+        print("Dataset length ",self.dataset_length)
+
+        if len(self.dataset)*self.lsize_in<limit:
+            self.databp=[]
+            for sent in self.dataset["dataset"]:
+                datab_sent=[]
+                for data in sent:
+                    datavec = np.zeros(self.lsize_in)
+                    datavec[data] = 1.0
+                    datab_sent.append(datavec)
+                datab_sent = torch.from_numpy(np.array(datab_sent))
+                datab_sent = datab_sent.type(torch.FloatTensor)
+                self.databp.append(datab_sent)
+            self.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.databp=None
+            self.data_init=False
+
+    def _init_data_all(self,limit=1e9):
+        if len(self.dataset)*self.lsize_in<limit:
+            datab = []
+            if self.digit_input:
+                if self.id_2_vec is None: # No embedding, one-hot representation
+                    self.PAD_VEC=np.zeros(self.lsize_in, dtype=np.float32)
+                    self.PAD_VEC[self.SYM_PAD] = 1.0
+            if type(self.dataset[0]) != list:
+                if self.digit_input:
+                    if self.id_2_vec is None:  # No embedding, one-hot representation
+                        for data in self.dataset:
+                            datavec = np.zeros(self.lsize_in)
+                            datavec[data] = 1.0
+                            datab.append(datavec)
+                    else:
+                        for data in self.dataset:
+                            datavec = np.array(self.id_2_vec[data])
+                            datab.append(datavec)
+                else:  # if not digit input, raw data_set is used
+                    datab = self.dataset
+                self.databp = torch.from_numpy(np.array(datab))
+                self.databp = self.databp.type(torch.FloatTensor)
+            else: # we assume sentence structure
+                self.databp=[]
+                if self.digit_input:
+                    if self.id_2_vec is None:  # No embedding, one-hot representation
+                        for sent in self.dataset:
+                            datab_sent=[]
+                            for data in sent:
+                                datavec = np.zeros(self.lsize_in)
+                                datavec[data] = 1.0
+                                datab_sent.append(datavec)
+                            datab_sent = torch.from_numpy(np.array(datab_sent))
+                            datab_sent = datab_sent.type(torch.FloatTensor)
+                            self.databp.append(datab_sent)
+                    else:
+                        for sent in self.dataset:
+                            datab_sent = []
+                            for data in sent:
+                                datavec = np.array(self.id_2_vec[data])
+                                datab_sent.append(datavec)
+                            datab_sent=torch.from_numpy(np.array(datab_sent))
+                            datab_sent = datab_sent.type(torch.FloatTensor)
+                            self.databp.append(datab_sent)
+                else:  # if not digit input, raw data_set is used
+                    for sent in self.dataset:
+                        datab_sent = torch.from_numpy(np.array(sent))
+                        datab_sent = datab_sent.type(torch.FloatTensor)
+                        self.databp.append(datab_sent)
+            self.data_init = True
+        else:
+            print("Warning, large dataset, not pre-processed.")
+            self.databp=None
+            self.data_init=False
+
+    def _init_data_sup(self):
+
+        assert self.digit_input
+        assert self.id_2_vec is not None
+        assert self.supervise_mode
+
+        dataset=self.dataset["dataset"]
+        datab=np.zeros((len(dataset),len(self.id_2_vec[0])))
+        for ii in range(len(dataset)):
+            datavec = np.array(self.id_2_vec[dataset[ii]])
+            datab[ii]=datavec
+        self.databp = torch.from_numpy(np.array(datab))
+        self.databp = self.databp.type(torch.FloatTensor)
+        self.data_init = True
+
+    # def __build_databp(self,inlabs):
+    #     """
+    #     Build databp from inlab (when dataset too large)
+    #     :param inlab:
+    #     :return:
+    #     """
+    #     assert self.digit_input
+    #     assert self.id_2_vec is not None
+    #     assert self.supervise_mode
+    #
+    #     datab=np.zeros((len(inlabs),self.lsize_in))
+    #     for ii_b in range(len(inlabs)):
+    #         datab[ii_b,inlabs[ii_b]]=np.array(self.id_2_vec[inlabs[ii_b]])
+    #     databp = torch.from_numpy(np.array(datab))
+    #     return databp
+
     def KNWLoss_GateReg_hgate(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
@@ -1320,66 +1319,6 @@ class PyTrain_Custom(PyTrain_Lite):
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
         return loss1+self.reg_lamda*torch.mean(loss_gate)#+self.reg_lamda*wnorm1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
-    def KNWLoss_GateReg_encdec(self, outputl, outlab, model=None, cstep=None):
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-        # if outputl.shape[-1]==outlab.shape[-1]:
-        #     loss1 = lossc(outputl, outlab)
-        # else:
-        #     loss1 = lossc(outputl[:,:,(outputl.shape[-1]-outlab.shape[-1]):], outlab)
-        # loss_gate = model.siggate
-        # loss_gate = model.sigmoid(model.hgate)
-
-        loss_gate_enc = (model.sigmoid(model.gru_enc.Whz_mask)+model.sigmoid(model.gru_enc.Whn_mask))/2
-        loss_gate_dec = (model.sigmoid(model.gru_dec.Whz_mask)+model.sigmoid(model.gru_dec.Whn_mask))/2
-
-        # allname = ["Wiz", "Whz", "Win", "Whn"]
-        # wnorm1 = 0
-        # for namep in allname:
-        #     wattr = getattr(self.rnn.gru_enc, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        #     wattr = getattr(self.rnn.gru_dec, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-        return loss1+self.reg_lamda*torch.mean((loss_gate_enc+loss_gate_dec)/2) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-
-    def KNWLoss_GateReg_encdec_L1(self, outputl, outlab, model=None, cstep=None):
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-        # if outputl.shape[-1]==outlab.shape[-1]:
-        #     loss1 = lossc(outputl, outlab)
-        # else:
-        #     loss1 = lossc(outputl[:,:,(outputl.shape[-1]-outlab.shape[-1]):], outlab)
-        # loss_gate = model.siggate
-        # loss_gate = model.sigmoid(model.hgate)
-
-        loss_gate_enc = (model.sigmoid(model.gru_enc.Whz_mask)+model.sigmoid(model.gru_enc.Whn_mask))/2
-        loss_gate_dec = (model.sigmoid(model.gru_dec.Whz_mask)+model.sigmoid(model.gru_dec.Whn_mask))/2
-
-        allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
-        wnorm1 = 0
-        for namep in allname:
-                wattr = getattr(self.rnn.gru_enc, namep)
-                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-                wattr = getattr(self.rnn.gru_dec, namep)
-                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-
-        # allname = ["Wiz", "Whz", "Win", "Whn"]
-        # wnorm1 = 0
-        # for namep in allname:
-        #     wattr = getattr(self.rnn.gru_enc, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        #     wattr = getattr(self.rnn.gru_dec, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
-        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
-        # l1_reg = model.h2o.weight.norm(2)
-        return loss1+self.reg_lamda*torch.mean((loss_gate_enc+loss_gate_dec)/2)+self.reg_lamda*wnorm1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
@@ -1454,7 +1393,6 @@ class PyTrain_Custom(PyTrain_Lite):
     # def raw_loss(self, output, label, rnn, iis):
     #     return output
 
-
     def custom_loss_pos_auto_0(self, outputl, outlab, model=None, cstep=None):
         """
         Loss function for pos_auto task context0
@@ -1518,50 +1456,7 @@ class PyTrain_Custom(PyTrain_Lite):
         if self.gpuavail:
             torch.cuda.empty_cache()
 
-    def example_data_collection(self, x, output, hidden, label,items="all"):
-        # return self.custom_example_data_collection_continuous(x, output, hidden)
-        # return self.custom_example_data_collection_seq2seq(x, output, hidden, label,items=items)
-        # return self.custom_example_data_collection_attention(x, output, hidden, label)
-        # return self.custom_example_data_collection_tdff(x, output, hidden, label)
-        return self._example_data_collection(x, output, hidden, label)
 
-class PyTrain_Interface_Default(object):
-    """
-    A pytrain interface object to plug into PyTrain_Custom
-    """
-    def __init__(self):
-        pass
-
-    def evalmem(self,*kwargs,**args):
-        """
-        Defalt evalmem
-        called in do_eval
-        usage self.eval_mem(x, label, self.rnn)
-        :param kwargs:
-        :param args:
-        :return:
-        """
-        pass
-
-    def while_training(self,*kwargs,**args):
-        """
-        Default while_training function
-        called while training
-        :param kwargs:
-        :param args:
-        :return:
-        """
-        pass
-
-    def example_data_collection(self,*kwargs,**args):
-        """
-        Default example_data_collection function
-        called by plot_example
-        :param kwargs:
-        :param args:
-        :return:
-        """
-        pass
 
 class PyTrain_Interface_continous(PyTrain_Interface_Default):
     """
@@ -1657,6 +1552,79 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
             self.data_col_mem["datalist"][2] = torch.cat((self.data_col_mem["datalist"][2], hidden.view(1, -1)), dim=0)
             self.data_col_mem["datalist"][3] = torch.cat((self.data_col_mem["datalist"][3], self.rnn.zt.view(1, -1)), dim=0)
             self.data_col_mem["datalist"][4] = torch.cat((self.data_col_mem["datalist"][4], self.rnn.nt.view(1, -1)), dim=0)
+
+class PyTrain_Interface_encdec(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self):
+        pass
+
+    def custom_eval_mem_enc_dec(self, x, label, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.evalmem is None:
+            self.evalmem = [[] for ii in range(8)]  # x,label,enc(ht,zt,nt),dec(ht,zt,nt)
+        else:
+            try:
+                self.evalmem[0].append(x.cpu().data.numpy())
+                self.evalmem[1].append(label.cpu().data.numpy())
+                self.evalmem[2].append(rnn.gru_enc.ht.cpu().data.numpy())
+                self.evalmem[3].append(rnn.gru_enc.zt.cpu().data.numpy())
+                self.evalmem[4].append(rnn.gru_enc.nt.cpu().data.numpy())
+                self.evalmem[5].append(rnn.gru_dec.ht.cpu().data.numpy())
+                self.evalmem[6].append(rnn.gru_dec.zt.cpu().data.numpy())
+                self.evalmem[7].append(rnn.gru_dec.nt.cpu().data.numpy())
+            except:
+                # print("eval_mem failed")
+                pass
+
+    def KNWLoss_GateReg_encdec(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        # if outputl.shape[-1]==outlab.shape[-1]:
+        #     loss1 = lossc(outputl, outlab)
+        # else:
+        #     loss1 = lossc(outputl[:,:,(outputl.shape[-1]-outlab.shape[-1]):], outlab)
+        # loss_gate = model.siggate
+        # loss_gate = model.sigmoid(model.hgate)
+
+        loss_gate_enc = (model.sigmoid(model.gru_enc.Whz_mask)+model.sigmoid(model.gru_enc.Whn_mask))/2
+        loss_gate_dec = (model.sigmoid(model.gru_dec.Whz_mask)+model.sigmoid(model.gru_dec.Whn_mask))/2
+
+        # allname = ["Wiz", "Whz", "Win", "Whn"]
+        # wnorm1 = 0
+        # for namep in allname:
+        #     wattr = getattr(self.rnn.gru_enc, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        #     wattr = getattr(self.rnn.gru_dec, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        return loss1+self.reg_lamda*torch.mean((loss_gate_enc+loss_gate_dec)/2) # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_GateReg_encdec_L1(self, outputl, outlab, model=None, cstep=None):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        loss_gate_enc = (model.sigmoid(model.gru_enc.Whz_mask)+model.sigmoid(model.gru_enc.Whn_mask))/2
+        loss_gate_dec = (model.sigmoid(model.gru_dec.Whz_mask)+model.sigmoid(model.gru_dec.Whn_mask))/2
+
+        allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
+        wnorm1 = 0
+        for namep in allname:
+                wattr = getattr(self.rnn.gru_enc, namep)
+                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+                wattr = getattr(self.rnn.gru_dec, namep)
+                wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        return loss1+self.reg_lamda*torch.mean((loss_gate_enc+loss_gate_dec)/2)+self.reg_lamda*wnorm1  # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
 class PyTrain_Interface_seq2seq(PyTrain_Interface_Default):
     """
@@ -1828,7 +1796,7 @@ class PyTrain_Interface_attn(PyTrain_Interface_Default):
         # l1_reg = model.h2o.weight.norm(2)
         wnorm1=wnorm1/3
         return loss1+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
-    
+
     def custom_example_data_collection_attention(self, x, output, hidden, label):
 
         lsize = x.shape[-1]
@@ -1857,6 +1825,29 @@ class PyTrain_Interface_attn(PyTrain_Interface_Default):
             self.data_col_mem["datalist"][4] = torch.squeeze(self.rnn.hd0)
             self.data_col_mem["datalist"][5] = self.rnn.hdout.view(-1,1)
             # self.data_col_mem["datalist"][5] = torch.squeeze(self.rnn.attnM3)
+
+    def custom_eval_mem_attn(self, x, label, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.evalmem is None:
+            # self.evalmem = [[] for ii in range(5)]  # x,label,attn1,attn2,attn_ff
+            self.evalmem = [[] for ii in range(5)]  # x,label,attn1,hd0,hdout
+        else:
+            try:
+                self.evalmem[0].append(x.cpu().data.numpy())
+                self.evalmem[1].append(label.cpu().data.numpy())
+                self.evalmem[2].append(rnn.attnM1.cpu().data.numpy())
+                self.evalmem[3].append(rnn.hd0.cpu().data.numpy())
+                # self.evalmem[3].append(rnn.attnM2.cpu().data.numpy())
+                # self.evalmem[4].append(rnn.attnM3.cpu().data.numpy())
+                self.evalmem[4].append(rnn.hdout.cpu().data.numpy())
+            except:
+                # print("eval_mem failed")
+                pass
 
 
 
