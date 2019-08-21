@@ -615,6 +615,22 @@ def cal_kldiv(p,q):
     kld=np.sum(p*np.log(p/q))
     return kld
 
+def cal_kldiv_torch(p,q):
+    """
+    Cal KL divergence of p over q
+    :param data:
+    :return:
+    """
+    p = p+1e-9
+    q = q+1e-9
+    p = p / torch.sum(p,dim=-1,keepdim=True)
+    q = q / torch.sum(q,dim=-1,keepdim=True)
+    assert p.shape == q.shape
+    assert torch.min(p)>0
+    assert torch.min(q)>0
+    kld=torch.sum(p*torch.log(p/q),dim=-1)
+    return kld
+
 def cal_kappa_stat(seq1,seq2):
     """
     Calculate kappa statistics of two one-hot matrix

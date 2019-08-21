@@ -26,6 +26,8 @@ from PIL import ImageDraw,ImageFont
 from tqdm import tqdm
 import datetime
 
+from ncautil.ncamath import *
+
 def pltscatter(data,dim=(0,1),labels=None,title=None,xlabel=None,ylabel=None):
     assert data.shape[0]>data.shape[1]
     for i in range(len(data)):
@@ -1089,7 +1091,6 @@ class PyTrain_Interface_Default(object):
 
         self.pt=None
         self.test_print_interface=False
-        self.print_interface()
 
     def print_interface(self):
         """
@@ -1110,7 +1111,7 @@ class PyTrain_Interface_Default(object):
         print("while_training: ")
         self.while_training()
         print("example_data_collection: ")
-        self.example_data_collection()
+        self.example_data_collection(None,None,None,None)
         self.test_print_interface = False
 
     def init_data(self,*args,**kwargs):
@@ -1625,19 +1626,19 @@ class PyTrain_Interface_encdec(PyTrain_Interface_Default):
         """
         if self.evalmem is None:
             self.evalmem = [[] for ii in range(8)]  # x,label,enc(ht,zt,nt),dec(ht,zt,nt)
-        else:
-            try:
-                self.evalmem[0].append(x.cpu().data.numpy())
-                self.evalmem[1].append(label.cpu().data.numpy())
-                self.evalmem[2].append(rnn.gru_enc.ht.cpu().data.numpy())
-                self.evalmem[3].append(rnn.gru_enc.zt.cpu().data.numpy())
-                self.evalmem[4].append(rnn.gru_enc.nt.cpu().data.numpy())
-                self.evalmem[5].append(rnn.gru_dec.ht.cpu().data.numpy())
-                self.evalmem[6].append(rnn.gru_dec.zt.cpu().data.numpy())
-                self.evalmem[7].append(rnn.gru_dec.nt.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
+
+        try:
+            self.evalmem[0].append(x.cpu().data.numpy())
+            self.evalmem[1].append(label.cpu().data.numpy())
+            self.evalmem[2].append(rnn.gru_enc.ht.cpu().data.numpy())
+            self.evalmem[3].append(rnn.gru_enc.zt.cpu().data.numpy())
+            self.evalmem[4].append(rnn.gru_enc.nt.cpu().data.numpy())
+            self.evalmem[5].append(rnn.gru_dec.ht.cpu().data.numpy())
+            self.evalmem[6].append(rnn.gru_dec.zt.cpu().data.numpy())
+            self.evalmem[7].append(rnn.gru_dec.nt.cpu().data.numpy())
+        except:
+            # print("eval_mem failed")
+            pass
 
     def KNWLoss_GateReg_encdec(self, outputl, outlab, model=None, cstep=None):
         outputl=outputl.permute(1, 2, 0)
@@ -1892,18 +1893,18 @@ class PyTrain_Interface_attn(PyTrain_Interface_Default):
         if self.evalmem is None:
             # self.evalmem = [[] for ii in range(5)]  # x,label,attn1,attn2,attn_ff
             self.evalmem = [[] for ii in range(5)]  # x,label,attn1,hd0,hdout
-        else:
-            try:
-                self.evalmem[0].append(x.cpu().data.numpy())
-                self.evalmem[1].append(label.cpu().data.numpy())
-                self.evalmem[2].append(rnn.attnM1.cpu().data.numpy())
-                self.evalmem[3].append(rnn.hd0.cpu().data.numpy())
-                # self.evalmem[3].append(rnn.attnM2.cpu().data.numpy())
-                # self.evalmem[4].append(rnn.attnM3.cpu().data.numpy())
-                self.evalmem[4].append(rnn.hdout.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
+
+        try:
+            self.evalmem[0].append(x.cpu().data.numpy())
+            self.evalmem[1].append(label.cpu().data.numpy())
+            self.evalmem[2].append(rnn.attnM1.cpu().data.numpy())
+            self.evalmem[3].append(rnn.hd0.cpu().data.numpy())
+            # self.evalmem[3].append(rnn.attnM2.cpu().data.numpy())
+            # self.evalmem[4].append(rnn.attnM3.cpu().data.numpy())
+            self.evalmem[4].append(rnn.hdout.cpu().data.numpy())
+        except:
+            # print("eval_mem failed")
+            pass
 
 
 
@@ -1911,14 +1912,37 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
     """
     A pytrain interface object to plug into PyTrain_Custom
     """
-    def __init__(self):
+    def __init__(self,sub_version=0):
         super(self.__class__, self).__init__()
+        self.sub_version=sub_version
+
+        if self.sub_version==0:
+            print("Here")
+            self._get_data = self.get_data_sent_sup
+            self._lossf =self.KNWLoss_GateReg_TDFF_L1
+            self._lossf_eval = self.KNWLoss
+        elif self.sub_version==1:
+            self._get_data=self.get_data_sent_KLsup
+            self._lossf=self.KNWLoss_GateReg_TDFF_KL
+            self._lossf_eval = self.KNWLoss_GateReg_TDFF_KL
+
+        self.print_interface()
+
+    def get_data(self, batch=None, rstartv=None):
+        # return self.get_data_sent_KLsup( batch=batch, rstartv=rstartv)
+        return self._get_data(batch=batch, rstartv=rstartv)
+
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
-        return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+        return self._lossf(outputl, outlab, model=model, cstep=cstep)
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
-        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+        return self._lossf_eval(outputl, outlab, model=model, cstep=cstep)
+
 
     def eval_mem(self, x, label, rnn):
         """
@@ -1931,6 +1955,81 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         """
 
         return self.custom_eval_mem_tdff(x, label, rnn)
+
+    def get_data_sent_KLsup(self, batch=None, rstartv=None):
+
+        if self.test_print_interface:
+            print("Get data interface: get_data_sent_KLsup")
+            return True
+
+        assert self.pt.supervise_mode
+        assert type(self.pt.dataset["dataset"][0]) == list  # we assume sentence structure
+        assert self.pt.data_init
+
+        if batch is None:
+            batch=self.pt.batch
+
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset["dataset"]) - 1))
+        else:
+            assert len(rstartv)==batch
+
+        # qlen = len(self.pt.dataset["dataset"][0])
+        anslen=self.pt.dataset["anslen"]
+
+        vec1m = torch.zeros(self.pt.window, batch, self.pt.lsize_in)
+        for iib in range(batch):
+            vec1=self.pt.databp[int(rstartv[iib])]
+            vec1m[:,iib,:]=vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        vec_outm = torch.zeros(anslen, batch, self.pt.lsize_in)
+        for iib in range(batch):
+            vec_outm[:, iib, :] = torch.from_numpy(self.pt.dataset["target"][int(rstartv[iib])])
+
+
+        y = Variable(vec_outm, requires_grad=True).type(torch.FloatTensor)
+
+        if self.pt.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            x = x.to(self.pt.device)
+            y = y.to(self.pt.device)
+
+        return x, y, None
+
+    def KNWLoss_GateReg_TDFF_KL(self, outputl, outlab, model=None, cstep=None, posi_ctrl=1):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_GateReg_TDFF_KL")
+            return True
+
+        if posi_ctrl is None:
+            # loss1 = torch.nn.functional.kl_div(model.nsoftmax(outputl), model.nsoftmax(outlab))
+            loss1 = torch.mean(cal_kldiv_torch(model.nsoftmax(outputl), model.nsoftmax(outlab)))
+        else:
+            kl1 = outputl[posi_ctrl, :, :]
+            kl2 = outlab[posi_ctrl, :, :]
+
+            loss1 = torch.mean(cal_kldiv_torch(model.nsoftmax(kl1), model.nsoftmax(kl2)))
+
+            # print(kl1[0, :], kl2[0, :], loss1)
+            # a = input()
+
+        loss_gate = torch.mean(model.sigmoid(model.input_gate))
+
+        # allname = ["W_in", "W_out","Whd0"]
+        # wnorm1=0
+        # for namep in allname:
+        #         wattr = getattr(self.pt.rnn, namep)
+        #         wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+        # wattr = getattr(self.rnn, "h2o")
+        # wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
+        # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
+        # l1_reg = model.h2o.weight.norm(2)
+        # return loss1 + self.pt.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+        return self.pt.reg_lamda * loss_gate + loss1
 
     def KNWLoss_WeightReg_TDFF(self, outputl, outlab, model=None, cstep=None):
 
@@ -2029,16 +2128,16 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
 
         if self.pt.evalmem is None:
             self.pt.evalmem = [[] for ii in range(5)]  # x,label,hd_in,hd0, output
-        else:
-            try:
-                self.pt.evalmem[0].append(x.cpu().data.numpy())
-                self.pt.evalmem[1].append(label.cpu().data.numpy())
-                self.pt.evalmem[2].append(rnn.Wint.cpu().data.numpy())
-                self.pt.evalmem[3].append(rnn.hdt.cpu().data.numpy())
-                self.pt.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
+
+        try:
+            self.pt.evalmem[0].append(x.cpu().data.numpy())
+            self.pt.evalmem[1].append(label.cpu().data.numpy())
+            self.pt.evalmem[2].append(rnn.Wint.cpu().data.numpy())
+            self.pt.evalmem[3].append(rnn.hdt.cpu().data.numpy())
+            self.pt.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
+        except:
+            # print("eval_mem failed")
+            pass
 
     def custom_whiletraining_gradcollect_tdff(self,iis):
         """
@@ -2114,6 +2213,7 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
 
     def __init__(self):
         super(self.__class__, self).__init__()
+        self.print_interface()
 
     def init_data(self,*args,**kwargs):
         return self.init_data_sup_backwardreverse()
@@ -2232,9 +2332,13 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
 
-        loss2=torch.nn.functional.kl_div(model.nsoftmax(outputl[0]),model.nsoftmax(outputl[1]))
+        # loss2=torch.nn.functional.kl_div(model.nsoftmax(outputl[0]),model.nsoftmax(outputl[1]))
+        # loss2 = torch.nn.functional.kl_div(outputl[0], outputl[1])
+        loss2 = torch.mean(cal_kldiv_torch(model.nsoftmax(outputl[0]),model.nsoftmax(outputl[1])))
 
-        return loss1-loss2 #+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+        # print(loss1,loss2)
+
+        return loss1-0.1*loss2 #+self.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def custom_eval_mem_backwardreverse(self, x, label, rnn):
         """
@@ -2249,14 +2353,14 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
 
         if self.pt.evalmem is None:
             self.pt.evalmem = [[] for ii in range(3)]  # label,p_vec, output
-        else:
-            try:
-                self.pt.evalmem[0].append(x[0].cpu().data.numpy())
-                self.pt.evalmem[1].append(x[1].cpu().data.numpy())
-                self.pt.evalmem[2].append(rnn.lgoutput.cpu().data.numpy())
-            except:
-                # print("eval_mem failed")
-                pass
+
+        try:
+            self.pt.evalmem[0].append(x[0].cpu().data.numpy())
+            self.pt.evalmem[1].append(x[1].cpu().data.numpy())
+            self.pt.evalmem[2].append(rnn.lgoutput.cpu().data.numpy())
+        except:
+            # print("eval_mem failed")
+            pass
 
     def custom_example_data_collection_backwardreverse(self, x, output, hidden, label, items=None):
 

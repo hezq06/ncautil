@@ -106,6 +106,88 @@ def logit_gen(seq, model,lsize):
         res.append(logp(output.view(-1).data.numpy()))
     return np.array(res)
 
+class ncann(object):
+
+    @staticmethod
+    def plot_layer_all(nncls,srow,scol,allname):
+
+        plt.figure()
+        for nn, nameitem in enumerate(allname):
+            try:
+                hard_mask = getattr(nncls, nameitem).hard_mask.cpu().data.numpy()
+            except:
+                hard_mask = 1
+            mat = getattr(nncls, nameitem).cpu().weight.data.numpy() * hard_mask
+            plt.subplot(srow, scol, 1 + nn)
+            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
+            plt.subplot(srow, scol, 1 + nn + scol)
+            try:
+                mat = getattr(nncls, nameitem).cpu().bias.data.numpy()
+                plot_mat(mat.reshape(1, -1), title=nameitem + "_bias", symmetric=True, tick_step=1, show=False)
+            except:
+                pass
+        plt.show()
+
+    @staticmethod
+    def weight_pruning(nncls, perc, allname):
+        """
+        Pruning by setting hard mask by percentage
+        allname = ["W_in", "W_out","Whd0"]
+        :return:
+        """
+        if type(perc) is not list:
+            perc=[perc]*len(allname)
+        for nn, nameitem in enumerate(allname):
+            rnn_w = getattr(nncls, nameitem).weight
+            sort_rnn_w=np.sort(np.abs(rnn_w.cpu().data.numpy().reshape(-1)))
+            thd=sort_rnn_w[int(perc[nn]*len(sort_rnn_w))]
+            print(nameitem,thd)
+            hard_mask=torch.ones(rnn_w.shape)
+            hard_mask[torch.abs(rnn_w) <= thd] = 0.0
+            print(rnn_w.shape,hard_mask.shape)
+            getattr(nncls, nameitem).set_hard_mask(hard_mask)
+
+    @staticmethod
+    def plot_weight_dist(nncls,allname):
+        """
+
+        :param nncls:
+        :param allname: ["W_in", "W_out", "Whd0"]
+        :return:
+        """
+
+        srow = 3
+        scol = 1
+
+        for nn, nameitem in enumerate(allname):
+            try:
+                hard_mask=getattr(nncls, nameitem).hard_mask.cpu().data.numpy()
+            except:
+                print(nameitem," no hard mask")
+                hard_mask=1
+            mat = getattr(nncls, nameitem).cpu().weight.data.numpy()*hard_mask
+            plt.subplot(srow, scol, 1 + nn)
+            wvec=mat.reshape(-1)
+            wvec=np.sort(wvec)
+            plt.plot(wvec)
+            plt.title(nameitem)
+        plt.show()
+
+    @staticmethod
+    def set_mask(nncls,mask,lname):
+        if torch.cuda.is_available():
+            if getattr(nncls, lname) is None:
+                setattr(nncls, lname, mask.to(nncls.cuda_device))
+            else:
+                setattr(nncls, lname, getattr(nncls, lname)*mask.to(nncls.cuda_device))
+        else:
+            if getattr(nncls, lname) is None:
+                setattr(nncls, lname, mask)
+            else:
+                setattr(nncls, lname, getattr(nncls, lname)*mask)
+
+
+
 class TDNN_ATTN_FF(torch.nn.Module):
     """
     Time delayed neural network multi-head attention plus feed forward
@@ -310,7 +392,7 @@ class TDNN_FF(torch.nn.Module):
     """
     Time delayed neural network feed forward
     """
-    def __init__(self, input_size, hidden_size, output_size, input_len,output_len, num_layers=1, para=None):
+    def __init__(self, input_size, hidden_size, output_size, input_len,output_len, num_layers=1, para=None, coop=None):
         super(self.__class__, self).__init__()
         self.input_size = input_size
         if type(hidden_size) is list:
@@ -335,7 +417,11 @@ class TDNN_FF(torch.nn.Module):
         # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
 
         self.W_in = Linear_Mask(input_size*input_len, self.hidden_size1, bias=True, cuda_device=self.cuda_device)
-        self.noise_in = GaussNoise(self.hidden_size1, std=self.precision/5, cuda_device=self.cuda_device)
+
+        self.W_in_coop = Linear_Mask(output_size * output_len, self.hidden_size1, bias=True,
+                                     cuda_device=self.cuda_device)
+
+        # self.noise_in = GaussNoise(self.hidden_size1, std=self.precision/5, cuda_device=self.cuda_device)
         # self.W_out = torch.nn.Linear(hidden_size, output_size * output_len)
         self.W_out = Linear_Mask(self.hidden_size2, output_size * output_len, bias=True, cuda_device=self.cuda_device)
         # self.noise_out = GaussNoise(output_size * output_len, std=self.precision/5,cuda_device=self.cuda_device)
@@ -355,6 +441,7 @@ class TDNN_FF(torch.nn.Module):
         self.hdout_evalmask=None
         self.hdout_mask = None
         self.input_gate = torch.nn.Parameter(torch.rand(input_len) + 1.0, requires_grad=True)
+        self.input_mask = None
         # self.hiddenin_mask=None
         # self.hidden0_mask = None
 
@@ -366,6 +453,7 @@ class TDNN_FF(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
         # self.layernorm1 = torch.nn.LayerNorm(self.hidden_size1)
         # self.layernorm2 = torch.nn.LayerNorm(self.hidden_size2)
 
@@ -391,10 +479,16 @@ class TDNN_FF(torch.nn.Module):
         # self.hiddenin_mem = []
         # self.hidden0_mem = []
 
+        self.coop = None
+        if coop is not None:
+            self.coop = coop
+            for param in self.coop.parameters():
+                param.requires_grad = False
+
 
     def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
 
-        temperature = np.exp(-schedule*5)
+        # temperature = np.exp(-schedule*5)
 
         W_in_mask_sample = None
         W_out_mask_sample = None
@@ -414,21 +508,39 @@ class TDNN_FF(torch.nn.Module):
         else:
             raise Exception("Unknown drop_connect_mode")
 
-        input = input.permute(1, 2, 0)
-        exphgate = self.input_gate.expand_as(input)
-        input = input.permute(0,2,1)
+        input0 = input.permute(1, 2, 0)
+        if self.input_mask is not None:
+            masked_input_gate=self.input_gate*self.input_mask
+        else:
+            masked_input_gate=self.input_gate
+        exphgate = masked_input_gate.expand_as(input0)
+        input0 = input0.permute(0,2,1)
         exphgate = exphgate.permute(0,2,1)
         siggate = self.sigmoid(exphgate)
         input_pruning_mask = self.mysampler(siggate, cuda_device=self.cuda_device)
 
-        input=input.contiguous().view(-1,self.input_size*self.input_len)
+        input0=input0.contiguous().view(-1,self.input_size*self.input_len)
         input_pruning_mask=input_pruning_mask.contiguous().view(-1,self.input_size*self.input_len)
         # input.register_hook(lambda grad: self.input_grad_mem.append(grad.cpu()))
         # self.input_mem.append(input.cpu().detach())
-        input=input*input_pruning_mask
-        hiddenin0=self.W_in(input,W_in_mask_sample)
+        input0=input0*input_pruning_mask
+        hiddenin0=self.W_in(input0,W_in_mask_sample)
+
+
         # hiddenin = self.layernorm1(hiddenin)
         hiddenin = self.relu(hiddenin0)
+
+
+        if self.coop is not None:
+            coop_logit , _ = self.coop(input, hidden, logit_mode=True, add_logit = None, schedule = schedule)
+            coop_logit = coop_logit.permute(1, 2, 0)
+            coop_logit = coop_logit.permute(0, 2, 1)
+            coop_logit = coop_logit.contiguous().view(-1, self.output_size * self.output_len)
+            hiddenin_coop=self.W_in_coop(coop_logit)
+            hiddenin_coop=self.relu(hiddenin_coop)
+            hiddenin=hiddenin+hiddenin_coop
+
+
         # hiddenin.register_hook(lambda grad: self.hiddenin_grad_mem.append(grad.cpu()))
         # if self.hiddenin_mask is not None:
         #     hiddenin = hiddenin * self.hiddenin_mask
@@ -476,7 +588,10 @@ class TDNN_FF(torch.nn.Module):
             output=output*self.hdout_mask
         output = output.permute(2,0,1)
         self.lgoutput=output
-        output=self.softmax(output)
+
+        if not logit_mode:
+            output=self.softmax(output)
+
         return output, hidden
 
     def para(self,para):
@@ -486,93 +601,10 @@ class TDNN_FF(torch.nn.Module):
         self.drop_connect_rate = para.get("drop_connect_rate", 0.0) # Used for random drop connect
 
     def plot_layer_all(self):
-        srow=2
-        scol=3
-        # allname = ["Wiz", "Win", "Wir", "Whz", "Whn", "Whr"]
-        allname = ["W_in", "W_out","Whd0"]
-        plt.figure()
-        for nn,nameitem in enumerate(allname):
-            try:
-                hard_mask = getattr(self, nameitem).hard_mask.cpu().data.numpy()
-            except:
-                hard_mask=1
-            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
-            plt.subplot(srow, scol, 1+nn)
-            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
-            plt.subplot(srow, scol, 1+nn + scol)
-            try:
-                mat = getattr(self, nameitem).cpu().bias.data.numpy()
-                plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
-            except:
-                pass
-        # for ii in range(self.num_layers):
-        #     mat = self.hd_layer_stack[ii][1].cpu().weight.data.numpy()
-        #     plt.subplot(srow, scol, 3 + ii)
-        #     plot_mat(mat, title="hidden"+str(ii), symmetric=True, tick_step=1, show=False)
-        #     plt.subplot(srow, scol, 3 + ii + scol)
-        #     try:
-        #         mat = self.hd_layer_stack[ii][1].cpu().bias.data.numpy()
-        #         plot_mat(mat.reshape(1, -1), title="hidden"+str(ii) + "_bias", symmetric=True, tick_step=1, show=False)
-        #     except:
-        #         pass
-        plt.show()
+        ncann.plot_layer_all(self,srow = 2, scol = 3, allname = ["W_in", "W_out", "Whd0"])
 
-    def weight_pruning(self, perc):
-        """
-        Pruning by setting hard mask by percentage
-        :return:
-        """
-        allname = ["W_in", "W_out","Whd0"]
-        if type(perc) is not list:
-            perc=[perc]*len(allname)
-        for nn, nameitem in enumerate(allname):
-            rnn_w = getattr(self, nameitem).weight
-            sort_rnn_w=np.sort(np.abs(rnn_w.cpu().data.numpy().reshape(-1)))
-            thd=sort_rnn_w[int(perc[nn]*len(sort_rnn_w))]
-            print(nameitem,thd)
-            hard_mask=torch.ones(rnn_w.shape)
-            hard_mask[torch.abs(rnn_w) <= thd] = 0.0
-            print(rnn_w.shape,hard_mask.shape)
-            getattr(self, nameitem).set_hard_mask(hard_mask)
-
-    def plot_weight_dist(self):
-        # plt.figure()
-        srow = 3
-        scol = 1
-        allname = ["W_in", "W_out","Whd0"]
-        for nn, nameitem in enumerate(allname):
-            try:
-                hard_mask=getattr(self, nameitem).hard_mask.cpu().data.numpy()
-            except:
-                print(nameitem," no hard mask")
-                hard_mask=1
-            mat = getattr(self, nameitem).cpu().weight.data.numpy()*hard_mask
-            plt.subplot(srow, scol, 1 + nn)
-            wvec=mat.reshape(-1)
-            wvec=np.sort(wvec)
-            plt.plot(wvec)
-            plt.title(nameitem)
-        # allname = ["Whz_mask", "Whn_mask"]
-        # for nn, nameitem in enumerate(allname):
-        #     mat = self.sigmoid(getattr(self, nameitem)).data.numpy()
-        #     plt.subplot(srow, scol, 5 + nn)
-        #     wvec=mat.reshape(-1)
-        #     wvec=np.sort(wvec)
-        #     plt.plot(wvec)
-        #     plt.title(nameitem)
-        plt.show()
-
-    def set_mask(self,mask,lname):
-        if torch.cuda.is_available():
-            if getattr(self, lname) is None:
-                setattr(self, lname, mask.to(self.cuda_device))
-            else:
-                setattr(self, lname, getattr(self, lname)*mask.to(self.cuda_device))
-        else:
-            if getattr(self, lname) is None:
-                setattr(self, lname, mask)
-            else:
-                setattr(self, lname, getattr(self, lname)*mask)
+    def set_mask(self, mask,lname):
+        ncann.set_mask(self, mask, lname)
 
     def initHidden(self,batch):
         return None
