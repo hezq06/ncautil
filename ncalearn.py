@@ -28,11 +28,14 @@ import datetime
 
 from ncautil.ncamath import *
 
-def pltscatter(data,dim=(0,1),labels=None,title=None,xlabel=None,ylabel=None):
+def pltscatter(data,dim=(0,1),labels=None,title=None,xlabel=None,ylabel=None,color=None):
     assert data.shape[0]>data.shape[1]
     for i in range(len(data)):
         x,y=data[i,dim[0]], data[i,dim[1]]
-        plt.scatter(x,y)
+        if color is None:
+            plt.scatter(x,y)
+        else:
+            plt.scatter(x, y, c=color[i])
         if labels is not None:
             label=labels[i]
             plt.annotate(label, xy=(x, y), xytext=(5, 2), textcoords='offset points', ha='right', va='bottom')
@@ -795,7 +798,7 @@ class PyTrain_Lite(object):
 
         if self.seqtrain:
             output, hidden = self.rnn(x, hidden, schedule=1.0)
-            self.example_data_collection(x, output, hidden, label, items=items)
+            self.example_data_collection(x, output, hidden, label)
         else:
             for iiw in range(self.window):
                 output, hidden = self.rnn(x[iiw, :, :], hidden, schedule=1.0)
@@ -1916,8 +1919,9 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         super(self.__class__, self).__init__()
         self.sub_version=sub_version
 
+        self.allname = ["W_i2m", "W_m2h1", "W_h12h2", "W_h2o"]
+
         if self.sub_version==0:
-            print("Here")
             self._get_data = self.get_data_sent_sup
             self._lossf =self.KNWLoss_GateReg_TDFF_L1
             self._lossf_eval = self.KNWLoss
@@ -1955,6 +1959,16 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         """
 
         return self.custom_eval_mem_tdff(x, label, rnn)
+
+    def example_data_collection(self, x, output, hidden, label):
+        """
+        Default example_data_collection function
+        called by plot_example
+        :param kwargs:
+        :param args:
+        :return:
+        """
+        return self.custom_example_data_collection_tdff(x, output, hidden, label)
 
     def get_data_sent_KLsup(self, batch=None, rstartv=None):
 
@@ -2041,9 +2055,8 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
         # allname = ["Wiz", "Whz", "Win", "Whn","Wir", "Whr"]
-        allname = ["W_in", "W_out","Whd0"]
         wnorm1=0
-        for namep in allname:
+        for namep in self.allname:
             wattr = getattr(self.pt.rnn, namep)
             wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
         # for ii in range(self.rnn.num_layers):
@@ -2053,7 +2066,7 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         # pih2o = torch.exp(logith2o) / torch.sum(torch.exp(logith2o), dim=0)
         # lossh2o = -torch.mean(torch.sum(pih2o * torch.log(pih2o), dim=0))
         # l1_reg = model.h2o.weight.norm(2)
-        wnorm1=wnorm1/len(allname)
+        wnorm1=wnorm1/len(self.allname)
         return loss1+self.pt.reg_lamda*wnorm1 # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
 
     def KNWLoss_WeightEnergyReg_TDFF(self, outputl, outlab, model=None, cstep=None):
@@ -2102,9 +2115,8 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
 
         loss_gate = torch.mean(model.sigmoid(model.input_gate))
 
-        allname = ["W_in", "W_out","Whd0"]
         wnorm1=0
-        for namep in allname:
+        for namep in self.allname:
                 wattr = getattr(self.pt.rnn, namep)
                 wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
         # wattr = getattr(self.rnn, "h2o")
@@ -2127,14 +2139,12 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
 
 
         if self.pt.evalmem is None:
-            self.pt.evalmem = [[] for ii in range(5)]  # x,label,hd_in,hd0, output
+            self.pt.evalmem = [[] for ii in range(3)]  # x,label,hd_middle
 
         try:
             self.pt.evalmem[0].append(x.cpu().data.numpy())
             self.pt.evalmem[1].append(label.cpu().data.numpy())
-            self.pt.evalmem[2].append(rnn.Wint.cpu().data.numpy())
-            self.pt.evalmem[3].append(rnn.hdt.cpu().data.numpy())
-            self.pt.evalmem[4].append(rnn.lgoutput.cpu().data.numpy())
+            self.pt.evalmem[2].append(rnn.mdl.cpu().data.numpy())
         except:
             # print("eval_mem failed")
             pass
@@ -2147,14 +2157,18 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
         if self.training_data_mem is None:
             self.training_data_mem=dict([])
             self.training_data_mem["gradInfo"]=dict([])
-            for item in ["W_in","Whd0","W_out"]:
+            for item in self.allname:
                 self.training_data_mem["gradInfo"][item]=[]
-        for item in ["W_in","Whd0","W_out"]:
+        for item in self.allname:
             attr=getattr(self.pt.rnn,item)
             grad=attr.weight.grad
             self.training_data_mem["gradInfo"][item].append(grad)
 
     def custom_example_data_collection_tdff(self, x, output, hidden, label):
+
+        if self.test_print_interface:
+            print("example_data_collection interface: custom_example_data_collection_tdff")
+            return True
 
         lsize = x.shape[-1]
         anslength = label.shape[-1]
@@ -2163,21 +2177,21 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
             id = label[0, ii]
             label_onehot[ii, id] = 1
 
-        if self.data_col_mem is None:
+        if self.pt.data_col_mem is None:
             # Step 1 of example_data_collection
-            self.data_col_mem=dict([])
-            self.data_col_mem["titlelist"]=["input","label","predict","Wint","hd1"]
-            self.data_col_mem["sysmlist"]=[True,True,True,True,True]
-            self.data_col_mem["mode"]="predict"
-            self.data_col_mem["datalist"] = [None,None,None,None,None]
-            self.data_col_mem["climlist"] = [[None, None], [None, None], [1, -20] ,[None, None], [None, None]]
+            self.pt.data_col_mem=dict([])
+            self.pt.data_col_mem["titlelist"]=["input","label","predict"]
+            self.pt.data_col_mem["sysmlist"]=[True,True,True]
+            self.pt.data_col_mem["mode"]="predict"
+            self.pt.data_col_mem["datalist"] = [None,None,None]
+            self.pt.data_col_mem["climlist"] = [[None, None], [None, None] ,[None, None]]
 
-        if self.data_col_mem["datalist"][0] is None:
-            self.data_col_mem["datalist"][0] = torch.squeeze(x)
-            self.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
-            self.data_col_mem["datalist"][2] = torch.squeeze(output)
-            self.data_col_mem["datalist"][3] = self.pt.rnn.Wint.view(-1,1)
-            self.data_col_mem["datalist"][4] = self.pt.rnn.hdt[0].view(-1,1)
+        if self.pt.data_col_mem["datalist"][0] is None:
+            self.pt.data_col_mem["datalist"][0] = torch.squeeze(x)
+            self.pt.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
+            self.pt.data_col_mem["datalist"][2] = torch.squeeze(output)
+            # self.data_col_mem["datalist"][3] = self.pt.rnn.Wint.view(-1,1)
+            # self.data_col_mem["datalist"][4] = self.pt.rnn.hdt[0].view(-1,1)
             # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
 
     def custom_example_data_collection_tdffrnn(self, x, output, hidden, label):

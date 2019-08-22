@@ -612,6 +612,138 @@ class TDNN_FF(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return None
 
+class TDNN_FF_COOP(torch.nn.Module):
+    """
+    Time delayed neural network feed forward
+    """
+    def __init__(self, input_size, hidden_size, output_size, input_len,output_len, num_layers=1, para=None, coop=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        if type(hidden_size) is list:
+            assert len(hidden_size)==2
+            self.hidden_sizem = hidden_size[0]
+            self.hidden_size1 = hidden_size[1]
+            self.hidden_size2 = hidden_size[2]
+        else:
+            self.hidden_sizem = hidden_size + 1
+            self.hidden_size1 = hidden_size
+            self.hidden_size2 = hidden_size - 1
+
+        self.output_size,self.input_len,self.output_len, self.num_layers= output_size, input_len, output_len, num_layers
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.precision = 0.1
+
+        self.W_i2m = torch.nn.Linear(input_size * input_len, self.hidden_sizem)
+        self.W_m2h1 = torch.nn.Linear(self.hidden_sizem, self.hidden_size1)
+        self.W_h12h2 = torch.nn.Linear(self.hidden_size1, self.hidden_size2)
+        self.W_h2o = torch.nn.Linear(self.hidden_size2, output_size * output_len)
+
+        self.allname=["W_i2m","W_m2h1","W_h12h2","W_h2o"]
+
+        self.W_m2h_coop = torch.nn.Linear(output_size * output_len, self.hidden_size1)
+
+        self.hdout_evalmask,self.hdout_mask,self.input_mask=None,None,None
+
+        self.input_gate = torch.nn.Parameter(torch.rand(input_len) + 1.0, requires_grad=True)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.myhsample = myhsample
+        self.mysampler = mysampler
+        self.myhsig = myhsig
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
+
+        self.hard_flag=False
+
+        self.mdl, self.hdt, self.lgoutput = None, None, None
+
+        self.input_grad_mem, self.hiddenin_grad_mem, self.hidden0_grad_mem = [], [], []
+
+        self.coop = None
+        if coop is not None:
+            self.coop = coop
+            for param in self.coop.parameters():
+                param.requires_grad = False
+
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
+
+        # temperature = np.exp(-schedule*5)
+
+        input0 = input.permute(1, 2, 0)
+        if self.input_mask is not None:
+            masked_input_gate=self.input_gate*self.input_mask
+        else:
+            masked_input_gate=self.input_gate
+        exphgate = masked_input_gate.expand_as(input0)
+        input0 = input0.permute(0,2,1)
+        exphgate = exphgate.permute(0,2,1)
+        siggate = self.sigmoid(exphgate)
+        input_pruning_mask = self.mysampler(siggate, cuda_device=self.cuda_device)
+
+        input0=input0.contiguous().view(-1,self.input_size*self.input_len)
+        input_pruning_mask=input_pruning_mask.contiguous().view(-1,self.input_size*self.input_len)
+        input0=input0*input_pruning_mask
+
+
+        hiddenm=self.W_i2m(input0)
+        hiddenm = self.relu(hiddenm)
+
+        self.mdl=hiddenm
+
+        hidden1 = self.W_m2h1(hiddenm)
+        hidden1 = self.relu(hidden1)
+
+        if self.coop is not None:
+            coop_logit , _ = self.coop(input, hidden, logit_mode=True, add_logit = None, schedule = schedule)
+            coop_logit = coop_logit.permute(1, 2, 0)
+            coop_logit = coop_logit.permute(0, 2, 1)
+            coop_logit = coop_logit.contiguous().view(-1, self.output_size * self.output_len)
+            hiddenm_coop=self.W_m2h_coop(coop_logit)
+            hiddenm_coop=self.relu(hiddenm_coop)
+            hidden1=hidden1 + hiddenm_coop
+
+        hidden2=self.W_h12h2(hidden1)
+        hidden2 = self.relu(hidden2)
+
+        output = self.W_h2o(hidden2)
+        output=output.view(-1,self.output_len,self.output_size).permute(0,2,1)
+
+        if self.hdout_mask is not None:
+            output=output*self.hdout_mask
+        output = output.permute(2,0,1)
+        self.lgoutput=output
+
+        if not logit_mode:
+            output=self.softmax(output)
+
+        return output, hidden
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.drop_connect_mode = para.get("drop_connect_mode", None) # "None, adaptive, random"
+        self.drop_connect_switch = para.get("drop_connect_switch", "mysampler") # "mysampler","gsigmoid","myhsample"
+        self.drop_connect_rate = para.get("drop_connect_rate", 0.0) # Used for random drop connect
+
+    def plot_layer_all(self):
+        ncann.plot_layer_all(self,srow = 2, scol = 4, allname = self.allname)
+
+    def set_mask(self, mask,lname):
+        ncann.set_mask(self, mask, lname)
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
+
 class TDNN_FFRNN(torch.nn.Module):
     """
     Time delayed neural network feed forward
