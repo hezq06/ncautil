@@ -11,9 +11,58 @@ import torch
 import math
 from torch.nn import functional as F
 import numpy as np
+from ncautil.ncalearn import plot_mat
 
 
 gl_cuda_device="cuda:0"
+
+def wta_layer(l_input,schedule=1.0,wta_noise=0.0,upper_t = 0.5, k_sparse = 1, schshift=0.2):
+
+    concept_size = l_input.shape[-1]
+    schedule=schedule+schshift
+    if schedule>=1.0:
+        schedule=1.0
+    Nindr = (1.0 - np.sqrt(schedule)) * (concept_size - k_sparse-1 ) * upper_t + k_sparse  # Number of Nind largest number kept
+    # Nindr = (1.0 - schedule) * (concept_size - 2) * upper_t + 1  # Number of Nind largest number kept
+    smooth=Nindr-int(Nindr)
+    Nind=int(Nindr)
+    np_input=l_input.cpu().data.numpy()
+    npargmax_i = np.argsort(-np_input, axis=-1)
+    argmax_i = torch.from_numpy(npargmax_i).narrow(-1, 0, Nind)
+    outer=torch.from_numpy(npargmax_i).narrow(-1, Nind, 1)
+    concept_layer_i = torch.zeros(l_input.shape)
+    concept_layer_i.scatter_(-1, argmax_i, 1.0)
+    concept_layer_i.scatter_(-1, outer, smooth)
+    concept_layer_i = concept_layer_i + wta_noise * torch.rand(concept_layer_i.shape)
+
+    if l_input.is_cuda:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        concept_layer_i=concept_layer_i.to(device)
+
+    ginput_masked = l_input * concept_layer_i
+    # ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+    # ginput_masked=softmax(ginput_masked)
+    return ginput_masked
+
+def wta_layer_2(l_input, sparse_perc = 0.1):
+
+    concept_size = l_input.shape[-1]
+    Nind=int(sparse_perc*concept_size)
+    assert Nind>=1
+    np_input=l_input.cpu().data.numpy()
+    npargmax_i = np.argsort(-np_input, axis=-1)
+    argmax_i = torch.from_numpy(npargmax_i).narrow(-1, 0, Nind)
+    concept_layer_i = torch.zeros(l_input.shape)
+    concept_layer_i.scatter_(-1, argmax_i, 1.0)
+
+    if l_input.is_cuda:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        concept_layer_i=concept_layer_i.to(device)
+
+    ginput_masked = l_input * concept_layer_i
+    # ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
+    # ginput_masked=softmax(ginput_masked)
+    return ginput_masked
 
 class MySign(torch.autograd.Function): # A straight through estimation of sign
     """
@@ -86,7 +135,7 @@ class MyHardSig(torch.autograd.Function): # A straight through estimation of sig
         if gpuavail:
             output = output.to(device)
             zeros = zeros.to(device)
-        output[input >= zeros] = 1.0
+        output[input > zeros] = 1.0
 
         return output
 
@@ -406,6 +455,28 @@ class Linear_Sparse(torch.nn.Module):
         if self.bias is not None:
             matm = matm + self.bias
         return matm
+
+class Linear_Cauchy(torch.nn.Module):
+    """
+    A linear module with mask
+    """
+    def __init__(self,input_size, output_size, bias=-1, cuda_device="cuda:0"):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.output_size=output_size
+        self.weight=torch.nn.Parameter(torch.Tensor(output_size, input_size), requires_grad=True)
+        self.bias=torch.nn.Parameter(torch.ones(output_size)*bias, requires_grad=True)
+        gamma=4.1*bias/input_size
+        self.weight = torch.nn.Parameter(gamma*torch.tan(np.pi*torch.rand((output_size,input_size))-np.pi/2), requires_grad=True)
+
+        self.gpuavail = torch.cuda.is_available()
+        if self.gpuavail:
+            self.cuda_device=cuda_device
+
+    def forward(self, input, mask=None):
+        return F.linear(input, self.weight, self.bias)
+
+
 
 class Hidden_Attention(torch.nn.Module):
     """

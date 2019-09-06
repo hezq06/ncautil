@@ -109,7 +109,10 @@ def logit_gen(seq, model,lsize):
 class ncann(object):
 
     @staticmethod
-    def plot_layer_all(nncls,srow,scol,allname):
+    def plot_layer_all(nncls,allname):
+
+        srow = 2
+        scol = len(allname)
 
         plt.figure()
         for nn, nameitem in enumerate(allname):
@@ -175,18 +178,126 @@ class ncann(object):
 
     @staticmethod
     def set_mask(nncls,mask,lname):
+        if mask is not None:
+            if torch.cuda.is_available():
+                if getattr(nncls, lname) is None:
+                    setattr(nncls, lname, mask.to(nncls.cuda_device))
+                else:
+                    setattr(nncls, lname, getattr(nncls, lname)*mask.to(nncls.cuda_device))
+            else:
+                if getattr(nncls, lname) is None:
+                    setattr(nncls, lname, mask)
+                else:
+                    setattr(nncls, lname, getattr(nncls, lname)*mask)
+
+class WTA_AUTOENCODER(torch.nn.Module):
+    """
+    winner take all autoencoder
+    """
+    def __init__(self, input_size, hidden_size, middle_size, sparse_perc, para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.middle_size = middle_size
+        self.sparse_perc=sparse_perc
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.i2h = torch.nn.Linear(input_size, hidden_size)
+        # self.h12h2 = torch.nn.Linear(hidden_size, hidden_size)
+        self.h2m = torch.nn.Linear(hidden_size, middle_size)
+
+        self.h2m_cauchy = Linear_Cauchy(hidden_size, middle_size)
+
+        self.m2o = torch.nn.Linear(middle_size, input_size,bias=False)
+        # self.h2o = torch.nn.Linear(hidden_size, input_size)
+
+        self.relu = torch.nn.ReLU()
+        self.tanh = torch.nn.Tanh()
+        self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.myhsig = myhsig
+        # self.cdrop = torch.nn.Dropout(p=0.5)
+
+        self.layer_norm = torch.nn.LayerNorm(middle_size)
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        self.mdl=None
+
+        ### For localization regularizer
+
+        Tlin = torch.linspace(0, 27, 28).expand((28, middle_size, 28))
+        self.Tx = Tlin.permute(2,0,1)
+        self.Ty = Tlin.permute(0, 2, 1)
+
         if torch.cuda.is_available():
-            if getattr(nncls, lname) is None:
-                setattr(nncls, lname, mask.to(nncls.cuda_device))
-            else:
-                setattr(nncls, lname, getattr(nncls, lname)*mask.to(nncls.cuda_device))
-        else:
-            if getattr(nncls, lname) is None:
-                setattr(nncls, lname, mask)
-            else:
-                setattr(nncls, lname, getattr(nncls, lname)*mask)
+            self.Tx = self.Tx.to(self.cuda_device)
+            self.Ty = self.Ty.to(self.cuda_device)
 
+        self.precision = 0.1
 
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
+
+        temperature = np.exp(-schedule * 5)
+
+        hidden1=self.i2h(input)
+        hidden1=self.relu(hidden1)
+
+        # hidden2 = self.h12h2(hidden1)
+        # hidden2 = self.relu(hidden2)
+
+        middle=self.h2m(hidden1)
+        # middle =self.sigmoid(middle)
+        # middle = self.cdrop(middle)
+        middle = self.relu(middle)
+        if self.training:
+            middle = wta_layer_2(middle,sparse_perc=self.sparse_perc)
+
+        middle = mydiscrete(middle, self.precision, cuda_device=self.cuda_device)
+
+        # middle = self.gsigmoid(middle, temperature=temperature)
+        # middle=self.layer_norm(middle)
+        # middle=self.relu(middle)
+
+        # middle = self.h2m_cauchy(hidden1)
+        # middle = self.relu(middle)
+        # middle = self.tanh(middle)
+
+        self.mdl = middle
+
+        # hidden2=self.m2h(middle)
+        # hidden2 = self.relu(hidden2)
+
+        output=self.m2o(middle)
+        # output=self.sigmoid(output)
+
+        return output,None
+
+    def forward0(self, middle, hidden, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Giving middle layer and see output
+        """
+
+        output=self.m2o(middle)
+        # hidden2 = self.relu(hidden2)
+
+        # output=self.h2o(hidden2)
+        # output=self.sigmoid(output)
+
+        return output,None
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
 
 class TDNN_ATTN_FF(torch.nn.Module):
     """
@@ -601,7 +712,7 @@ class TDNN_FF(torch.nn.Module):
         self.drop_connect_rate = para.get("drop_connect_rate", 0.0) # Used for random drop connect
 
     def plot_layer_all(self):
-        ncann.plot_layer_all(self,srow = 2, scol = 3, allname = ["W_in", "W_out", "Whd0"])
+        ncann.plot_layer_all(self, allname = ["W_in", "W_out", "Whd0"])
 
     def set_mask(self, mask,lname):
         ncann.set_mask(self, mask, lname)
@@ -733,7 +844,7 @@ class TDNN_FF_COOP(torch.nn.Module):
         self.drop_connect_rate = para.get("drop_connect_rate", 0.0) # Used for random drop connect
 
     def plot_layer_all(self):
-        ncann.plot_layer_all(self,srow = 2, scol = 4, allname = self.allname)
+        ncann.plot_layer_all(self, allname = self.allname)
 
     def set_mask(self, mask,lname):
         ncann.set_mask(self, mask, lname)
@@ -2171,17 +2282,27 @@ class FF_NLP(torch.nn.Module):
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, para=None):
         super(self.__class__, self).__init__()
+        if para is None:
+            para = dict([])
+        self.para(para)
+
         self.hidden_size = hidden_size
         self.input_size = input_size
 
         self.i2h = torch.nn.Linear(input_size, hidden_size)
         self.h2o = torch.nn.Linear(hidden_size, output_size)
 
+        self.input_gate = torch.nn.Parameter(torch.rand(self.input_size) + 1.0, requires_grad=True)
+
         self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.myhsample = myhsample
+        self.mysampler = mysampler
+        self.myhsig = myhsig
         self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.nsoftmax = torch.nn.Softmax(dim=-1)
-        self.relu = torch.nn.ReLU()
 
         gpuavail = torch.cuda.is_available()
         self.device = torch.device("cuda:0" if gpuavail else "cpu")
@@ -2189,9 +2310,10 @@ class FF_NLP(torch.nn.Module):
         self.hout = None
         self.lgoutput = None
 
-        if para is None:
-            para = dict([])
-        self.para(para)
+        self.allname=["i2h", "h2o"]
+
+        self.input_mask = None
+        self.siggate = None
 
         # dummy base
         # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
@@ -2199,23 +2321,27 @@ class FF_NLP(torch.nn.Module):
 
     def para(self,para):
         self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.sparse_perc = para.get("sparse_perc", 0.1)
 
     def plot_layer_all(self):
-        srow=2
-        scol=3
-        allname = ["i2h", "h2o"]
-        plt.figure()
-        for nn,nameitem in enumerate(allname):
-            mat = getattr(self, nameitem).cpu().weight.data.numpy()
-            plt.subplot(srow, scol, 1+nn)
-            plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
-            plt.subplot(srow, scol, 1+nn + scol)
-            try:
-                mat = getattr(self, nameitem).cpu().bias.data.numpy()
-                plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
-            except:
-                pass
-        plt.show()
+        ncann.plot_layer_all(self, allname = self.allname)
+
+    # def plot_layer_all(self):
+    #     srow=2
+    #     scol=3
+    #     allname = ["i2h", "h2o"]
+    #     plt.figure()
+    #     for nn,nameitem in enumerate(allname):
+    #         mat = getattr(self, nameitem).cpu().weight.data.numpy()
+    #         plt.subplot(srow, scol, 1+nn)
+    #         plot_mat(mat, title=nameitem, symmetric=True, tick_step=1, show=False)
+    #         plt.subplot(srow, scol, 1+nn + scol)
+    #         try:
+    #             mat = getattr(self, nameitem).cpu().bias.data.numpy()
+    #             plot_mat(mat.reshape(1, -1), title=nameitem+"_bias", symmetric=True, tick_step=1, show=False)
+    #         except:
+    #             pass
+    #     plt.show()
 
     def forward(self, input, hidden1=None, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -2224,11 +2350,24 @@ class FF_NLP(torch.nn.Module):
         :param hidden:
         :return:
         """
-        # Adjusted for backward sampling
-        assert len(input)==2
-        input0 = input[0]
+        # sparse_perc = 1.0 - schedule + self.sparse_perc
+        # if sparse_perc>1.0:
+        #     sparse_perc=1.0
+        temperature=np.exp(-5*schedule)
+        # siggate = self.sigmoid(self.input_gate)
+        siggate = self.gsigmoid(self.input_gate,temperature=temperature)
+        if self.input_mask is not None:
+            siggate = siggate*self.input_mask
+        self.siggate = siggate
+        # wta_input_gate = wta_layer_2(self.input_gate, sparse_perc=sparse_perc)
+        # siggate = self.myhsig(self.input_gate)
+        # siggate=siggate/torch.max(siggate)
+        expsiggate = siggate.expand_as(input)
+        input_pruning_mask = self.mysampler(expsiggate, cuda_device=self.cuda_device)
 
-        hidden = self.i2h(input0)
+        input = input * input_pruning_mask
+
+        hidden = self.i2h(input)
         # hidden = self.tanh(hidden)
         hidden = self.relu(hidden)
         output = self.h2o(hidden)
@@ -2239,7 +2378,224 @@ class FF_NLP(torch.nn.Module):
         # if not logit_mode:
         #     output=self.softmax(output)
 
-        return (output,input[1]),None
+        return output,None
+
+    def set_mask_input(self, mask):
+        ncann.set_mask(self, mask, "input_mask")
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)
+
+class FF_NLP_COOP(torch.nn.Module):
+    """
+    PyTorch FF for tree cooperation
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, para=None, coop=None):
+        super(self.__class__, self).__init__()
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+
+        if type(hidden_size) is list:
+            assert len(hidden_size) == 2
+            self.hidden_sizem = hidden_size[0]
+            self.hidden_size1 = hidden_size[1]
+            self.hidden_size2 = hidden_size[2]
+        else:
+            self.hidden_sizem = hidden_size + 1
+            self.hidden_size1 = hidden_size
+            self.hidden_size2 = hidden_size - 1
+
+        self.W_i2m = torch.nn.Linear(input_size , self.hidden_sizem)
+        self.W_m2h1 = torch.nn.Linear(self.hidden_sizem, self.hidden_size1)
+        self.W_h12h2 = torch.nn.Linear(self.hidden_size1, self.hidden_size2)
+        self.W_h2o = torch.nn.Linear(self.hidden_size2, output_size)
+
+        self.W_i2m_coop = torch.nn.Linear(output_size, self.hidden_sizem)
+        self.W_m2h1_coop = torch.nn.Linear(self.hidden_sizem, self.hidden_size1)
+
+        self.W_i2m_coop2 = torch.nn.Linear(output_size, self.hidden_sizem)
+        self.W_m2h1_coop2 = torch.nn.Linear(self.hidden_sizem, self.hidden_size1)
+
+        self.allname=["W_i2m","W_m2h1","W_h12h2","W_h2o"]
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.myhsample = myhsample
+        self.mysampler = mysampler
+        self.myhsig = myhsig
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        self.hout = None
+        self.lgoutput = None
+
+        self.coop = None
+        if coop is not None:
+            self.coop = coop
+            if type(coop) is not list:
+                for param in self.coop.parameters():
+                    param.requires_grad = False
+            else:
+                assert len(coop)==2
+                for param in self.coop[0].parameters():
+                    param.requires_grad = False
+                for param in self.coop[1].parameters():
+                    param.requires_grad = False
+
+        # dummy base
+        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
+        # self.ones=torch.ones(50,30,1).to(self.device)
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.gate_pick = para.get("gate_pick", None)
+
+    def plot_layer_all(self):
+        ncann.plot_layer_all(self, allname = self.allname)
+
+    def forward(self, input0, hidden=None, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        if type(self.coop) is not list:
+            if self.gate_pick is not None:
+                input=input0[:,self.gate_pick].contiguous()
+            else:
+                input = input0
+
+            hiddenm = self.W_i2m(input)
+            hiddenm = self.relu(hiddenm)
+
+            self.mdl = hiddenm
+
+            hidden1 = self.W_m2h1(hiddenm)
+            hidden1 = self.relu(hidden1)
+
+        if self.coop is not None and type(self.coop) is not list:
+            coop_logit, _ = self.coop(input0, hidden, logit_mode=True, add_logit=None, schedule=schedule)
+            hiddenm_coop = self.W_i2m_coop(coop_logit)
+            hiddenm_coop = self.relu(hiddenm_coop)
+            hidden1_coop = self.W_m2h1_coop(hiddenm_coop)
+            hidden1_coop = self.relu(hidden1_coop)
+            hidden1 = hidden1 + hidden1_coop
+        elif self.coop is not None and type(self.coop) is list:
+            coop_logit0, _ = self.coop[0](input0, hidden, logit_mode=True, add_logit=None, schedule=schedule)
+            hiddenm_coop0 = self.W_i2m_coop(coop_logit0)
+            hiddenm_coop0 = self.relu(hiddenm_coop0)
+            hidden1_coop0 = self.W_m2h1_coop(hiddenm_coop0)
+            hidden1_coop0 = self.relu(hidden1_coop0)
+
+            coop_logit1, _ = self.coop[1](input0, hidden, logit_mode=True, add_logit=None, schedule=schedule)
+            hiddenm_coop1 = self.W_i2m_coop2(coop_logit1)
+            hiddenm_coop1 = self.relu(hiddenm_coop1)
+            hidden1_coop1 = self.W_m2h1_coop2(hiddenm_coop1)
+            hidden1_coop1 = self.relu(hidden1_coop1)
+
+            hidden1 = hidden1_coop0 + hidden1_coop1
+
+        hidden2 = self.W_h12h2(hidden1)
+        hidden2 = self.relu(hidden2)
+
+        output = self.W_h2o(hidden2)
+        if not logit_mode:
+            output=self.softmax(output)
+
+        return output,None
+
+    def set_mask_input(self, mask):
+        ncann.set_mask(self, mask, "input_mask")
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True).to(device)
+
+class FF_NLP_Cauchy(torch.nn.Module):
+    """
+    PyTorch GRU for NLP with Cauchy initialization
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, para=None):
+        super(self.__class__, self).__init__()
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        self.i2h = torch.nn.Linear(input_size, hidden_size)
+
+        # self.h1 = Linear_Cauchy(hidden_size , hidden_size)
+        # self.h2 = Linear_Cauchy(hidden_size, hidden_size)
+
+        # self.h1 = torch.nn.Linear(hidden_size, hidden_size)
+        # self.h2 = torch.nn.Linear(hidden_size, hidden_size)
+
+        self.cauchy_layer_stack = torch.nn.ModuleList([
+            torch.nn.Sequential(Linear_Cauchy(hidden_size, hidden_size), torch.nn.ReLU(), torch.nn.Tanh())
+            for _ in range(self.num_layers)])
+
+        self.linear_layer_stack = torch.nn.ModuleList([
+            torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size,bias=False), torch.nn.ReLU(), torch.nn.Tanh())
+            for _ in range(self.num_layers)])
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if gpuavail else "cpu")
+
+        self.allname = ["i2h", "h2o","h1","h2"]
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+
+    def plot_layer_all(self):
+        ncann.plot_layer_all(self, allname = self.allname)
+
+    def forward(self, input, hidden1=None, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+
+        hidden = self.i2h(input)
+        hidden1 = self.relu(hidden)
+
+        # for fmd in self.linear_layer_stack:
+        for fmd in   self.cauchy_layer_stack:
+            hidden1 = fmd(hidden1)
+
+        output = self.h2o(hidden1)
+        output = self.softmax(output)
+
+        return output,None
+
+    def set_mask_input(self, mask):
+        ncann.set_mask(self, mask, "input_mask")
 
     def initHidden(self,batch):
         return Variable(torch.zeros(1, batch, self.hidden_size), requires_grad=True)
@@ -2867,9 +3223,9 @@ class GRU_SerialCon_SharedAssociation(torch.nn.Module):
 
 class GRU_TwoLayerCon_SharedAssociation(torch.nn.Module):
     """
-    A trial of two layer training stracture for trial of layered inductive bias of Natural Language.
+    A trial of two layer training structure for trial of layered inductive bias of Natural Language.
     Layer 1 is a pre-trained layer like GRU over POS which freezes.
-    Layer 2 is a projecction perpendicular to layer 1
+    Layer 2 is a projection perpendicular to layer 1
     Attention Gating is used to choose plitable information to two layers
     Shared association scheme is used to ensure item-concept alignment
     """

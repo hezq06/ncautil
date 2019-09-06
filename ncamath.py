@@ -16,6 +16,7 @@ from sklearn.cluster import KMeans
 import scipy.linalg as la
 import torch
 from sklearn.manifold import TSNE
+from scipy.cluster.hierarchy import dendrogram
 
 def cluster(data,n_clusters,mode="kmeans"):
     """
@@ -507,34 +508,72 @@ def cal_entropy_raw_ND_discrete(data):
     """
     Calculate entropy of raw data
     N dimensional discrete data
-    :param data: [Ndata of value]
+    :param data: [Ndata of D-dim value]
     :param data_discrete: if data is discrete
     :return:
     """
     datanp=np.array(data)
+    if len(datanp.shape) == 1:
+        datanp=datanp.reshape(-1,1)
     assert len(datanp.shape) == 2
     assert datanp.shape[0]>datanp.shape[1]
 
-    datatup=[]
-    for iin in range(len(data)):
-        datatup.append(tuple(data[iin]))
+    # datatup = []
+    # for iin in range(len(datanp)):
+    #     datatup.append(tuple(datanp[iin]))
+    # datatup= [tuple(datanp[iin]) for iin in range(len(datanp))] # Slow!!!
 
-    itemsets=list(set(datatup))
-    nsets=len(itemsets)
+    projV=np.random.random(datanp.shape[1])
+    datatup=datanp.dot(projV)
+
+    itemsets = list(set(datatup))
+    nsets = len(itemsets)
 
     hashtab = dict([])
     for ii in range(nsets):
         hashtab[itemsets[ii]] = 0
+
     for ii in range(len(datatup)):
         hashtab[datatup[ii]] = hashtab[datatup[ii]] + 1
 
-    pvec=np.zeros(nsets)
-    for ii,val in enumerate(hashtab.values()):
-        pvec[ii]=val
+    pvec = np.zeros(nsets)
+    for ii, val in enumerate(hashtab.values()):
+        pvec[ii] = val
 
     pvec = pvec / np.sum(pvec)
 
     return cal_entropy(pvec)
+
+def cal_muinfo_raw_ND_discrete(X,Z):
+    """
+    Calculate multual information of N dimensional discrete data X and Z
+    I(X;Z) = H(X) + H(Z) - H(X,Z)
+    :param X: [Ndata of D-dim value]
+    :param Z: [Ndata of D-dim value]
+    :return:
+    """
+    Xnp = np.array(X)
+    if len(Xnp.shape)==1:
+        Xnp=Xnp.reshape(-1,1)
+    assert len(Xnp.shape) == 2
+    assert Xnp.shape[0] > Xnp.shape[1]
+
+    Znp = np.array(Z)
+    if len(Znp.shape)==1:
+        Znp=Znp.reshape(-1,1)
+    assert len(Znp.shape) == 2
+    assert Znp.shape[0] > Znp.shape[1]
+
+    XZnp = np.concatenate((Xnp,Znp),axis=1)
+
+    Hx=cal_entropy_raw_ND_discrete(Xnp)
+
+    Hz = cal_entropy_raw_ND_discrete(Znp)
+
+    Hxz=cal_entropy_raw_ND_discrete(XZnp)
+
+    return Hx+Hz-Hxz
+
 
 def cal_entropy(data,logit=False):
     """
@@ -764,3 +803,130 @@ def logit_space_atransfer(seq):
         vecp = aproj(vec, basis)
         resp.append(vecp)
     return resp
+
+class HCObject(object):
+    """
+    A class storing HierachicalCluster object
+    """
+    def __init__(self,data,label,accN=1):
+        if len(data.shape) == 1:
+            data = data.reshape(-1, 1)
+        self.data=data
+        self.label=label
+        self.accN=accN
+
+
+class HierachicalCluster(object):
+    """
+    A class helping general hierachical clustering algorithm
+    """
+    def __init__(self,obj_list,Z,min_flag=True):
+        self.obj_list=obj_list
+        self.ini_N_obj=len(obj_list)
+        self.obj_mask=[1 for ii in range(self.ini_N_obj)] # 1 means effective, 0 means masked out
+        self.linkage=[] # id_cluster_L, id_cluster_R, dist, Accumulation Number
+        self.Z = Z
+        self.min_flag=min_flag
+        if min_flag:
+            self.Ldist=999999
+        else:
+            self.Ldist = -999999
+        self.dist_mat=np.eye(self.ini_N_obj)*self.Ldist
+        self.mearge_mat = np.eye(self.ini_N_obj) * self.Ldist
+
+    def run_clustering(self):
+        self.init_dist_mat()
+        for ii in range(self.ini_N_obj-1):
+            print("HC Step: ", ii)
+            if self.min_flag:
+                iix,jjy = np.unravel_index(self.mearge_mat.argmin(), self.dist_mat.shape)
+            else:
+                iix, jjy = np.unravel_index(self.mearge_mat.argmax(), self.dist_mat.shape)
+            self.merge(iix,jjy,self.dist_mat[iix,jjy])
+            self.expand_dist_mat()
+        self.plot_clustering()
+
+    def init_dist_mat(self):
+        """
+        Initialize the ini_N_obj*ini_N_obj distmat
+        :return:
+        """
+
+        assert len(self.obj_list) == len(self.obj_mask)
+        for ii in range(self.ini_N_obj):
+            for jj in range(ii):
+                if self.obj_mask[ii]*self.obj_mask[jj]==1:
+                    I_merge, I_dist=self.cal_dist(self.obj_list[ii].data,self.obj_list[jj].data,self.Z)
+                    self.dist_mat[ii, jj] = I_dist
+                    self.dist_mat[jj, ii] = I_dist
+                    self.mearge_mat[ii, jj] = I_merge
+                    self.mearge_mat[jj, ii] = I_merge
+
+    def expand_dist_mat(self):
+
+        assert len(self.obj_list) == len(self.obj_mask)
+
+        new_dist_mat=np.eye(len(self.obj_list))*self.Ldist
+        new_mearge_mat=np.eye(len(self.obj_list))*self.Ldist
+        for ii in range(len(self.dist_mat)):
+            for jj in range(len(self.dist_mat[0])):
+                new_dist_mat[ii,jj]=self.dist_mat[ii,jj]
+                new_mearge_mat[ii, jj] = self.mearge_mat[ii, jj]
+
+        new_dist_mat[:, np.array(self.obj_mask) == 0] = self.Ldist
+        new_dist_mat[np.array(self.obj_mask) == 0, :] = self.Ldist
+        new_mearge_mat[:, np.array(self.obj_mask) == 0] = self.Ldist
+        new_mearge_mat[np.array(self.obj_mask) == 0, :] = self.Ldist
+
+        ii=len(self.obj_list)-1
+        for jj in range(ii):
+            if self.obj_mask[ii] * self.obj_mask[jj] == 1:
+                I_merge, I_dist=self.cal_dist(self.obj_list[ii].data,self.obj_list[jj].data,self.Z)
+                new_dist_mat[ii, jj] = I_dist
+                new_dist_mat[jj, ii] = I_dist
+                new_mearge_mat[ii, jj] = I_merge
+                new_mearge_mat[jj, ii] = I_merge
+
+        self.mearge_mat=new_mearge_mat
+        self.dist_mat=new_dist_mat
+
+    def plot_clustering(self):
+        def llf(id):
+            return self.obj_list[id].label
+        dgram = dendrogram(self.linkage, truncate_mode="level", leaf_label_func=llf, leaf_rotation=60)
+        plt.tick_params(labelsize=10)
+        plt.show()
+
+    def cal_dist(self,X,Y,Z):
+        """Distance defined as predoctive mutual information"""
+        if len(X.shape) == 1:
+            X = X.reshape(-1, 1)
+        if len(Y.shape) == 1:
+            Y = Y.reshape(-1, 1)
+        XY=np.concatenate((X,Y),axis=1)
+        Ixy_z=cal_muinfo_raw_ND_discrete(XY,Z)
+        Ix_z = cal_muinfo_raw_ND_discrete(X, Z)
+        Iy_z = cal_muinfo_raw_ND_discrete(Y, Z)
+        # I_xy=cal_muinfo_raw_ND_discrete(X, Y)
+        # Hx = cal_entropy_raw_ND_discrete(X)
+        # Hy = cal_entropy_raw_ND_discrete(Y)
+        Hxy = cal_entropy_raw_ND_discrete(XY)
+        # I_merge=(2*Ixy_z-Ix_z-Iy_z)/Ixy_z
+        I_merge = Ixy_z
+        I_dist=Ixy_z
+        return I_merge,I_dist
+
+    def merge(self,id1,id2,dist):
+        Obj1 = self.obj_list[id1]
+        Obj2 = self.obj_list[id2]
+        newData=np.concatenate((Obj1.data,Obj2.data),axis=1)
+        newLabel = str(Obj1.label) + "," +str(Obj2.label)
+        newaccN=Obj1.accN+Obj2.accN
+        newObj=HCObject(newData,newLabel,accN=newaccN)
+
+        self.obj_list.append(newObj)
+        self.obj_mask[id1] = 0
+        self.obj_mask[id2] = 0
+        self.obj_mask.append(1)
+
+        self.linkage.append([id1,id2,dist,newaccN])

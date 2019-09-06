@@ -75,6 +75,7 @@ def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,sho
     img=data[:,start:start+lim]
     if symmetric:
         plt.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)), np.amax(np.abs(data))))
+        # plt.imshow(img, cmap='seismic', clim=(-2,2))
     else:
         plt.imshow(img, cmap='seismic')
     plt.colorbar()
@@ -119,7 +120,9 @@ def plot_mat_sub(datal,start=0,lim=1000,symmetric=True):
 
 def plot_mat_ax(ax, img, symmetric=False, title=None, tick_step=None, clim=None,xlabel=None,ylabel=None):
     img = np.array(img)
-    assert len(img.shape) == 2
+    assert len(img.shape) <= 2
+    if len(img.shape)==1:
+        img=img.reshape(1,-1)
     if clim is None:
         if symmetric:
             clim=(-np.amax(np.abs(img)), np.amax(np.abs(img)))
@@ -445,34 +448,6 @@ def pl_conceptbubblecloud(id_to_con,id_to_word,prior,word_to_vec, pM=None):
     plt.margins(x=0, y=0)
     plt.show()
 
-def wta_layer(l_input,schedule=1.0,wta_noise=0.0,upper_t = 0.3, schshift=0.2):
-
-    concept_size = l_input.shape[-1]
-    schedule=schedule+schshift
-    if schedule>=1.0:
-        schedule=1.0
-    Nindr = (1.0 - np.sqrt(schedule)) * (concept_size - 2) * upper_t + 1  # Number of Nind largest number kept
-    # Nindr = (1.0 - schedule) * (concept_size - 2) * upper_t + 1  # Number of Nind largest number kept
-    smooth=Nindr-int(Nindr)
-    Nind=int(Nindr)
-    np_input=l_input.cpu().data.numpy()
-    npargmax_i = np.argsort(-np_input, axis=-1)
-    argmax_i = torch.from_numpy(npargmax_i).narrow(-1, 0, Nind)
-    outer=torch.from_numpy(npargmax_i).narrow(-1, Nind, 1)
-    concept_layer_i = torch.zeros(l_input.shape)
-    concept_layer_i.scatter_(-1, argmax_i, 1.0)
-    concept_layer_i.scatter_(-1, outer, smooth)
-    concept_layer_i = concept_layer_i + wta_noise * torch.rand(concept_layer_i.shape)
-
-    if l_input.is_cuda:
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        concept_layer_i=concept_layer_i.to(device)
-
-    ginput_masked = l_input * concept_layer_i
-    # ginput_masked = ginput_masked / torch.norm(ginput_masked, 2, -1, keepdim=True)
-    # ginput_masked=softmax(ginput_masked)
-    return ginput_masked
-
 def roll(tensor, shift, axis):
     if shift == 0:
         return tensor
@@ -620,14 +595,17 @@ class PyTrain_Lite(object):
         self.cuda_device = para.get("cuda_device", "cuda:0")
         self.figure_plot = para.get("figure_plot", True)
         self.custom_interface = para.get("custom_interface", None)
+        self.loss_exp_flag = para.get("loss_exp_flag", True)
+        self.specialized_digit_eval = para.get("specialized_digit_eval", None)
 
-
-    def run_training(self,step=None,lr=None,optimizer_label="adam"):
+    def run_training(self,step=None,lr=None,optimizer_label=None):
 
         if step is not None:
             self.step=step
 
         if lr is not None:
+            if optimizer_label is None:
+                optimizer_label=self.optimizer_label
             if optimizer_label == "adam":
                 print("Using adam optimizer")
                 self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=lr, weight_decay=0.0)
@@ -699,7 +677,7 @@ class PyTrain_Lite(object):
                     loss = self.lossf_eval(output, label, self.rnn, None)
                 else:
                     loss = self.lossf_eval(output[posi_ctrl,:,:].view(1,output.shape[1],output.shape[2]), label[:,posi_ctrl].view(label.shape[0],1), self.rnn, None)
-                self.eval_mem(x, label, self.rnn)
+                self.eval_mem(x, label, output, self.rnn)
 
             else:
                 outputl=None
@@ -720,8 +698,12 @@ class PyTrain_Lite(object):
                 self.eval_mem(outputl, hiddenl)
             perpl.append(loss.cpu().item())
         # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
-        perp=np.exp(np.mean(np.array(perpl)))
-        print("Evaluation Perplexity: ", perp)
+        if self.loss_exp_flag:
+            perp=np.exp(np.mean(np.array(perpl)))
+            print("Evaluation Perplexity: ", perp)
+        else:
+            perp = np.mean(np.array(perpl))
+            print("Evaluation Loss: ", perp)
         endt = time.time()
         print("Time used in evaluation:", endt - startt)
         if self.gpuavail:
@@ -733,7 +715,7 @@ class PyTrain_Lite(object):
         self.log = self.log + "Time used in evaluation:"+ str(endt - startt) + "\n"
         return perp
 
-    def do_test(self,step_test=300,schedule=1.0,posi_ctrl=None):
+    def do_test(self,step_test=300,schedule=1.0,posi_ctrl=None,seqmode=True):
         """
         Calculate correct rate
         :param step_test:
@@ -753,15 +735,21 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden(self.batch)
             x, label, _ = self.get_data()
             output, hidden = self.rnn(x, hidden, schedule=schedule)
-            output = output.permute(1, 2, 0)
+            if seqmode:
+                output = output.permute(1, 2, 0)
             _,predicted = torch.max(output,1)
-            if posi_ctrl is None:
-                total += label.size(0)*label.size(1)
-                correct += (predicted == label).sum().item()
+            if seqmode:
+                if posi_ctrl is None:
+                    total += label.size(0)*label.size(1)
+                    correct += (predicted == label).sum().item()
+                else:
+                    total += label.size(0)
+                    correct += (predicted[:,posi_ctrl] == label[:,posi_ctrl]).sum().item()
+
             else:
                 total += label.size(0)
-                correct += (predicted[:,posi_ctrl] == label[:,posi_ctrl]).sum().item()
-            correct_ratel.append(correct/total)
+                correct += (predicted == label).sum().item()
+            correct_ratel.append(correct / total)
             # self.eval_mem(output)
         # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
         crate=np.mean(np.array(correct_ratel))
@@ -836,10 +824,19 @@ class PyTrain_Lite(object):
     def _profiler(self, iis, loss):
 
         if int(iis / self.prtstep) != self.his:
-            print("Perlexity: ", iis, np.exp(loss.item()))
-            self.log = self.log + "Perlexity: " + str(iis)+" "+ str(np.exp(loss.item())) + "\n"
-            self.his = int(iis / self.prtstep)
-        self.train_hist.append(np.exp(loss.item()))
+            if self.loss_exp_flag:
+                print("Perlexity: ", iis, np.exp(loss.item()))
+                self.log = self.log + "Perlexity: " + str(iis)+" "+ str(np.exp(loss.item())) + "\n"
+                self.his = int(iis / self.prtstep)
+            else:
+                print("Loss: ", iis, loss.item())
+                self.log = self.log + "Loss: " + str(iis) + " " + str(loss.item()) + "\n"
+                self.his = int(iis / self.prtstep)
+
+        if self.loss_exp_flag:
+            self.train_hist.append(np.exp(loss.item()))
+        else:
+            self.train_hist.append(loss.item())
 
         # if int(iis / self.prtstep) != self.his:
         #     print("Loss: ", iis, loss.item())
@@ -1110,9 +1107,9 @@ class PyTrain_Interface_Default(object):
         print("lossf_eval: ")
         self.lossf_eval(None,None)
         print("eval_mem: ")
-        self.eval_mem(None,None,None)
+        self.eval_mem(None,None,None,None)
         print("while_training: ")
-        self.while_training()
+        self.while_training(None)
         print("example_data_collection: ")
         self.example_data_collection(None,None,None,None)
         self.test_print_interface = False
@@ -2396,3 +2393,308 @@ class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
             self.pt.data_col_mem["datalist"][1] = x[1]
             self.pt.data_col_mem["datalist"][2] = output[0]
 
+class PyTrain_Interface_mnist(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self,subversion=0):
+        super(self.__class__, self).__init__()
+
+        self.subversion=subversion # 0: normal, 1: autoencoder
+
+        if self.subversion==0:
+            self.allname = []
+        elif self.subversion==1:
+            # self.allname = ["i2h","h2m","m2o","h12h2"]
+            self.allname = ["i2h","h2m","m2o"]
+            # self.allname = ["m2o"]
+
+        self.print_interface()
+
+    def init_data(self,*args,**kwargs):
+        if self.test_print_interface:
+            print("init_data: do nothing")
+            return True
+        self.pt.data_init=True
+        self.pt.dataset_length = len(self.pt.dataset["dataset"])
+        print("Dataset length ", self.pt.dataset_length)
+
+    def get_data(self, batch=None, rstartv=None):
+        if self.subversion==0:
+            return self.get_data_mnist(batch=batch, rstartv=rstartv)
+        elif self.subversion==1:
+            return self.get_data_mnist_autoencoder(batch=batch, rstartv=rstartv)
+
+    def get_data_mnist(self, batch=None, rstartv=None):
+
+        if self.test_print_interface:
+            print("Get data interface: get_data_mnist")
+            return True
+
+        assert self.pt.supervise_mode
+        assert self.pt.data_init
+
+        if batch is None:
+            batch=self.pt.batch
+
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset["dataset"]) - 1))
+        else:
+            assert len(rstartv)==batch
+
+        vec1m = self.pt.dataset["dataset"][rstartv,:]
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        outlab=self.pt.dataset["label"][rstartv]
+        outlab = outlab.type(torch.LongTensor)
+
+        if self.pt.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.pt.device)
+            x = x.to(self.pt.device)
+
+        return x, outlab, None
+
+    def get_data_mnist_autoencoder(self, batch=None, rstartv=None):
+
+        if self.test_print_interface:
+            print("Get data interface: get_data_mnist_autoencoder")
+            return True
+
+        assert self.pt.supervise_mode
+        assert self.pt.data_init
+
+        if batch is None:
+            batch=self.pt.batch
+
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset["dataset"]) - 1))
+        else:
+            assert len(rstartv)==batch
+
+        vec1m = self.pt.dataset["dataset"][rstartv,:]
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        outlab = x
+
+        if self.pt.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(self.pt.device)
+            x = x.to(self.pt.device)
+
+        return x, outlab, None
+
+    def while_training(self,iis):
+        if self.subversion == 0:
+            pass
+        elif self.subversion == 1:
+            return self.while_training_non_neg_clamp(iis)
+            # pass
+
+    def while_training_non_neg_clamp(self,iis):
+        if self.test_print_interface:
+            print("While_training interface: while_training_non_neg_clamp")
+            return True
+
+        self.pt.rnn.m2o.weight.data.clamp_(0)
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        # return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+        if self.subversion==0:
+            # return self.KNWLoss_GateReg_MNIST(outputl, outlab, model=model, cstep=cstep)
+            return self.KNWLoss_GateReg_MNIST_eval(outputl, outlab, model=model, cstep=cstep)
+        elif self.subversion==1:
+            return self.MSE_wta_autoencoder(outputl, outlab, model=model, cstep=cstep)
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        # return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+        if self.subversion == 0:
+            return self.KNWLoss_GateReg_MNIST_eval(outputl, outlab, model=model, cstep=cstep)
+        elif self.subversion == 1:
+            return self.MSE_wta_autoencoder_eval(outputl, outlab, model=model, cstep=cstep)
+
+    def eval_mem(self, x, label, output,rnn):
+        return self.custom_eval_mem_mnist_autoencoder(x, label, output, rnn)
+
+    def custom_eval_mem_mnist_autoencoder(self, x, label, output, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.test_print_interface:
+            print("Eval mem interface: custom_eval_mem_mnist_autoencoder")
+            return True
+
+
+        if self.pt.evalmem is None:
+            self.pt.evalmem = [[] for ii in range(2)]  # x,label,hd_middle
+
+        try:
+            self.pt.evalmem[0].append(x.cpu().data.numpy())
+            self.pt.evalmem[1].append(rnn.mdl.cpu().data.numpy())
+        except:
+            # print("eval_mem failed")
+            pass
+
+    def KNWLoss_GateReg_MNIST(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_GateReg_MNIST")
+            return True
+
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        maxsig=torch.max(model.sigmoid(model.input_gate))
+        loss_gate = torch.mean(model.sigmoid(model.input_gate)/maxsig)
+        # loss_gate = torch.mean(model.sigmoid(model.input_gate))
+        #
+        wnorm1=0
+        for namep in self.allname:
+                wattr = getattr(self.pt.rnn, namep)
+                wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+
+        return loss1 + 0.01*wnorm1 + self.pt.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def KNWLoss_GateReg_MNIST_eval(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_GateReg_MNIST_eval")
+            return True
+
+        lossc = torch.nn.CrossEntropyLoss()
+        if self.pt.specialized_digit_eval is None:
+            loss1 = lossc(outputl, outlab)
+        else:
+            outlab_sp=(outlab==self.pt.specialized_digit_eval)
+            outlab_sp = outlab_sp.type(torch.LongTensor)
+            if torch.cuda.is_available():
+                outlab_sp=outlab_sp.to(self.pt.cuda_device)
+            outputl_sum=torch.sum(torch.exp(outputl),dim=-1)
+            outputl_notsp = torch.log(outputl_sum - torch.exp(outputl[:,self.pt.specialized_digit_eval]))
+            outputl_sp=torch.cat((outputl_notsp.reshape(-1,1),outputl[:,self.pt.specialized_digit_eval].reshape(-1,1)),dim=-1)
+            loss1 = lossc(outputl_sp, outlab_sp)
+
+        # loss_gate = torch.mean(model.sigmoid(model.input_gate))
+        # #
+        # wnorm1=0
+        # for namep in self.allname:
+        #         wattr = getattr(self.pt.rnn, namep)
+        #         wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+
+        return loss1# + 0.01*wnorm1 + self.pt.reg_lamda*loss_gate # + 0.001 * l1_reg #+ 0.01 * lossh2o  + 0.01 * l1_reg
+
+    def MSE_wta_autoencoder(self, outputl, inputl, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: MSE_wta_autoencoder")
+            return True
+
+        # lossc=torch.nn.MSELoss(reduce=True,reduction="mean")
+        # loss1 = lossc(outputl, inputl)
+
+        loss1 = torch.mean((outputl-inputl)*(outputl-inputl))
+
+        wnorm1=0
+        for namep in self.allname:
+            wattr = getattr(self.pt.rnn, namep)
+            wnorm1=wnorm1+torch.mean(torch.abs(wattr.weight))
+
+        # Wm2o=model.m2o.weight
+        # Wm2o=Wm2o.reshape((28,28,-1))
+        #
+        # Wm2ox = (Wm2o * model.Tx).reshape(28*28,-1)
+        #
+        # Wm2ox_var=torch.var(Wm2ox,dim=0)
+        #
+        # Wm2oy = (Wm2o * model.Ty).reshape(28 * 28, -1)
+        #
+        # Wm2oy_var = torch.var(Wm2oy, dim=0)
+        #
+        # Wm2o_r =torch.mean(Wm2ox_var+Wm2oy_var)
+
+        energyloss = torch.mean(torch.mul(model.mdl, model.mdl))
+
+        # print(wnorm1,energyloss,Wm2o_r)
+
+        return loss1 + self.pt.reg_lamda*(wnorm1+energyloss)
+
+    def MSE_wta_autoencoder_eval(self, outputl, inputl, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: MSE_wta_autoencoder_eval")
+            return True
+
+        # lossc=torch.nn.MSELoss(reduce=True,reduction="mean")
+        # loss1 = lossc(outputl, inputl)
+
+        loss1 = torch.mean((outputl-inputl)*(outputl-inputl))
+
+        return loss1
+
+    def example_data_collection(self, x, output, hidden, label):
+        if self.subversion==0:
+            return self.custom_example_data_collection_mnist(x, output, hidden, label)
+        elif self.subversion==1:
+            return self.custom_example_data_collection_mnist_autoencoder(x, output, hidden, label)
+
+    # def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+    #     # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+    #     # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+    #     return self._lossf_eval(outputl, outlab, model=model, cstep=cstep)
+
+
+    # def eval_mem(self, x, label, rnn):
+    #     return self.custom_eval_mem_tdff(x, label, rnn)
+
+    # def example_data_collection(self, x, output, hidden, label):
+    #     return self.custom_example_data_collection_tdff(x, output, hidden, label)
+
+    def custom_example_data_collection_mnist(self, x, output, hidden, label):
+
+        if self.test_print_interface:
+            print("example_data_collection interface: custom_example_data_collection_mnist")
+            return True
+
+        label_onehot = torch.zeros(10)
+        label_onehot[label] = 1
+
+
+        if self.pt.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.pt.data_col_mem=dict([])
+            self.pt.data_col_mem["titlelist"]=["input","label","predict"]
+            self.pt.data_col_mem["sysmlist"]=[True,True,True]
+            self.pt.data_col_mem["mode"]="predict"
+            self.pt.data_col_mem["datalist"] = [None,None,None]
+            self.pt.data_col_mem["climlist"] = [[None, None], [None, None] ,[None, None]]
+
+        if self.pt.data_col_mem["datalist"][0] is None:
+            self.pt.data_col_mem["datalist"][0] = x.reshape((28,28)).transpose(1,0)
+            # self.pt.data_col_mem["datalist"][0] = torch.squeeze(x)
+            self.pt.data_col_mem["datalist"][1] = torch.squeeze(label_onehot)
+            self.pt.data_col_mem["datalist"][2] = torch.squeeze(output)
+
+    def custom_example_data_collection_mnist_autoencoder(self, x, output, hidden, label):
+
+        if self.test_print_interface:
+            print("example_data_collection interface: custom_example_data_collection_mnist")
+            return True
+
+
+        if self.pt.data_col_mem is None:
+            # Step 1 of example_data_collection
+            self.pt.data_col_mem=dict([])
+            self.pt.data_col_mem["titlelist"]=["input","label","predict"]
+            self.pt.data_col_mem["sysmlist"]=[True,True,True]
+            self.pt.data_col_mem["mode"]="predict"
+            self.pt.data_col_mem["datalist"] = [None,None,None]
+            self.pt.data_col_mem["climlist"] = [[None, None], [None, None] ,[None, None]]
+
+        if self.pt.data_col_mem["datalist"][0] is None:
+            self.pt.data_col_mem["datalist"][0] = x.reshape((28,28)).transpose(1,0)
+            self.pt.data_col_mem["datalist"][1] = torch.squeeze(self.pt.rnn.mdl)
+            self.pt.data_col_mem["datalist"][2] = output.reshape((28,28)).transpose(1,0)

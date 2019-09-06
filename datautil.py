@@ -22,6 +22,8 @@ import pickle
 
 from tqdm import tqdm
 
+from torchvision import datasets
+
 # def save(item,path):
 #     # torch.save(model.state_dict(), path))
 # def load(model,path):
@@ -336,3 +338,24 @@ class Plus_dataset(object):
             idn=int(np.random.rand()*self.num)
             print("Q:",self.dataset_raw["dataset"][idn])
             print("A:", self.dataset_raw["label"][idn])
+
+class MNIST_dataset(object):
+    """
+    pytorch mnist dataset
+    """
+    def __init__(self):
+
+        data_train = datasets.MNIST(root="./data/", train=True)
+        data_test = datasets.MNIST(root="./data/", train=False)
+
+        self.dataset_sup=dict([])
+        dshape=data_train.train_data.shape
+        self.dataset_sup["dataset"] = data_train.train_data.reshape(dshape[0],-1).type(torch.FloatTensor) # 1D version
+        self.dataset_sup["dataset"] = self.dataset_sup["dataset"] / 256.0
+        self.dataset_sup["label"] = data_train.train_labels
+
+        self.dataset_sup_test=dict([])
+        dshape = data_test.test_data.shape
+        self.dataset_sup_test["dataset"] = data_test.test_data.reshape(dshape[0],-1).type(torch.FloatTensor)
+        self.dataset_sup_test["dataset"] = self.dataset_sup_test["dataset"] / 256.0
+        self.dataset_sup_test["label"] = data_test.test_labels
