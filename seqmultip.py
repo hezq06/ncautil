@@ -190,6 +190,85 @@ class ncann(object):
                 else:
                     setattr(nncls, lname, getattr(nncls, lname)*mask)
 
+class LSTM_DIMProbGatting_NLP(torch.nn.Module):
+    """
+    PyTorch LSTM for NLP with input dimemsion gating with a probablistic 0/1 gate, two step training
+    Basic hypothesis, more understandable means tighter information bottleneck
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers)
+
+        # self.gate_para = torch.ones(input_size)
+
+        self.gate =  torch.nn.Parameter(torch.rand(input_size), requires_grad=True)
+
+        if weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.lstm = WeightDrop(self.lstm, ['weight_hh_l0'], dropout=weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.siggate = self.sigmoid(self.gate)
+
+        self.gpuavail = torch.cuda.is_available()
+        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+
+        # self.mysampler = MySampler.apply
+
+    # def sample_gate(self,shape):
+    #     gate=torch.rand(shape)
+    #     zeros=torch.zeros(shape)
+    #     if self.gpuavail:
+    #         gate=gate.to(self.device)
+    #         zeros=zeros.to(self.device)
+    #     gate=gate-self.siggate
+    #     gate[gate == zeros] = 1e-8
+    #     gate=(gate/torch.abs(gate)+1.0)/2
+    #     if torch.isnan(gate).any():
+    #         print(self.siggate,torch.sum(torch.isnan(gate)))
+    #         raise Exception("NaN Error")
+    #     return gate
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        self.siggate = self.sigmoid(self.gate)
+
+        # torch.autograd.set_detect_anomaly(True)
+        # probgate=self.mysampler(self.siggate)
+        mysampler=None
+        probgate = mysampler(self.siggate)
+        input=input*probgate
+        hout, hn = self.lstm(input,hidden1)
+        output = self.h2o(hout)
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)]
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
+
 class WTA_AUTOENCODER(torch.nn.Module):
     """
     winner take all autoencoder
@@ -3779,10 +3858,10 @@ class LSTM_DIMGatting_NLP(torch.nn.Module):
                 Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
 
 
-class LSTM_DIMProbGatting_NLP(torch.nn.Module):
+class LSTM_ConjGating_HC_NLP(torch.nn.Module):
     """
-    PyTorch LSTM for NLP with input dimemsion gating with a probablistic 0/1 gate, two step training
-    Basic hypothesis, more understandable means tighter information bottleneck
+    PyTorch LSTM for NLP with input dimemsion conjugate gating to do top-down hierachical clustering
+    By simultaneosly maximizing prediction performance of two parts, it is supposed to seperate redundant information
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
         super(self.__class__, self).__init__()

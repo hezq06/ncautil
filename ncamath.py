@@ -895,6 +895,9 @@ class HierachicalCluster(object):
             return self.obj_list[id].label
         dgram = dendrogram(self.linkage, truncate_mode="level", leaf_label_func=llf, leaf_rotation=60)
         plt.tick_params(labelsize=10)
+        plt.title("Hierachical Information Flow Graph")
+        plt.xlabel("Feature ID")
+        plt.ylabel("Predictive Mutual Infomation")
         plt.show()
 
     def cal_dist(self,X,Y,Z):
