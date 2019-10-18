@@ -198,6 +198,7 @@ def pl_conceptbubblecloud(id_to_con,id_to_word,prior,word_to_vec, pM=None):
     :return:
     """
     # step 1: data collection by concept : [[0,[wrds for con0],[priors for con0]]]
+    prior=prior/np.max(prior)
     dict_conwrdcol=dict([])
     dict_conprcol=dict([])
     dict_cen_wvec=dict([])
@@ -212,7 +213,8 @@ def pl_conceptbubblecloud(id_to_con,id_to_word,prior,word_to_vec, pM=None):
         for iter_ii in range(len(id_to_con)):
             if id_to_con[iter_ii] == con_id:
                 conwrdcol.append(id_to_word[iter_ii])
-                conprcol.append(np.log(prior[iter_ii]))
+                # conprcol.append(np.log(prior[iter_ii]))
+                conprcol.append(prior[iter_ii])
                 con_freq=con_freq+prior[iter_ii]
         # step 2: generate word cloud by concept
         text_freq = dict([])
@@ -597,8 +599,11 @@ class PyTrain_Lite(object):
         self.custom_interface = para.get("custom_interface", None)
         self.loss_exp_flag = para.get("loss_exp_flag", True)
         self.specialized_digit_eval = para.get("specialized_digit_eval", None)
+        self.mem_limit = para.get("mem_limit", 1e12)
 
     def run_training(self,step=None,lr=None,optimizer_label=None):
+
+        self.rnn.train()
 
         if step is not None:
             self.step=step
@@ -614,9 +619,7 @@ class PyTrain_Lite(object):
                 self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=lr)
 
         startt = time.time()
-        self.rnn.train()
-        if self.gpuavail:
-            self.rnn.to(self.device)
+
         for iis in range(self.step):
         # for iis in tqdm(range(self.step)):
             if self.gpuavail:
@@ -646,10 +649,8 @@ class PyTrain_Lite(object):
         print("Time used in training:", endt - startt)
         self.log = self.log + "Time used in training: " + str(endt - startt) + "\n"
         self._postscript()
-        if self.gpuavail:
-            torch.cuda.empty_cache()
 
-    def eval_mem(self,*args):
+    def eval_mem(self, x, label, output, rnn):
         pass
 
     def do_eval(self,step_eval=300,schedule=1.0,posi_ctrl=None,allordermode=False):
@@ -696,13 +697,19 @@ class PyTrain_Lite(object):
                             dim=0)
                 loss = self.lossf_eval(outputl, label, self.rnn, iis)
                 self.eval_mem(outputl, hiddenl)
-            perpl.append(loss.cpu().item())
+            if type(loss) is not tuple:
+                perpl.append(loss.cpu().item())
+            else:
+                subperpl=[]
+                for item in loss:
+                    subperpl.append(item.cpu().item())
+                perpl.append(subperpl)
         # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
         if self.loss_exp_flag:
-            perp=np.exp(np.mean(np.array(perpl)))
+            perp=np.exp(np.mean(np.array(perpl),axis=0))
             print("Evaluation Perplexity: ", perp)
         else:
-            perp = np.mean(np.array(perpl))
+            perp = np.mean(np.array(perpl),axis=0)
             print("Evaluation Loss: ", perp)
         endt = time.time()
         print("Time used in evaluation:", endt - startt)
@@ -867,7 +874,7 @@ class PyTrain_Custom(PyTrain_Lite):
     """
     A pytrain custom object aiding PyTrain_Lite
     """
-    def __init__(self, dataset, lsize, rnn, step, interface, learning_rate=1e-2, batch=20, window=30, para=None):
+    def __init__(self, dataset, lsize, rnn, step, interface_para, learning_rate=1e-2, batch=20, window=30, para=None):
         """
         PyTrain custom
         :param para:
@@ -879,20 +886,7 @@ class PyTrain_Custom(PyTrain_Lite):
         self.databp_lab = None
         self.dataset_length = None
 
-        self.interface=interface
-        self.interface.pt=self
-
-        self.get_data = self.interface.get_data
-
-        self.lossf = self.interface.lossf
-
-        self.lossf_eval = self.interface.lossf_eval
-
-        self.eval_mem=self.interface.eval_mem
-
-        self.while_training=self.interface.while_training
-
-        self.example_data_collection=self.interface.example_data_collection
+        self.init_interface(interface_para)
 
         # context controller
         self.context_id=0
@@ -928,6 +922,21 @@ class PyTrain_Custom(PyTrain_Lite):
     #     else:
     #         raise Exception("Unknown context")
 
+    def init_interface(self,interface_para):
+
+        if interface_para["class"] == "PyTrain_Interface_continous":
+            pfver=interface_para.get("version",0)
+            self.interface = PyTrain_Interface_continous(version=pfver)
+            self.interface.pt=self
+        else:
+            raise Exception("Interface class unknown")
+
+        self.get_data = self.interface.get_data
+        self.lossf = self.interface.lossf
+        self.lossf_eval = self.interface.lossf_eval
+        self.eval_mem = self.interface.eval_mem
+        self.while_training = self.interface.while_training
+        self.example_data_collection = self.interface.example_data_collection
 
     def data(self,dataset):
         """
@@ -935,7 +944,7 @@ class PyTrain_Custom(PyTrain_Lite):
         :param dataset:
         :return:
         """
-        limit = 1e9
+        limit = self.mem_limit
         self.dataset = dataset
         if type(dataset) is list:
             print("Data symbol size: ",len(self.dataset) * self.lsize_in)
@@ -985,7 +994,13 @@ class PyTrain_Custom(PyTrain_Lite):
             for ii_b in range(len(inlabs)):
                 datab[ii_b,inlabs[ii_b]]=1.0
             databp = torch.from_numpy(np.array(datab))
-            # databp = databp.type(torch.FloatTensor)
+            databp = databp.type(torch.FloatTensor)
+        elif self.digit_input and self.id_2_vec is not None and not self.data_init:
+            datab = np.zeros((len(inlabs), self.lsize_in))
+            for ii_ind in range(len(inlabs)):
+                datab[ii_ind,:]=self.id_2_vec[inlabs[ii_ind]]
+            databp = torch.from_numpy(np.array(datab))
+            databp = databp.type(torch.FloatTensor)
         else:
             raise Exception("Not Implemented")
         return databp
@@ -1134,7 +1149,7 @@ class PyTrain_Interface_Default(object):
         return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
 
 
-    def eval_mem(self,*args,**kwargs):
+    def eval_mem(self, x, label, output, rnn):
         """
         Defalt evalmem
         called in do_eval
@@ -1513,77 +1528,304 @@ class PyTrain_Interface_common(PyTrain_Interface_Default):
         if self.pt.gpuavail:
             torch.cuda.empty_cache()
 
-
-
 class PyTrain_Interface_continous(PyTrain_Interface_Default):
     """
     A pytrain interface object to plug into PyTrain_Custom
     """
-    def __init__(self):
+    def __init__(self,version=0):
         super(self.__class__, self).__init__()
+        self.version = version
+        self.allname=["h2o"]
 
-    def _init_data_continous(self,limit=1e9):
-        assert self.digit_input
-        assert not self.supervise_mode
+    def init_data(self,*args,**kwargs):
+        return self.init_data_continous()
+
+    def get_data(self, batch=None, rstartv=None):
+        # return self.get_data_sent_KLsup( batch=batch, rstartv=rstartv)
+        return self.get_data_continous(batch=batch, rstartv=rstartv)
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        # return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+        if self.version==0:
+            return self.KNWLoss_WeightReg(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==1:
+            return self.KNWLoss_HC(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==2:
+            return self.KNWLoss_HC_Full(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==3:
+            return self.KNWLoss_HC_Int(outputl, outlab, model=model, cstep=cstep)
+
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+        if self.version==0:
+            return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==1:
+            return self.KNWLoss_HC_eval(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==2:
+            return self.KNWLoss_HC_Full_eval(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==3:
+            return self.KNWLoss_HC_Int_eval(outputl, outlab, model=model, cstep=cstep)
+
+    def eval_mem(self, x, label, output, rnn):
+        # return self.eval_mem_Full_eval(x, label, output, rnn)
+        pass
+
+    def eval_mem_Full_eval(self, x, label, output, rnn):
+        if self.test_print_interface:
+            print("eval_mem interface: eval_mem_Full_eval")
+            return True
+        if self.pt.evalmem is None:
+            self.pt.evalmem = [[] for ii in range(1+len(output))]  # x,label,hd_middle
+
+        for ii in range(len(output)):
+            self.pt.evalmem[ii].append(output[ii].cpu().detach().data)
+        self.pt.evalmem[-1].append(label.cpu().detach().data)
+
+
+    def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_WeightReg")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        wnorm1 = 0
+        for namep in self.allname:
+            wattr = getattr(self.pt.rnn, namep)
+            wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        wnorm1 = wnorm1 / len(self.allname)
+        return loss1 + self.pt.reg_lamda * wnorm1
+
+    def KNWLoss_HC(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for hierachical de-clustering
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_HC")
+            return True
+
+        lossc = torch.nn.CrossEntropyLoss()
+
+        outputl1=outputl[0]
+        outputl1=outputl1.permute(1, 2, 0)
+        loss1 = lossc(outputl1, outlab)
+
+        outputl2 = outputl[1]
+        outputl2 = outputl2.permute(1, 2, 0)
+        loss2 = lossc(outputl2, outlab)
+
+        # wnorm1 = 0
+        # for namep in self.allname:
+        #     wattr = getattr(self.pt.rnn, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wnorm1 = wnorm1 / len(self.allname)
+
+        return loss1+loss2
+
+    def KNWLoss_HC_Full(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for hierachical de-clustering
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_HC")
+            return True
+
+        lossc = torch.nn.CrossEntropyLoss()
+
+        loss=0
+        for output_item in outputl:
+            loss=loss+lossc(output_item.permute(1, 2, 0), outlab)
+
+        return loss
+
+    def KNWLoss_HC_Int(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for hierachical de-clustering
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_HC")
+            return True
+
+        lossc = torch.nn.CrossEntropyLoss()
+
+        loss=0
+        # print("In loss")
+        # print(outputl.shape,outlab.shape)
+        for output_item in outputl:
+            # print(output_item.shape)
+            output_item = output_item.view(self.pt.window, self.pt.batch, -1)
+            # print(output_item.shape)
+            loss=loss+lossc(output_item.permute(1, 2, 0), outlab)
+        # print("Out loss")
+        return loss
+
+    def KNWLoss_HC_Int_eval(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for hierachical de-clustering
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_HC")
+            return True
+
+        lossc = torch.nn.CrossEntropyLoss()
+
+        loss=0
+        for output_item in outputl:
+            output_item=output_item.view(self.pt.window,self.pt.batch,-1)
+            loss=loss+lossc(output_item.permute(1, 2, 0), outlab)
+
+        return loss
+
+    def KNWLoss_HC_Full_eval(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for hierachical de-clustering
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_HC")
+            return True
+
+        lossc = torch.nn.CrossEntropyLoss()
+
+        lossl = []
+        for output_item in outputl:
+            lossl.append(lossc(output_item.permute(1, 2, 0), outlab))
+
+        return tuple(lossl)
+
+    def KNWLoss_HC_eval(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss function for hierachical de-clustering
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_HC")
+            return True
+
+        lossc = torch.nn.CrossEntropyLoss()
+
+        outputl1=outputl[0]
+        outputl1=outputl1.permute(1, 2, 0)
+        loss1 = lossc(outputl1, outlab)
+
+        outputl2 = outputl[1]
+        outputl2 = outputl2.permute(1, 2, 0)
+        loss2 = lossc(outputl2, outlab)
+
+        # wnorm1 = 0
+        # for namep in self.allname:
+        #     wattr = getattr(self.pt.rnn, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wnorm1 = wnorm1 / len(self.allname)
+
+        return (loss1,loss2)
+
+    def KNWLoss(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        return loss1
+
+    def init_data_continous(self,limit=1e9):
+
+        if self.test_print_interface:
+            print("init_data interface: init_data_continous")
+            return True
+
+        assert self.pt.digit_input
+        assert not self.pt.supervise_mode
+
         datab = []
-        for data in self.dataset:
-            if self.id_2_vec is None:  # No embedding, one-hot representation
-                datavec = np.zeros(self.lsize_in)
+        for data in self.pt.dataset:
+            if self.pt.id_2_vec is None:  # No embedding, one-hot representation
+                datavec = np.zeros(self.pt.lsize_in)
                 datavec[data] = 1.0
             else:
-                datavec = np.array(self.id_2_vec[data])
+                datavec = np.array(self.pt.id_2_vec[data])
             datab.append(datavec)
         self.databp = torch.from_numpy(np.array(datab))
         self.databp = self.databp.type(torch.FloatTensor)
 
-    def get_data_continous(self,batch=None):
+    def get_data_continous(self, batch=None, rstartv=None):
 
         if batch is None:
-            batch=self.batch
+            batch=self.pt.batch
 
-        if not self.supervise_mode:
-            # Generating output label
-            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset) - self.window - 1))
-            yl = np.zeros((batch,self.window))
-            xl = np.zeros((batch,self.window))
-            for iib in range(batch):
-                xl[iib,:]=self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
-                yl[iib,:]=self.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.window+1]
-            # inlab = torch.from_numpy(xl)
-            # inlab = inlab.type(torch.LongTensor)
-            outlab = torch.from_numpy(yl)
-            outlab = outlab.type(torch.LongTensor)
-
-        else:
-            rstartv = np.floor(np.random.rand(batch) * (len(self.dataset["dataset"]) - self.window - 1))
-            xl = np.zeros((batch, self.window))
-            for iib in range(batch):
-                xl[iib, :] = np.array(self.dataset["label"][int(rstartv[iib]):int(rstartv[iib]) + self.window])
-            outlab = torch.from_numpy(xl)
-            outlab = outlab.type(torch.LongTensor)
-            # inlab = outlab
-
-        vec1m = torch.zeros(self.window, batch, self.lsize_in)
-        # vec2m = torch.zeros(self.window, batch, self.lsize_in)
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset) - self.pt.window - 1))
+        yl = np.zeros((batch,self.pt.window))
+        xl = np.zeros((batch,self.pt.window))
         for iib in range(batch):
-            # vec1_raw = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
-            # vec1_rnd = torch.rand(vec1_raw.shape)
-            # vec1_add = torch.mul((1.0 - vec1_raw) * self.invec_noise, vec1_rnd.double())
-            # vec1 = vec1_raw + vec1_add
-            if self.data_init:
-                vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+            xl[iib,:]=self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+            yl[iib,:]=self.pt.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.pt.window+1]
+        # inlab = torch.from_numpy(xl)
+        # inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+        # inlab = outlab
+
+        vec1m = torch.zeros(self.pt.window, batch, self.pt.lsize_in)
+        for iib in range(batch):
+            if self.pt.data_init:
+                vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window, :]
             else:
-                vec1=self._build_databp(self.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+                vec1=self.pt._build_databp(self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window])
             # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
             vec1m[:,iib,:]=vec1
             # vec2m[:, iib, :] = vec2
         x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
         # y = Variable(vec2m, requires_grad=True)
 
-        if self.gpuavail:
+        if self.pt.gpuavail:
             # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
-            outlab = outlab.to(self.device)
-            x = x.to(self.device)
+            outlab = outlab.to(self.pt.device)
+            x = x.to(self.pt.device)
 
         return x, outlab, None
 

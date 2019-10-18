@@ -477,7 +477,6 @@ class Linear_Cauchy(torch.nn.Module):
         return F.linear(input, self.weight, self.bias)
 
 
-
 class Hidden_Attention(torch.nn.Module):
     """
     A hidden attention module
@@ -548,6 +547,18 @@ class GaussNoise(torch.nn.Module):
             self.noise.data.normal_(0, std=self.std)
         return x + self.noise
 
+class BackHook(torch.nn.Module):
+    def __init__(self, hook):
+        super(BackHook, self).__init__()
+        self._hook = hook
+        self.register_backward_hook(self._backward)
 
+    def forward(self, *inp):
+        return inp
+
+    @staticmethod
+    def _backward(self, grad_in, grad_out):
+        self._hook()
+        return None
 
 

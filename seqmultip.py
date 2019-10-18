@@ -18,6 +18,7 @@ import torch
 from torch.autograd import Variable
 from ncautil.ncalearn import *
 from ncautil.ptfunction import *
+from multiprocessing.pool import ThreadPool
 
 # from torchnlp.nn import WeightDrop
 from awd_lstm_lm.weight_drop import WeightDrop
@@ -190,76 +191,91 @@ class ncann(object):
                 else:
                     setattr(nncls, lname, getattr(nncls, lname)*mask)
 
-class LSTM_DIMProbGatting_NLP(torch.nn.Module):
+class GRU_ConjGating_HC_NLP(torch.nn.Module):
     """
-    PyTorch LSTM for NLP with input dimemsion gating with a probablistic 0/1 gate, two step training
-    Basic hypothesis, more understandable means tighter information bottleneck
+    PyTorch LSTM for NLP with input dimemsion conjugate gating to do top-down hierachical clustering
+    By simultaneosly maximizing prediction performance of two parts, it is supposed to seperate redundant information
     """
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
-        self.output_size = output_size
         self.num_layers = num_layers
 
-        self.h2o = torch.nn.Linear(hidden_size, output_size)
-        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers=num_layers)
+        if para is None:
+            para = dict([])
+        self.para(para)
 
-        # self.gate_para = torch.ones(input_size)
+        # self.input_gate = torch.nn.Parameter(2*torch.rand(input_size)-1, requires_grad=True)
+        self.input_gate = None
 
-        self.gate =  torch.nn.Parameter(torch.rand(input_size), requires_grad=True)
 
-        if weight_dropout>0:
-            print("Be careful, only GPU works for now.")
-            self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
-            self.lstm = WeightDrop(self.lstm, ['weight_hh_l0'], dropout=weight_dropout)
+        self.gru1=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers)
+        self.h2o1 = torch.nn.Linear(hidden_size, output_size)
+
+        self.gru2 = torch.nn.GRU(input_size, hidden_size, num_layers=num_layers)
+        self.h2o2 = torch.nn.Linear(hidden_size, output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.myhsample = myhsample
+        self.mysampler = mysampler
+        self.myhsig = myhsig
         self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
 
-        self.siggate = self.sigmoid(self.gate)
+        # dropout
+        # self.cdrop = torch.nn.Dropout(p=0.5)
 
-        self.gpuavail = torch.cuda.is_available()
-        self.device = torch.device("cuda:0" if self.gpuavail else "cpu")
+        # dummy base
+        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
+        # self.ones=torch.ones(50,30,1).to(self.device)
 
-        # self.mysampler = MySampler.apply
+    def para(self,para):
+        self.cdrop_rate=para.get("cdrop_rate", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.input_mask = para.get("input_mask", None)
 
-    # def sample_gate(self,shape):
-    #     gate=torch.rand(shape)
-    #     zeros=torch.zeros(shape)
-    #     if self.gpuavail:
-    #         gate=gate.to(self.device)
-    #         zeros=zeros.to(self.device)
-    #     gate=gate-self.siggate
-    #     gate[gate == zeros] = 1e-8
-    #     gate=(gate/torch.abs(gate)+1.0)/2
-    #     if torch.isnan(gate).any():
-    #         print(self.siggate,torch.sum(torch.isnan(gate)))
-    #         raise Exception("NaN Error")
-    #     return gate
-
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
         """
         Forward
         :param input:
         :param hidden:
         :return:
         """
-        self.siggate = self.sigmoid(self.gate)
 
-        # torch.autograd.set_detect_anomaly(True)
-        # probgate=self.mysampler(self.siggate)
-        mysampler=None
-        probgate = mysampler(self.siggate)
-        input=input*probgate
-        hout, hn = self.lstm(input,hidden1)
-        output = self.h2o(hout)
-        if add_logit is not None:
-            output=output+add_logit
+        temperature = np.exp(-schedule * 5)
+
+        assert len(hidden)==2
+        hidden1=hidden[0]
+        hidden2 = hidden[1]
+
+
+        if self.input_mask is not None:
+            masked_input_gate = self.input_gate * self.input_mask
+        else:
+            masked_input_gate = self.input_gate
+        exphgate = masked_input_gate.expand_as(input)
+        # siggate = self.sigmoid(exphgate)
+        siggate = self.gsigmoid(exphgate,temperature=temperature)
+        input_pruning_mask = self.mysampler(siggate, cuda_device=self.cuda_device)
+
+        input1 = input * input_pruning_mask
+        input2 = input * (1-input_pruning_mask)
+
+        hout1, hn1 = self.gru1(input1,hidden1)
+        output1 = self.h2o1(hout1)
+
+        hout2, hn2 = self.gru2(input2, hidden2)
+        output2 = self.h2o2(hout2)
+
+
         if not logit_mode:
-            output=self.softmax(output)
-        return output,hn
+            output1=self.softmax(output1)
+            output2 = self.softmax(output2)
+        return [output1,output2],[hn1,hn2]
 
     def initHidden(self,batch):
         return [Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
@@ -268,6 +284,417 @@ class LSTM_DIMProbGatting_NLP(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
                 Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
+
+class Linear_Batch(torch.nn.Module):
+    """
+    A linear module with batch multiplication, mbatch_size, number of linear mat
+    """
+    def __init__(self, input_size, output_size, mbatch_size, bias=True):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.output_size=output_size
+        self.mbatch_size=mbatch_size
+        self.weight=torch.nn.Parameter(torch.Tensor(mbatch_size, input_size, output_size), requires_grad=True)
+        if bias:
+            self.bias = torch.nn.Parameter(torch.Tensor(mbatch_size, output_size), requires_grad=True)
+        else:
+            self.bias = None
+        for ii in range(mbatch_size):
+            torch.nn.init.kaiming_uniform_(self.weight[ii,:,:], a=math.sqrt(5))
+            fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(self.weight[ii,:,:])
+            if bias:
+                bound = 1 / math.sqrt(fan_in)
+                torch.nn.init.uniform_(self.bias[ii,:], -bound, bound)
+
+    def forward(self, input): # input [mbatch,batch*window,input_size]
+        # print("In bLinear")
+        # print(input.shape,self.weight.shape)
+        ansmat=torch.bmm(input,self.weight)
+        if self.bias is not None:
+            ansmat=ansmat+self.bias.view(self.mbatch_size,1,self.output_size)
+        # print(ansmat.shape)
+        # print("Out bLinear")
+        return ansmat
+
+class WeightMask(torch.nn.Module):
+    """
+    Implements drop-connect, as per Merity et al https://arxiv.org/abs/1708.02182
+    gradient donot go through the mask
+    """
+    def __init__(self, module, weights, masks):
+        super(self.__class__, self).__init__()
+        self.module = module
+        self.weights = weights
+        self.masks = masks
+        self._setup()
+        self.hooker = BackHook(lambda: self._backward())
+
+    def _setup(self):
+        for name_w in self.weights:
+            # print('Applying weight mask  to {}'.format(name_w))
+            w = getattr(self.module, name_w)
+            self.register_parameter(name_w + '_raw', torch.nn.Parameter(w.data))
+
+    def _setweights(self):
+        for ii,name_w in enumerate(self.weights):
+            raw_w = getattr(self, name_w + '_raw')
+            w = self.masks[ii] * raw_w
+            rnn_w = getattr(self.module, name_w)
+            rnn_w.data.copy_(w)
+            setattr(self, name_w + "_mask", self.masks[ii])
+
+    def _backward(self):
+        # transfer gradients from embeddedRNN to raw params
+        for ii,name_w in enumerate(self.weights):
+            raw_w = getattr(self, name_w + '_raw')
+            rnn_w = getattr(self.module, name_w)
+            raw_w.grad = rnn_w.grad * getattr(self, name_w + "_mask")
+            mask_grad=rnn_w.grad * rnn_w
+            try:
+                self.masks[ii].backward(mask_grad)
+            except:
+                pass
+
+    def forward(self, *args):
+        self._setweights()
+        return self.module(*self.hooker(*args))
+
+class GRU_ConjGating_HC_NLP_Full(torch.nn.Module):
+    """
+    PyTorch LSTM for NLP with input dimemsion conjugate gating to do top-down hierachical clustering
+    By simultaneosly maximizing prediction performance of two parts, it is supposed to seperate redundant information
+    A one-shot fully seperate version
+    mask format [[1,4,7],[3,6,9],[2,5,8]] ...
+    """
+    def __init__(self, input_size, hidden_size, output_size, parentMask, num_layers=1, para=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.num_layers = num_layers
+
+        flat_parentMask = [item for sublist in parentMask for item in sublist]
+        assert len(flat_parentMask)==input_size
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        # for ii in range(len(parentMask)):
+        #     parentMask[ii] = parentMask[ii].type(torch.LongTensor)
+        #     if torch.cuda.is_available():
+        #         parentMask[ii]=parentMask[ii].to(self.cuda_device)
+        self.parentMask = parentMask
+
+        self.pNodeNum=len(parentMask)
+        input_sizel=[]
+        for iinode in range(self.pNodeNum):
+            input_sizel.append(len(parentMask[iinode]))
+
+        if self.random_gate:
+            rgate=self.create_random_gate()
+            self.input_gatel = rgate
+        else:
+            self.input_gatel = torch.nn.ParameterList([
+                torch.nn.Parameter(2 * torch.rand(input_sizel[ii]) - 1, requires_grad=True)
+                for ii in range(self.pNodeNum)])
+
+
+        self.gru1_list = torch.nn.ModuleList([
+            torch.nn.GRU(input_sizel[ii], hidden_size, num_layers=num_layers)
+            for ii in range(self.pNodeNum)])
+        # self.h2o1_list = torch.nn.ModuleList([
+        #     torch.nn.Linear(hidden_size, output_size)
+        #     for ii in range(self.pNodeNum)])
+
+        self.gru2_list = torch.nn.ModuleList([
+            torch.nn.GRU(input_sizel[ii], hidden_size, num_layers=num_layers)
+            for ii in range(self.pNodeNum)])
+        # self.h2o2_list = torch.nn.ModuleList([
+        #     torch.nn.Linear(hidden_size, output_size)
+        #     for ii in range(self.pNodeNum)])
+
+        self.h2o=torch.nn.Linear(hidden_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.myhsample = myhsample
+        self.mysampler = mysampler
+        self.myhsig = myhsig
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
+
+        # dropout
+        # self.cdrop = torch.nn.Dropout(p=0.5)
+
+        # dummy base
+        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
+        # self.ones=torch.ones(50,30,1).to(self.device)
+
+    def para(self,para):
+        self.cdrop_rate=para.get("cdrop_rate", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.input_mask = para.get("input_mask", None)
+        self.random_gate=para.get("random_gate", False)
+
+    def create_random_gate(self):
+        rgate = []
+        for ii_pN in range(self.pNodeNum):
+            l1 = len(self.parentMask[ii_pN])
+            rgate1 = torch.rand(l1)
+            for ii in range(len(rgate1)):
+                if rgate1[ii] > 0.5:
+                    rgate1[ii] = 10.0
+                else:
+                    rgate1[ii] = -10.0
+            print(rgate1, torch.sum(rgate1))
+            rgate.append(rgate1.to(self.cuda_device))
+        return rgate
+
+    def thread_forward(self,ii_thread,inputl,hidden,temperature,logit_mode):
+        """
+        Threading is not faster
+        :param ii_thread:
+        :param inputl:
+        :param hidden:
+        :param temperature:
+        :param logit_mode:
+        :return:
+        """
+
+        input_ii = inputl[:, :, self.parentMask[ii_thread]]
+        masked_input_gate = self.input_gatel[ii_thread]
+        exphgate = masked_input_gate.expand_as(input_ii)
+        # siggate = self.sigmoid(exphgate)
+        siggate = self.gsigmoid(exphgate, temperature=temperature)
+        input_pruning_mask = self.mysampler(siggate, cuda_device=self.cuda_device)
+
+        input1_ii = input_ii * input_pruning_mask
+        input2_ii = input_ii * (1 - input_pruning_mask)
+
+        hout1, hn1 = self.gru1_list[ii_thread](input1_ii, hidden[ii_thread][0])
+        # output1 = self.h2o1_list[ii_node](hout1)
+        output1 = self.h2o(hout1)
+
+        hout2, hn2 = self.gru2_list[ii_thread](input2_ii, hidden[ii_thread][1])
+        # output2 = self.h2o2_list[ii_node](hout2)
+        output2 = self.h2o(hout2)
+
+        if not logit_mode:
+            output1 = self.softmax(output1)
+            output2 = self.softmax(output2)
+
+        return [output1,output2],[hn1,hn2]
+
+    def forward(self, inputl, hidden, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+
+        temperature = np.exp(-schedule * 5)
+
+        assert len(hidden)==self.pNodeNum
+        assert len(hidden[0]) == 2
+
+        outputl=[]
+        hnl = []
+
+        # pool = ThreadPool(processes=self.pNodeNum)
+        # results = []
+        # for ii_node in range(self.pNodeNum):
+        #     results=pool.apply_async(self.thread_forward, (ii_node,inputl,hidden,temperature,logit_mode))
+        #     outputl = outputl + results.get()[0]
+        #     hnl = hnl + results.get()[1]
+        # pool.close()
+        # pool.join()
+
+        for ii_node in range(self.pNodeNum):
+            output,hn = self.thread_forward(ii_node,inputl,hidden,temperature,logit_mode)
+            outputl=outputl+output
+            hnl=hnl+hn
+
+        return outputl,hnl
+
+    def initHidden(self,batch):
+        return [[Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True)]
+                for _ in range(self.pNodeNum)]
+
+    def initHidden_cuda(self,device, batch):
+        return [[Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
+                Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
+                for _ in range(self.pNodeNum)]
+
+class GRU_ConjGating_HC_NLP_IntFull(torch.nn.Module):
+    """
+    PyTorch LSTM for NLP with input dimemsion conjugate gating to do top-down hierachical clustering
+    By simultaneosly maximizing prediction performance of two parts, it is supposed to seperate redundant information
+    A one-shot fully seperate version
+    mask format a pytorch matrix with 0,1 size [l_size,hidden size]
+    Integrated full version, that means there is no ModuleList, Parameter list
+    """
+    def __init__(self, input_size, hidden_size, output_size, parentMask, pNodeNum,num_layers=1, para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.num_layers=num_layers
+
+        self.parentMask=parentMask
+        self.pNodeNum=pNodeNum
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.mask_check()
+
+        self.input_gate = torch.nn.Parameter(2 * torch.rand(input_size) - 1, requires_grad=True)
+
+        # self.input_gatel = None
+
+        self.gru = torch.nn.GRU(input_size, hidden_size, num_layers=num_layers)
+        self.w_l=["weight_ih_l0","weight_hh_l0"]
+        # for w in self.w_l:
+        #     getattr(self.gru,w).data=np.sqrt(2)*getattr(self.gru,w).data
+
+        self.hh_mask_mat=torch.zeros((3, hidden_size,hidden_size)) # GRU (W_ir|W_iz|W_in)
+        for ii in range(2*pNodeNum):
+            startii=int(ii*self.hidden_size/(2*pNodeNum))
+            endii=(ii+1)*int(self.hidden_size/(2*pNodeNum))
+            self.hh_mask_mat[:,startii:endii,startii:endii]=1
+        self.hh_mask_mat=self.hh_mask_mat.view(3*hidden_size,hidden_size)
+
+
+        self.h2o=Linear_Batch(int(hidden_size/(2*pNodeNum)), output_size, 2*pNodeNum)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.myhsample = myhsample
+        self.mysampler = mysampler
+        self.myhsig = myhsig
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.nsoftmax = torch.nn.Softmax(dim=-1)
+
+        # dropout
+        # self.cdrop = torch.nn.Dropout(p=0.5)
+
+        # dummy base
+        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
+        # self.ones=torch.ones(50,30,1).to(self.device)
+
+        ## mask handling
+        self.basemask=torch.zeros(self.hidden_size)
+        hidden_size_srd=int(hidden_size/(pNodeNum*2))
+        for ii in range(pNodeNum):
+            self.basemask[ii*hidden_size_srd:ii*hidden_size_srd+hidden_size_srd]=1
+        self.basemask=self.basemask.view(-1,1).expand(self.parentMask.shape)
+        if torch.cuda.is_available():
+            self.basemask=self.basemask.to(self.cuda_device)
+            self.hh_mask_mat=self.hh_mask_mat.to(self.cuda_device)
+
+        self.input_gate_gradl=[]
+        self.input_gate.register_hook(lambda grad: self.input_gate_gradl.append(grad.cpu().detach().numpy()))
+
+        self.input_gatel=[]
+        self.ih_mask_matl=[]
+
+    def mask_check(self):
+        """
+        Check if the mask is legal
+        :return:
+        """
+        hidden_size,input_size=self.parentMask.shape
+        assert input_size==self.input_size
+        assert hidden_size==self.hidden_size
+        assert hidden_size%self.pNodeNum==0
+
+        ## Confirm the parentMask is legal
+        stripe=int(hidden_size/self.pNodeNum)
+        for ii_l in range(input_size):
+            for ii_strp in range(self.pNodeNum):
+                itlist=list(self.parentMask[ii_strp*stripe:(ii_strp+1)*stripe,ii_l].cpu().numpy())
+                assert len(set(itlist))==1
+                assert list(set(itlist))[0] in [0,1]
+
+
+    def para(self,para):
+        self.cdrop_rate=para.get("cdrop_rate", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.input_mask = para.get("input_mask", None)
+
+    def create_pruning_mask_mat(self,input_pruning_mask):
+
+        # input_pruning_mask=input_pruning_mask.expand(self.parentMask.shape)
+
+        pruning_mask_mat11=input_pruning_mask*self.basemask
+        pruning_mask_mat00=(1-input_pruning_mask)*(1-self.basemask)
+
+        pruning_mask_mat = pruning_mask_mat11+pruning_mask_mat00
+
+        self.gpuavail = torch.cuda.is_available()
+        if self.gpuavail:
+            pruning_mask_mat = pruning_mask_mat.to(self.cuda_device)
+
+        return pruning_mask_mat
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input: [window, batch, lsize]
+        :param hidden:
+        :return:
+        """
+
+        temperature = np.exp(-schedule * 5)
+        self.input_gatel.append(self.input_gate.cpu().detach().numpy())
+
+        expgate=self.input_gate.expand_as(self.parentMask)
+        siggate = self.gsigmoid(expgate,temperature=temperature)
+        input_pruning_mask = self.mysampler(siggate, cuda_device=self.cuda_device)
+
+        # input_pruning_mask=torch.zeros(64).to(self.cuda_device)
+        # input_pruning_mask[:32]=1
+
+        ih_mask_mat = self.create_pruning_mask_mat(input_pruning_mask)
+        self.ih_mask_matl.append(ih_mask_mat.cpu().detach().numpy())
+
+        ih_mask_mat_exp=ih_mask_mat.expand((3,ih_mask_mat.shape[0],ih_mask_mat.shape[1]))
+        ih_mask_mat_exp = ih_mask_mat_exp.contiguous().view(3 * ih_mask_mat.shape[0], ih_mask_mat.shape[1])
+
+        masked_gru = WeightMask(self.gru,self.w_l,[ih_mask_mat_exp,self.hh_mask_mat])
+
+        # print(ih_mask_mat)
+        # ih_mask_mat_exp.register_hook(lambda grad: print("ih_mask_mat_exp", grad))
+        # ih_mask_mat.register_hook(lambda grad: print("ih_mask_mat", grad))
+
+        hout, hn = masked_gru(input,hidden)
+        # print("Hout")
+        # print(hout.shape)
+        hout=hout.view(-1,int(2*self.pNodeNum),int(self.hidden_size/2*self.pNodeNum))
+        # print(hout.shape)
+        hout=hout.permute(1,0,2)
+        # print(hout.shape)
+        # print("AAA")
+        output = self.h2o(hout)
+
+        if not logit_mode:
+            output=self.softmax(output)
+
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
 
 class WTA_AUTOENCODER(torch.nn.Module):
     """
@@ -2776,20 +3203,27 @@ class GRU_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1, cuda_flag=True, weight_dropout=0.0, gru_dropout=0.0):
+    def __init__(self, input_size, hidden_size, output_size, batch_size, num_layers=1,para=None,bidirectional=False):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.num_layers = num_layers
+        self.bidirectional=bidirectional
+        self.num_directions=1
+        if self.bidirectional:
+            self.num_directions=2
 
-        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,dropout=gru_dropout)
-        self.h2o = torch.nn.Linear(hidden_size, output_size)
+        if para is None:
+            para = dict([])
+        self.para(para)
 
-        self.weight_dropout=weight_dropout
-        if weight_dropout>0:
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,dropout=self.gru_dropout,bidirectional=bidirectional)
+        self.h2o = torch.nn.Linear(hidden_size*self.num_directions, output_size)
+
+        if self.weight_dropout>0:
             print("Be careful, only GPU works for now.")
             # self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
-            self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=weight_dropout)
+            self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=self.weight_dropout)
 
         # self.h2m = torch.nn.Linear(hidden_size, 150)
         # self.m2o = torch.nn.Linear(150, output_size)
@@ -2801,18 +3235,19 @@ class GRU_NLP(torch.nn.Module):
         # dropout
         # self.cdrop = torch.nn.Dropout(p=0.5)
 
-        if cuda_flag:
-            gpuavail = torch.cuda.is_available()
-            self.device = torch.device("cuda:0" if gpuavail else "cpu")
-        else:
-            gpuavail = False
-            self.device = torch.device("cpu")
+        self.pad=torch.zeros((2,batch_size,self.hidden_size)).to(self.cuda_device)
 
         self.hout = None
 
         # dummy base
         # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
         # self.ones=torch.ones(50,30,1).to(self.device)
+
+    def para(self,para):
+        self.cdrop_rate=para.get("cdrop_rate", 0.0)
+        self.weight_dropout = para.get("weight_dropout", 0.0)
+        self.gru_dropout = para.get("gru_dropout", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -2824,6 +3259,9 @@ class GRU_NLP(torch.nn.Module):
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
         hout, hn = self.gru(input,hidden1)
+        if self.bidirectional:
+            hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
+            hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
         # hout = self.cdrop(hout) # dropout layer
         output = self.h2o(hout)
         # outm=self.h2m(hout)
@@ -2917,13 +3355,13 @@ class GRU_NLP(torch.nn.Module):
 
 
     def initHidden(self,batch):
-        return Variable(torch.zeros(self.num_layers, batch,self.hidden_size), requires_grad=True)
+        return Variable(torch.zeros(self.num_layers*self.num_directions, batch,self.hidden_size), requires_grad=True)
 
     def initHidden_cuda(self,device, batch):
-        return Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+        return Variable(torch.zeros(self.num_layers*self.num_directions, batch, self.hidden_size), requires_grad=True).to(device)
 
     def initHidden_eval(self):
-        return torch.zeros(self.num_layers, 1, self.hidden_size)
+        return torch.zeros(self.num_layers*self.num_directions, 1, self.hidden_size)
 
 class GRU_INPSEL_NLP(torch.nn.Module):
     """
@@ -3857,11 +4295,10 @@ class LSTM_DIMGatting_NLP(torch.nn.Module):
         return [Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device),
                 Variable(torch.zeros(self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)]
 
-
-class LSTM_ConjGating_HC_NLP(torch.nn.Module):
+class LSTM_DIMProbGatting_NLP(torch.nn.Module):
     """
-    PyTorch LSTM for NLP with input dimemsion conjugate gating to do top-down hierachical clustering
-    By simultaneosly maximizing prediction performance of two parts, it is supposed to seperate redundant information
+    PyTorch LSTM for NLP with input dimemsion gating with a probablistic 0/1 gate, two step training
+    Basic hypothesis, more understandable means tighter information bottleneck
     """
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, weight_dropout=0.0, cuda_flag=True):
         super(self.__class__, self).__init__()

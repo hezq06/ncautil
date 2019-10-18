@@ -9,6 +9,7 @@ from __future__ import print_function
 
 import numpy as np
 import matplotlib.pyplot as plt
+from  matplotlib.animation import writers,ArtistAnimation
 import os
 import pickle
 import time
@@ -151,6 +152,29 @@ def data_padding(data,endp="#"):
             sent.append(endp)
         res.append(sent)
     return res
+
+def plot_anim(mat_list,file=None,clim=None,interval=200):
+    """
+    Creat an animation clip from a list of matrix
+    :param mat_list:
+    :return:
+    """
+    fig2, ax = plt.subplots()
+    Writer = writers['ffmpeg']
+    writer = Writer(fps=15, metadata=dict(artist='Harry'), bitrate=1800)
+
+    ims = []
+    for ii in range(len(mat_list)):
+        fig = plt.imshow(mat_list[ii], cmap='seismic', clim=clim)
+        title = plt.text(0.5, 1.01, "Step " + str(ii), ha="center", va="bottom", transform=ax.transAxes,fontsize="large")
+        ims.append((fig, title))
+
+    plt.colorbar(fig)
+    im_ani = ArtistAnimation(fig2, ims, interval=interval, repeat=False)
+    if file is not None:
+        im_ani.save('CorrEvl_hidden0_grad_permute.mp4', writer=writer)
+    plt.show()
+    return im_ani
 
 class Plus_dataset(object):
     """
