@@ -1,5 +1,5 @@
 """
-Trial of Sequent multipole expansion.
+PyTorch Modules of All kinds.
 Author: Harry He
 """
 

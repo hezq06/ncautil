@@ -17,7 +17,6 @@ import copy
 
 import torch
 from torch.autograd import Variable
-from ncautil.nlputil import NLPutil
 from ncautil.ncalearn import *
 import pickle
 
@@ -42,6 +41,14 @@ def load_data(file):
     print("Data load from ", file)
     return data
 
+def save_model(model,file):
+    torch.save(model.state_dict(), file)
+    print("Model saved to ", file)
+
+def load_model(model,file):
+    model.load_state_dict(torch.load(file))
+    print("Model load from ", file)
+    return model
 
 def get_id_with_sample_vec(param,vec):
     """

@@ -25,6 +25,7 @@ from nltk.parse import stanford
 import time, copy
 import gensim
 from ncautil.w2vutil import W2vUtil
+from ncautil.datautil import *
 from nltk.tag import StanfordPOSTagger
 from nltk.tokenize import word_tokenize
 from scipy.optimize import minimize
@@ -38,6 +39,9 @@ from torchnlp.datasets import wikitext_2_dataset
 
 from ncautil.ncalearn import *
 from ncautil.ncamath import *
+from ncautil.datautil import save_data
+
+from tqdm import tqdm,tqdm_notebook
 
 __author__ = "Harry He"
 
@@ -62,6 +66,12 @@ class NLPutil(object):
         self.w2v_dict=None
         self.test_text=None
         self.labels=None
+        self.w2v_mat=None
+
+        self.id2v_mat=None
+        self.nVcab=None
+        self.lsize = None
+
         # self.synmat=SyntaxMat()
 
     def get_data(self,corpus,type=0,data=None):
@@ -117,17 +127,28 @@ class NLPutil(object):
         self.test_text = [w.lower() for w in self.test_text]
         print("Length of test text: " + str(len(self.test_text)))
 
-    def print_txt(self,start=0,length=100,switch="sub_corpus"):
+    def print_txt(self,start=0,length=100,switch="sub_corpus",data=None,mode="simple"):
         """
         Print a passage
         :param start: start offset
         :param length: length
         :return: null
         """
-        string=""
-        for ii in range(length):
-            string=string+self.sub_corpus[start+ii] +" "
-        print(string)
+        if data is None:
+            string=""
+            for ii in range(length):
+                string=string+self.sub_corpus[start+ii] +" "
+            print(string)
+        else:
+            string = ""
+            if mode=="full":
+                for ii in range(len(data)):
+                    string = string + self.id_to_word[data[ii].item()] + "("+str(ii) +"," + str(data[ii].item())+")" + " "
+                print(string)
+            elif mode=="simple":
+                for ii in range(len(data)):
+                    string = string + self.id_to_word[data[ii].item()] + " "
+                print(string)
 
     def set_corpus(self,corpus):
         """
@@ -177,6 +198,8 @@ class NLPutil(object):
             self.prior[id]=1/self.word_to_cnt[self.id_to_word[id]]
         self.prior=self.prior/np.sum(self.prior)
         print(self.id_to_word)
+        self.nVcab=len(self.word_to_id.items())
+        print("Collected vocabulary size:",self.nVcab)
         return self.word_to_id, self.id_to_word
 
     def build_w2v(self,mode="onehot",Nvac=10000):
@@ -221,7 +244,8 @@ class NLPutil(object):
                     skip.append(word)
             print("Except list: length " + str(len(skip)))
             print(skip)
-            self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
+            # self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
+            self.w2v_dict["UNK"] = np.random.random(len(self.w2v_dict[self.id_to_word[10]]))
         else:
             if len(self.id_to_word)>200:
                 raise Exception("Too much words for onehot representation.")
@@ -230,6 +254,8 @@ class NLPutil(object):
                 vec=np.zeros(len(self.id_to_word))
                 vec[ii]=1.0
                 self.w2v_dict[self.id_to_word[ii]]=vec
+        self.lsize=len(list(self.w2v_dict.values())[0])
+        print("Dimension of embedding:",self.lsize)
         return self.w2v_dict
 
     def proj_w2v(self,w2v_dict,pM):
@@ -368,6 +394,40 @@ class NLPutil(object):
             #dist=-np.linalg.norm(v-vec)
             if dist>=res[numW-1][1]:
                 res[numW-1]=(k,dist)
+                res.sort(key=lambda tup:tup[1],reverse=True)
+        return res
+
+    def cal_v2w_gpu(self,vec,numW=10,cuda_device="cuda:0"):
+        """
+        Calculate leading numW nearest using cosine distance definition
+        :param vec: input vector
+        :param numW: number of words returned
+        :return: (word,dist) list, length is numW
+        """
+        res=[]
+
+        assert torch.cuda.is_available()
+
+        if self.id2v_mat is None:
+            self.id2v_mat = torch.zeros((self.nVcab,self.lsize))
+            for k, v in self.w2v_dict.items():
+                self.id2v_mat[self.word_to_id[k]] = torch.from_numpy(v).type(torch.FloatTensor)
+            self.id2v_mat=self.id2v_mat.to(cuda_device)
+
+        tvec=torch.from_numpy(vec).type(torch.FloatTensor).to(cuda_device)
+
+        matmm=torch.matmul(self.id2v_mat,tvec)
+        cosdistvec=matmm/torch.norm(self.id2v_mat,2,dim=1)/torch.norm(tvec,2)
+
+        cosdistvecnp=cosdistvec.cpu().numpy()
+
+
+        for ii in range(numW):
+            res.append(("NULL",-1e10))
+        for ii in range(len(cosdistvecnp)):
+            dist=cosdistvecnp[ii]
+            if dist>=res[numW-1][1]:
+                res[numW-1]=(self.id_to_word[ii],dist)
                 res.sort(key=lambda tup:tup[1],reverse=True)
         return res
 
@@ -842,6 +902,68 @@ class SQuADutil(object):
         # pos=ini_pos()
         res=self.pos.tag(sent)
         return res
+
+
+class FallBack(object):
+    def __init__(self, leaftag, parenttag, pos_corpus, nlp, similar_thrd=0.7, cnt_thrd=5, balance_para=10):
+        self.leaftag = leaftag
+        self.parenttag = parenttag
+
+        self.LF2PR_dict = dict([])
+
+        self.similar_thrd = similar_thrd
+        self.cnt_thrd = cnt_thrd
+        self.balance_para = balance_para
+
+        self.pos_corpus=pos_corpus
+        self.nlp=nlp
+
+    def run(self):
+
+        LF_cnt_dict = dict([])
+        PR_cnt_dict = dict([])
+
+        sorted_LF_cnt = None
+        sorted_PR_cnt = None
+        ls_sorted_LF_cnt = None
+        ls_sorted_PR_cnt = None
+
+        for item in tqdm_notebook(self.pos_corpus):
+            if item[1] == self.leaftag:
+                if item[0] in LF_cnt_dict.keys():
+                    LF_cnt_dict[item[0]] = LF_cnt_dict[item[0]] + 1
+                else:
+                    LF_cnt_dict[item[0]] = 1
+            elif item[1] == self.parenttag:
+                if item[0] in PR_cnt_dict.keys():
+                    PR_cnt_dict[item[0]] = PR_cnt_dict[item[0]] + 1
+                else:
+                    PR_cnt_dict[item[0]] = 1
+
+        sorted_LF_cnt = sorted(list(LF_cnt_dict.items()), key=lambda x: -x[1])
+        sorted_PR_cnt = sorted(list(PR_cnt_dict.items()), key=lambda x: -x[1])
+        ls_sorted_LF_cnt = list(zip(*sorted_LF_cnt))
+        ls_sorted_PR_cnt = list(zip(*sorted_PR_cnt))
+        print(len(sorted_LF_cnt), len(sorted_PR_cnt))
+
+        for item in tqdm_notebook(sorted_LF_cnt):
+            if item[1] > self.cnt_thrd and item[0] in self.nlp.w2v_dict.keys():
+                vecs = self.nlp.cal_v2w_gpu(self.nlp.w2v_dict[item[0]])
+                for vec_item in vecs:
+                    if vec_item[1] > self.similar_thrd and vec_item[0] in ls_sorted_PR_cnt[0] \
+                            and PR_cnt_dict[vec_item[0]] > LF_cnt_dict[item[0]] / self.balance_para:
+                        self.LF2PR_dict[item[0]] = vec_item[0]
+                        break
+
+        LF2PR_dict_2 = dict([])
+        for k, v in self.LF2PR_dict.items():
+            if k != v:
+                LF2PR_dict_2[k] = v
+        self.LF2PR_dict = LF2PR_dict_2
+        print(self.LF2PR_dict, len(self.LF2PR_dict))
+
+    def save(self, title):
+        save_data(self.LF2PR_dict, title)
 
 
 

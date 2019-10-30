@@ -188,6 +188,22 @@ def plot_activity_example(self,datalist,titlelist,climlist=None,sysmlist=None,mo
         # [ax.grid(True, linestyle='-.') for ax in (ax1, ax2, ax3, ax4, ax5)]
         plt.show()
 
+def pl_wordcloud(text_freq):
+    """
+    plot a word cloud
+    :param text_freq: "wrd":preq
+    :return:
+    """
+    wordcloud = WordCloud(background_color="white", width=800, height=400).generate_from_frequencies(text_freq)
+    data = wordcloud.to_array()
+    img = Image.fromarray(data, 'RGB')
+    img = img.convert("RGBA")
+
+    plt.imshow(img)
+    plt.axis("on")
+    plt.margins(x=0, y=0)
+    plt.show()
+
 
 def pl_conceptbubblecloud(id_to_con,id_to_word,prior,word_to_vec, pM=None):
     """
@@ -1542,12 +1558,16 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
 
     def get_data(self, batch=None, rstartv=None):
         # return self.get_data_sent_KLsup( batch=batch, rstartv=rstartv)
-        return self.get_data_continous(batch=batch, rstartv=rstartv)
+        if self.version in [0,1,2,3]:
+            return self.get_data_continous(batch=batch, rstartv=rstartv)
+        elif self.version in [4,5]:
+            return self.get_data_continous(batch=batch, rstartv=rstartv, shift=False) # None-shift label for Transformer
+
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
         # return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
         # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
-        if self.version==0:
+        if self.version in [0,4]:
             return self.KNWLoss_WeightReg(outputl, outlab, model=model, cstep=cstep)
         elif self.version==1:
             return self.KNWLoss_HC(outputl, outlab, model=model, cstep=cstep)
@@ -1555,12 +1575,14 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
             return self.KNWLoss_HC_Full(outputl, outlab, model=model, cstep=cstep)
         elif self.version==3:
             return self.KNWLoss_HC_Int(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==5:
+            return self.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep)
 
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
         # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
-        if self.version==0:
+        if self.version in [0,4]:
             return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         elif self.version==1:
             return self.KNWLoss_HC_eval(outputl, outlab, model=model, cstep=cstep)
@@ -1568,6 +1590,8 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
             return self.KNWLoss_HC_Full_eval(outputl, outlab, model=model, cstep=cstep)
         elif self.version==3:
             return self.KNWLoss_HC_Int_eval(outputl, outlab, model=model, cstep=cstep)
+        elif self.version==5:
+            return self.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep)
 
     def eval_mem(self, x, label, output, rnn):
         # return self.eval_mem_Full_eval(x, label, output, rnn)
@@ -1601,6 +1625,20 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
             wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
         wnorm1 = wnorm1 / len(self.allname)
         return loss1 + self.pt.reg_lamda * wnorm1
+
+    def KNWLoss_withmask(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_withmask")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss(reduce=False)
+        loss1 = lossc(outputl, outlab)
+        loss=torch.sum(loss1*(1-model.input_mask))/torch.sum(1-model.input_mask)
+        # loss = torch.sum(loss1 * model.input_mask) / torch.sum(model.input_mask) # should be perfect i    nformation
+
+        return loss
 
     def KNWLoss_HC(self, outputl, outlab, model=None, cstep=None):
         """
@@ -1791,7 +1829,7 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         self.databp = torch.from_numpy(np.array(datab))
         self.databp = self.databp.type(torch.FloatTensor)
 
-    def get_data_continous(self, batch=None, rstartv=None):
+    def get_data_continous(self, batch=None, rstartv=None, shift=True):
 
         if batch is None:
             batch=self.pt.batch
@@ -1800,10 +1838,13 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         if rstartv is None:
             rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset) - self.pt.window - 1))
         yl = np.zeros((batch,self.pt.window))
-        xl = np.zeros((batch,self.pt.window))
+        # xl = np.zeros((batch,self.pt.window))
         for iib in range(batch):
-            xl[iib,:]=self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
-            yl[iib,:]=self.pt.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.pt.window+1]
+            # xl[iib,:]=self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+            if shift:
+                yl[iib,:]=self.pt.dataset[int(rstartv[iib])+1:int(rstartv[iib]) + self.pt.window+1]
+            else:
+                yl[iib, :] = self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
         # inlab = torch.from_numpy(xl)
         # inlab = inlab.type(torch.LongTensor)
         outlab = torch.from_numpy(yl)
