@@ -483,7 +483,7 @@ def cal_pdistance(data):
     dist=np.sum(np.abs(data-orin))*np.sum(np.abs(data-orin))/2
     return dist
 
-def cal_entropy_raw(data,data_discrete,data_bins=None):
+def cal_entropy_raw(data,data_discrete=True,data_bins=None):
     """
     Calculate entropy of raw data
     :param data: [Ndata of value]
@@ -575,7 +575,7 @@ def cal_muinfo_raw_ND_discrete(X,Z):
     return Hx+Hz-Hxz
 
 
-def cal_entropy(data,logit=False):
+def cal_entropy(data,logit=False,byte_flag=True):
     """
     Cal entropy of a vector
     :param data:
@@ -583,13 +583,16 @@ def cal_entropy(data,logit=False):
     :return:
     """
     # print(data)
+    adj=1
+    if byte_flag:
+        adj=np.log(2)
     if logit:
         data=np.exp(data)
     data=data/np.sum(data)
     assert len(data.shape) == 1
     data_adj=np.zeros(data.shape)+data
     data_adj[data_adj==0]=1e-9
-    ent=-np.sum(data*np.log(data_adj))
+    ent=-np.sum(data*np.log(data_adj)/adj)
     return ent
 
 def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
@@ -696,6 +699,23 @@ def cal_kappa_stat(seq1,seq2):
     kappa=(Theta1-Theta2)/(1-Theta2)
     print(Cij, Theta1-1/L, Theta2)
     return kappa
+
+def sample_id(prob, shape):
+    """
+    Sample id according to 1-d probability vec
+    :param prob: normal probability vec
+    :return: a torch LongTensor with shape
+    """
+
+    prob = np.array(prob)
+    assert len(prob.shape) == 1
+    prob = prob / np.sum(prob)
+    idn = len(prob)
+
+    smat = np.random.choice(idn, shape, p=prob)
+    tsmat = torch.from_numpy(smat).type(torch.LongTensor)
+
+    return tsmat
 
 def genDist(N):
     """

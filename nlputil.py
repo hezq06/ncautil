@@ -122,6 +122,15 @@ class NLPutil(object):
         print("Length of corpus: "+str(len(self.corpus)))
         print("Vocabulary of corpus: " + str(len(set(self.corpus))))
 
+    def fall_back(self,fallback_dicts):
+        print("Falling back...")
+        new_corpus=[]
+        for wrd in tqdm_notebook(self.corpus):
+            for idict in fallback_dicts:
+                wrd=idict.get(wrd,wrd)
+            new_corpus.append(wrd)
+        self.corpus=new_corpus
+
     def init_test(self,ttext):
         self.test_text=word_tokenize(ttext)
         self.test_text = [w.lower() for w in self.test_text]
@@ -272,6 +281,20 @@ class NLPutil(object):
             w2v_proj[k]=vecp
         return w2v_proj
 
+    def build_w2v_from_emb(self,emb):
+        """
+        Build w2v_dict using a torch.nn.Embeddings
+        :param embedding:
+        :return:
+        """
+        print("Building w2v_dict from torch embedding module")
+        emb_cpu=emb.cpu()
+        wrdl = torch.range(0, self.nVcab-1).type(torch.LongTensor)
+        wrd_mat = emb_cpu(wrdl).detach().numpy()
+        self.w2v_dict=dict([])
+        for ii in range(self.nVcab):
+            self.w2v_dict[self.id_to_word[ii]]=wrd_mat[ii]
+
     def build_textmat(self,text,w2v_dict_temp=None):
         """
         Build sequecing vector of sub_corpus
@@ -387,7 +410,7 @@ class NLPutil(object):
         #     return dist
 
         for ii in range(numW):
-            res.append(("NULL",-1e10))
+            res.append(("UNK",-1e10))
         for (k,v) in self.w2v_dict.items():
             dist=self.cal_cosdist(v,vec)
             # np.dot(v,vec)/np.linalg.norm(v)/np.linalg.norm(vec)
@@ -423,7 +446,7 @@ class NLPutil(object):
 
 
         for ii in range(numW):
-            res.append(("NULL",-1e10))
+            res.append(("UNK",-1e10))
         for ii in range(len(cosdistvecnp)):
             dist=cosdistvecnp[ii]
             if dist>=res[numW-1][1]:

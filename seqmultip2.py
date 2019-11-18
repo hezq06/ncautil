@@ -19,6 +19,85 @@ from torch.autograd import Variable
 from ncautil.ncalearn import *
 from ncautil.ptfunction import *
 
+from awd_lstm_lm.weight_drop import WeightDrop
+
+class BiGRU_NLP(torch.nn.Module):
+    """
+    PyTorch GRU for NLP
+    """
+    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.context_size=context_size
+
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,bidirectional=True)
+        self.h2o = torch.nn.Linear(hidden_size*self.num_directions, output_size)
+
+        if self.weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            # self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=self.weight_dropout)
+
+        # self.h2m = torch.nn.Linear(hidden_size, 150)
+        # self.m2o = torch.nn.Linear(150, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        # dropout
+        # self.cdrop = torch.nn.Dropout(p=0.5)
+
+        self.pad=torch.zeros((2,batch_size,self.hidden_size)).to(self.cuda_device)
+
+        self.hout = None
+
+        # dummy base
+        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
+        # self.ones=torch.ones(50,30,1).to(self.device)
+
+    def para(self,para):
+        self.cdrop_rate=para.get("cdrop_rate", 0.0)
+        self.weight_dropout = para.get("weight_dropout", 0.0)
+        self.gru_dropout = para.get("gru_dropout", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        if len(input.shape)==2:
+            input=input.view(1,input.shape[0],input.shape[1])
+        hout, hn = self.gru(input,hidden1)
+        if self.bidirectional:
+            hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
+            hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
+        output = self.h2o(hout)
+
+        self.hout=hout
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(2, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(2, batch, self.hidden_size), requires_grad=True).to(device)
+
+
 class BiTRF_NLP(torch.nn.Module):
     """
     Bi-directional simplified Transformer for NLP, based-on source code from "attention is all you need"
@@ -243,3 +322,82 @@ class PositionwiseFeedForward(torch.nn.Module):
         output = self.layer_norm(output + residual)
         # output = self.layer_norm(output)
         return output
+
+
+class W2V_SkipGram(torch.nn.Module):
+    """
+    PyTorch SkipGram W2V with negtive sampling
+    """
+    def __init__(self, Ndim, Nvocab, window_size, ns_size, prior, para=None):
+        """
+
+        :param Ndim: Embedding dimension
+        :param Nvocab: # of vocab
+        :param window_size: context size
+        :param ns_size: negtive sampling size
+        :param prior: prior distribution
+        """
+        super(self.__class__, self).__init__()
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.Ndim = Ndim
+        self.Nvocab = Nvocab
+        self.window_size = window_size
+        self.ns_size = ns_size
+        self.prior = prior
+
+        self.tid = int((window_size-1)/2)
+        self.w2v=torch.nn.Embedding(Nvocab,Ndim)
+        self.sigmoid = torch.nn.Sigmoid()
+
+        if torch.cuda.is_available():
+            self.w2v=self.w2v.to(self.cuda_device)
+
+    def set_window_size(self,window_size):
+        self.window_size=window_size
+        self.tid = int((window_size - 1) / 2)
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+
+    def forward(self, input, hidden=None, schedule=None):
+        """
+        Forward
+        :param input: size[window_size,batch]
+        :return:
+        """
+        batch=input.shape[1]
+        tidi=input[self.tid,:]
+        vi=self.w2v(tidi)
+        tido=torch.cat((input[:self.tid,:],input[self.tid+1:,:]),dim=0)
+        vo=self.w2v(tido)
+
+        adjprior=(self.prior/np.sum(self.prior))**0.75
+        adjprior=adjprior/np.sum(adjprior)
+        nsi=sample_id(adjprior,(self.window_size-1,batch,self.ns_size))
+        if torch.cuda.is_available():
+            nsi=nsi.to(self.cuda_device)
+        vns=self.w2v(nsi)
+        # vo[window_size-1,batch,l_size] vi[batch,l_size]
+        loss_l=torch.log(self.sigmoid(vo.permute(1,0,2).bmm(vi.view(batch,-1,1))))
+        # vns[self.window_size-1,batch,self.ns_size,l_size]
+        vnsmatl=vns.permute(1,0,2,3).contiguous().view(batch,(self.window_size-1)*self.ns_size,-1)
+        vnsmatr=vi.view(batch,-1,1)
+        vnsmat=-vnsmatl.bmm(vnsmatr)
+        sgvnsmat=self.sigmoid(vnsmat)
+        if (sgvnsmat == 0).any():
+            sgvnsmat=sgvnsmat+1e-9*(self.sigmoid(vnsmat) == 0).type(torch.FloatTensor).to(self.cuda_device)
+        loss_r=torch.log(sgvnsmat)
+        output=torch.mean(loss_l)+torch.mean(loss_r)
+
+
+        return -output,None
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(1, batch, 1), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(1, batch, 1), requires_grad=True).to(device)

@@ -562,7 +562,6 @@ class PyTrain_Lite(object):
         # profiler
         self.prtstep = int(step / 20)
         self.train_hist = []
-        self.his = 0
 
         # optimizer
         if self.optimizer_label=="adam":
@@ -617,12 +616,13 @@ class PyTrain_Lite(object):
         self.specialized_digit_eval = para.get("specialized_digit_eval", None)
         self.mem_limit = para.get("mem_limit", 1e12)
 
-    def run_training(self,step=None,lr=None,optimizer_label=None):
+    def run_training(self,step=None,lr=None,optimizer_label=None,print_step=50):
 
         self.rnn.train()
 
         if step is not None:
             self.step=step
+            self.prtstep=int(step/print_step)
 
         if lr is not None:
             if optimizer_label is None:
@@ -846,15 +846,13 @@ class PyTrain_Lite(object):
 
     def _profiler(self, iis, loss):
 
-        if int(iis / self.prtstep) != self.his:
+        if iis % self.prtstep == 0:
             if self.loss_exp_flag:
                 print("Perlexity: ", iis, np.exp(loss.item()))
                 self.log = self.log + "Perlexity: " + str(iis)+" "+ str(np.exp(loss.item())) + "\n"
-                self.his = int(iis / self.prtstep)
             else:
                 print("Loss: ", iis, loss.item())
                 self.log = self.log + "Loss: " + str(iis) + " " + str(loss.item()) + "\n"
-                self.his = int(iis / self.prtstep)
 
         if self.loss_exp_flag:
             self.train_hist.append(np.exp(loss.item()))
@@ -943,6 +941,9 @@ class PyTrain_Custom(PyTrain_Lite):
         if interface_para["class"] == "PyTrain_Interface_continous":
             pfver=interface_para.get("version",0)
             self.interface = PyTrain_Interface_continous(version=pfver)
+            self.interface.pt=self
+        elif interface_para["class"] == "PyTrain_Interface_W2V":
+            self.interface = PyTrain_Interface_W2V(interface_para["prior"],interface_para["threshold"])
             self.interface.pt=self
         else:
             raise Exception("Interface class unknown")
@@ -2981,3 +2982,69 @@ class PyTrain_Interface_mnist(PyTrain_Interface_Default):
             self.pt.data_col_mem["datalist"][0] = x.reshape((28,28)).transpose(1,0)
             self.pt.data_col_mem["datalist"][1] = torch.squeeze(self.pt.rnn.mdl)
             self.pt.data_col_mem["datalist"][2] = output.reshape((28,28)).transpose(1,0)
+
+class PyTrain_Interface_W2V(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom
+    """
+    def __init__(self,prior,threshold=1e-5,version=0):
+        super(self.__class__, self).__init__()
+        self.version = version
+        self.allname=["h2o"]
+        self.prior=prior
+        self.prior=self.prior/np.sum(self.prior)
+        self.threshold=threshold
+        self.dropmem=[]
+
+    def init_data(self,*args,**kwargs):
+        return self.init_data_empty()
+
+    def get_data(self, batch=None, rstartv=None):
+        return self.get_data_w2v(batch=batch, rstartv=rstartv)
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        return self.EmptyLoss(outputl, outlab, model=model, cstep=cstep)
+
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        return self.EmptyLoss(outputl, outlab, model=model, cstep=cstep)
+
+    def eval_mem(self, x, label, output, rnn):
+        # return self.eval_mem_Full_eval(x, label, output, rnn)
+        pass
+
+    def EmptyLoss(self, outputl, outlab, model=None, cstep=None):
+        loss=outputl
+        return loss
+
+    def init_data_empty(self,limit=1e9):
+        pass
+
+    def get_data_w2v(self, batch=None, rstartv=None):
+
+        if batch is None:
+            batch=self.pt.batch
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset) - self.pt.window - 1))
+        xl = np.zeros((self.pt.window,batch))
+        for iib in range(batch):
+            dropped=0
+            for iiw in range(self.pt.window):
+                if int(rstartv[iib])+iiw+dropped>=len(self.pt.dataset):
+                    dropped=dropped-self.pt.window
+                item=self.pt.dataset[int(rstartv[iib])+iiw+dropped]
+                pdrop=1-np.sqrt(self.threshold/self.prior[item])
+                if np.random.rand()>pdrop:
+                    xl[iiw,iib]=item
+                else:
+                    dropped=dropped+1
+            self.dropmem.append(dropped)
+            # xl[:,iib] = self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+        xl=torch.from_numpy(xl).type(torch.LongTensor)
+
+        if self.pt.gpuavail:
+            xl = xl.to(self.pt.device)
+
+        return xl, None, None

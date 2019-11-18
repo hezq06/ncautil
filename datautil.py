@@ -374,10 +374,10 @@ class MNIST_dataset(object):
     """
     pytorch mnist dataset
     """
-    def __init__(self):
+    def __init__(self,download=False):
 
-        data_train = datasets.MNIST(root="./data/", train=True)
-        data_test = datasets.MNIST(root="./data/", train=False)
+        data_train = datasets.MNIST(root="./data/", train=True, download=download)
+        data_test = datasets.MNIST(root="./data/", train=False, download=download)
 
         self.dataset_sup=dict([])
         dshape=data_train.train_data.shape
