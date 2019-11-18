@@ -25,11 +25,12 @@ class BiGRU_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
-    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None):
+    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None, self_include=False):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.context_size=context_size
+        self.self_include=self_include
 
         if para is None:
             para = dict([])
@@ -48,7 +49,7 @@ class BiGRU_NLP(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
 
-        self.pad=torch.zeros((2,batch_size,self.hidden_size)).to(self.cuda_device)
+        self.pad=torch.zeros((1,batch_size,self.input_size)).to(self.cuda_device)
 
         self.hout = None
 
@@ -59,15 +60,22 @@ class BiGRU_NLP(torch.nn.Module):
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
         Forward
-        :param input:
+        :param input: [window batch l_size]
         :param hidden:
         :return:
         """
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
+        if not self.self_include:
+            input=torch.cat((self.pad, input, self.pad), dim=0)
         hout, hn = self.gru(input,hidden1)
-        hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
-        hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
+        # if not self.self_include:
+        #     hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
+        #     hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
+        if not self.self_include:
+            hout_forward = hout[:-2,:, :self.hidden_size]
+            hout_backward = hout[2:, :, self.hidden_size:]
+            hout=torch.cat((hout_forward,hout_backward),dim=-1)
         context = self.h2c(hout)
         context = self.tanh(context)
         output = self.c2o(context)
