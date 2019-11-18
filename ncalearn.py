@@ -941,12 +941,15 @@ class PyTrain_Custom(PyTrain_Lite):
         if interface_para["class"] == "PyTrain_Interface_continous":
             pfver=interface_para.get("version",0)
             self.interface = PyTrain_Interface_continous(version=pfver)
-            self.interface.pt=self
         elif interface_para["class"] == "PyTrain_Interface_W2V":
             self.interface = PyTrain_Interface_W2V(interface_para["prior"],interface_para["threshold"])
-            self.interface.pt=self
+        elif interface_para["class"] == "PyTrain_Interface_sup":
+            pfver = interface_para.get("version", 0)
+            self.interface = PyTrain_Interface_sup(version=pfver)
         else:
             raise Exception("Interface class unknown")
+
+        self.interface.pt = self
 
         self.get_data = self.interface.get_data
         self.lossf = self.interface.lossf
@@ -3048,3 +3051,110 @@ class PyTrain_Interface_W2V(PyTrain_Interface_Default):
             xl = xl.to(self.pt.device)
 
         return xl, None, None
+
+class PyTrain_Interface_sup(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom, sepervised learning
+    """
+    def __init__(self,version=0):
+        super(self.__class__, self).__init__()
+        self.version = version
+        self.allname=["h2o"]
+
+    def init_data(self,*args,**kwargs):
+        return self.init_data_sup()
+
+    def get_data(self, batch=None, rstartv=None):
+        self.get_data_sup(batch=batch, rstartv=rstartv)
+
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss_WeightReg(outputl, outlab, model=model, cstep=cstep)
+
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+
+    def eval_mem(self, x, label, output, rnn):
+        # return self.eval_mem_Full_eval(x, label, output, rnn)
+        pass
+
+
+
+    def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_WeightReg")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        wnorm1 = 0
+        for namep in self.allname:
+            wattr = getattr(self.pt.rnn, namep)
+            wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        wnorm1 = wnorm1 / len(self.allname)
+        return loss1 + self.pt.reg_lamda * wnorm1
+
+    def KNWLoss(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        return loss1
+
+    def init_data_sup(self,limit=1e9):
+        pass
+
+    def get_data_sup(self, batch=None, rstartv=None, shift=True):
+        """
+
+        :param batch:
+        :param rstartv:
+        :param shift: default to true unless for transformer type network
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("get_data interface: get_data_sup")
+            return True
+
+        assert self.pt.digit_input
+        assert self.pt.supervise_mode
+
+        if batch is None:
+            batch=self.pt.batch
+
+        labelset = self.pt.dataset["label"]
+        dataset = self.pt.dataset["dataset"]
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - self.pt.window - 1))
+        yl = np.zeros((batch,self.pt.window))
+
+        for iib in range(batch):
+            if shift:
+                yl[iib,:] = labelset[int(rstartv[iib])+1:int(rstartv[iib]) + self.pt.window+1]
+            else:
+                yl[iib, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(self.pt.window, batch, self.pt.lsize_in)
+        for iib in range(batch):
+            vec1=self.pt._build_databp(dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window])
+            vec1m[:,iib,:]=vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if self.pt.gpuavail:
+            outlab = outlab.to(self.pt.device)
+            x = x.to(self.pt.device)
+
+        return x, outlab, None

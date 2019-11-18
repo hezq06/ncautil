@@ -67,6 +67,7 @@ class NLPutil(object):
         self.test_text=None
         self.labels=None
         self.w2v_mat=None
+        self.pt_emb=None
 
         self.id2v_mat=None
         self.nVcab=None
@@ -266,6 +267,13 @@ class NLPutil(object):
         self.lsize=len(list(self.w2v_dict.values())[0])
         print("Dimension of embedding:",self.lsize)
         return self.w2v_dict
+
+    def build_pt_emb(self):
+        Ndim=len(self.w2v_dict[self.id_to_word[0]])
+        weight=torch.zeros((self.nVcab,Ndim))
+        for ii in range(self.nVcab):
+            weight[ii,:]=torch.FloatTensor(self.w2v_dict[self.id_to_word[ii]])
+        self.pt_emb=torch.nn.Embedding.from_pretrained(weight, freeze=True)
 
     def proj_w2v(self,w2v_dict,pM):
         """

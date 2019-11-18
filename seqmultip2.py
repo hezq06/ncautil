@@ -31,41 +31,29 @@ class BiGRU_NLP(torch.nn.Module):
         self.input_size = input_size
         self.context_size=context_size
 
-
         if para is None:
             para = dict([])
         self.para(para)
 
         self.gru=torch.nn.GRU(input_size,hidden_size,bidirectional=True)
-        self.h2o = torch.nn.Linear(hidden_size*self.num_directions, output_size)
+        self.h2c = torch.nn.Linear(hidden_size*2, context_size)
+        self.c2o = torch.nn.Linear(context_size, output_size)
 
         if self.weight_dropout>0:
             print("Be careful, only GPU works for now.")
             # self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
             self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=self.weight_dropout)
 
-        # self.h2m = torch.nn.Linear(hidden_size, 150)
-        # self.m2o = torch.nn.Linear(150, output_size)
-
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
-
-        # dropout
-        # self.cdrop = torch.nn.Dropout(p=0.5)
 
         self.pad=torch.zeros((2,batch_size,self.hidden_size)).to(self.cuda_device)
 
         self.hout = None
 
-        # dummy base
-        # self.dummy = torch.nn.Parameter(torch.rand(1,output_size), requires_grad=True)
-        # self.ones=torch.ones(50,30,1).to(self.device)
-
     def para(self,para):
-        self.cdrop_rate=para.get("cdrop_rate", 0.0)
         self.weight_dropout = para.get("weight_dropout", 0.0)
-        self.gru_dropout = para.get("gru_dropout", 0.0)
         self.cuda_device = para.get("cuda_device", "cuda:0")
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
@@ -78,12 +66,11 @@ class BiGRU_NLP(torch.nn.Module):
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
         hout, hn = self.gru(input,hidden1)
-        if self.bidirectional:
-            hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
-            hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
-        output = self.h2o(hout)
-
-        self.hout=hout
+        hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
+        hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
+        context = self.h2c(hout)
+        context = self.tanh(context)
+        output = self.c2o(context)
 
         if add_logit is not None:
             output=output+add_logit
