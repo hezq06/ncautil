@@ -21,24 +21,34 @@ from ncautil.ptfunction import *
 
 from awd_lstm_lm.weight_drop import WeightDrop
 
-class BiGRU_NLP(torch.nn.Module):
+# class ABS_NLP_COOP(torch.nn.Module):
+#     """
+#     An abstrac cooperation container
+#     """
+
+class BiGRU_NLP_COOP(torch.nn.Module):
     """
-    PyTorch GRU for NLP
+    PyTorch Bi-GRU for NLP cooperative version, for layer seperation of natural language
     """
-    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None, self_include=False):
+    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, bigru_coop, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.context_size=context_size
-        self.self_include=self_include
+
+        self.bigru_coop=bigru_coop
+        self.bigru_coop.coop_mode=True
+        for param in self.bigru_coop.parameters():
+            param.requires_grad = False
 
         if para is None:
             para = dict([])
         self.para(para)
 
         self.gru=torch.nn.GRU(input_size,hidden_size,bidirectional=True)
-        self.h2c = torch.nn.Linear(hidden_size*2, context_size)
-        self.c2o = torch.nn.Linear(context_size, output_size)
+        self.h2c = torch.nn.Linear(hidden_size * 2, context_size)
+        self.h2g = torch.nn.Linear(hidden_size * 2, context_size)  # from hidden to gating
+        self.c2o = torch.nn.Linear(context_size+self.bigru_coop.context_size, output_size)
 
         if self.weight_dropout>0:
             print("Be careful, only GPU works for now.")
@@ -47,15 +57,36 @@ class BiGRU_NLP(torch.nn.Module):
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
 
         self.pad=torch.zeros((1,batch_size,self.input_size)).to(self.cuda_device)
 
-        self.hout = None
+        self.context = None
+        self.siggate = None
 
     def para(self,para):
         self.weight_dropout = para.get("weight_dropout", 0.0)
         self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.self_include_flag=para.get("self_include_flag", False)
+        self.precision = para.get("precision", 0.1)
+        self.gate_mode_flag = para.get("gate_mode_flag", True)
+
+    def para_copy(self,bigru):
+        """
+        Copy parameter from another bigru
+        :param gru:
+        :return:
+        """
+        print("Copying data from "+str(bigru))
+        self.load_state_dict(bigru.state_dict())
+        # allname = ["h2c", "c2o"]
+        # for nn,nameitem in enumerate(allname):
+        #     rnn_w = getattr(self, nameitem).weight
+        #     rnn_w.data.copy_(getattr(bigru, nameitem).weight.data)
+        #     rnn_b = getattr(self, nameitem).bias
+        #     rnn_b.data.copy_(getattr(bigru, nameitem).bias.data)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -64,26 +95,254 @@ class BiGRU_NLP(torch.nn.Module):
         :param hidden:
         :return:
         """
+        temperature = np.exp(-schedule * 5)
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
-        if not self.self_include:
-            input=torch.cat((self.pad, input, self.pad), dim=0)
-        hout, hn = self.gru(input,hidden1)
+        if not self.self_include_flag:
+            input2=torch.cat((self.pad, input, self.pad), dim=0)
+        else:
+            input2=input
+        hout, hn = self.gru(input2,hidden1[0])
         # if not self.self_include:
         #     hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
         #     hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
-        if not self.self_include:
+        if not self.self_include_flag:
             hout_forward = hout[:-2,:, :self.hidden_size]
             hout_backward = hout[2:, :, self.hidden_size:]
             hout=torch.cat((hout_forward,hout_backward),dim=-1)
         context = self.h2c(hout)
-        context = self.tanh(context)
-        output = self.c2o(context)
+        context = self.relu(context)
+        if self.gate_mode_flag:
+            ## Adaptive Gating
+            gatev=self.h2g(hout)
+            siggate = self.gsigmoid(gatev, temperature=temperature)
+            # siggate = self.sigmoid(gatev)
+            self.siggate=siggate
+            context=context*siggate
+        context = mydiscrete(context, self.precision, cuda_device=self.cuda_device)
+        self.context=context
+
+        context_coop,hn_coop = self.bigru_coop(input,hidden1[1],schedule=1.0)
+        context_cat=torch.cat((context_coop,context),dim=-1)
+
+        output = self.c2o(context_cat)
 
         if add_logit is not None:
             output=output+add_logit
         if not logit_mode:
             output=self.softmax(output)
+        return output,[hn,hn_coop]
+
+    def forward_comb(self,context_coop):
+        context_cat = torch.cat((context_coop, self.context), dim=-1)
+        output = self.c2o(context_cat)
+        output = self.softmax(output)
+        return output
+
+
+    def initHidden(self,batch):
+        return [Variable(torch.zeros(2, batch,self.hidden_size), requires_grad=True),
+                Variable(torch.zeros(2, batch, self.bigru_coop.hidden_size), requires_grad=False)]
+
+    def initHidden_cuda(self,device, batch):
+        return [Variable(torch.zeros(2, batch, self.hidden_size), requires_grad=True).to(device),
+                Variable(torch.zeros(2, batch, self.bigru_coop.hidden_size), requires_grad=False).to(device)]
+
+class BiGRU_NLP(torch.nn.Module):
+    """
+    PyTorch GRU for NLP
+    """
+    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.context_size=context_size
+
+        self.coop_mode=False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,bidirectional=True)
+        self.h2c = torch.nn.Linear(hidden_size*2, context_size)
+        self.h2g = torch.nn.Linear(hidden_size * 2, context_size) # from hidden to gating
+        self.c2o = torch.nn.Linear(context_size, output_size)
+
+        if self.adv_mode_flag: # Adversary mode
+            self.c2ao = torch.nn.Linear(context_size, self.adv_output_size)
+
+
+        if self.weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            # self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=self.weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+
+        self.pad=torch.zeros((1,batch_size,self.input_size)).to(self.cuda_device)
+
+        self.context = None
+        self.siggate = None
+
+    def para(self,para):
+        self.weight_dropout = para.get("weight_dropout", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.self_include_flag = para.get("self_include_flag", False)
+        self.gate_mode_flag = para.get("gate_mode_flag", True)
+        self.adv_mode_flag = para.get("adv_mode_flag", False)
+        self.adv_output_size = para.get("adv_output_size", None)
+        self.precision = para.get("precision", 0.1)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        temperature = np.exp(-schedule * 5)
+        if len(input.shape)==2:
+            input=input.view(1,input.shape[0],input.shape[1])
+        if not self.self_include_flag:
+            input=torch.cat((self.pad, input, self.pad), dim=0)
+        hout, hn = self.gru(input,hidden1)
+        # if not self.self_include:
+        #     hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
+        #     hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
+        if not self.self_include_flag:
+            hout_forward = hout[:-2,:, :self.hidden_size]
+            hout_backward = hout[2:, :, self.hidden_size:]
+            hout=torch.cat((hout_forward,hout_backward),dim=-1)
+        context = self.h2c(hout)
+        context = self.relu(context)
+        if self.gate_mode_flag:
+            ## Adaptive Gating
+            gatev=self.h2g(hout)
+            siggate = self.gsigmoid(gatev, temperature=temperature)
+            # siggate = self.sigmoid(gatev)
+            self.siggate=siggate
+            context=context*siggate
+        context = mydiscrete(context, self.precision, cuda_device=self.cuda_device)
+        self.context=context
+        if self.coop_mode:
+            return context,hn
+        output = self.c2o(context)
+        output = self.softmax(output)
+
+        if self.adv_mode_flag:
+            adoutput = self.c2ao(context)
+            adoutput = self.softmax(adoutput)
+            return [output,adoutput], hn
+
+        # if add_logit is not None:
+        #     output=output+add_logit
+        # if not logit_mode:
+        #     output=self.softmax(output)
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(2, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(2, batch, self.hidden_size), requires_grad=True).to(device)
+
+class BiGRU_NLP_VIB(torch.nn.Module):
+    """
+    PyTorch BiGRU for NLP with variational information bottleneck
+    """
+    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.context_size=context_size
+
+        self.coop_mode=False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,bidirectional=True)
+        self.h2mu = torch.nn.Linear(hidden_size * 2, context_size)
+        self.h2t = torch.nn.Linear(hidden_size * 2, context_size) # from hidden to gating
+        self.c2o = torch.nn.Linear(context_size, output_size)
+
+        if self.adv_mode_flag: # Adversary mode
+            self.c2ao = torch.nn.Linear(context_size, self.adv_output_size)
+
+
+        if self.weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            # self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=self.weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        self.softplus = torch.nn.Softplus()
+        self.vagauss = VariationalGauss()
+
+        self.pad=torch.zeros((1,batch_size,self.input_size)).to(self.cuda_device)
+
+        self.context = None
+        self.siggate = None
+
+    def para(self,para):
+        self.weight_dropout = para.get("weight_dropout", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.self_include_flag = para.get("self_include_flag", False)
+        self.adv_mode_flag = para.get("adv_mode_flag", False)
+        self.adv_output_size = para.get("adv_output_size", None)
+        self.precision = para.get("precision", 0.1)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        # temperature = np.exp(-schedule * 5)
+        if len(input.shape)==2:
+            input=input.view(1,input.shape[0],input.shape[1])
+        if not self.self_include_flag:
+            input=torch.cat((self.pad, input, self.pad), dim=0)
+        hout, hn = self.gru(input,hidden1)
+        # if not self.self_include:
+        #     hout_leftshf=torch.cat((hout[2:,:,self.hidden_size:],self.pad),dim=0)
+        #     hout=torch.cat((hout[:,:,:self.hidden_size],hout_leftshf),dim=-1)
+        if not self.self_include_flag:
+            hout_forward = hout[:-2,:, :self.hidden_size]
+            hout_backward = hout[2:, :, self.hidden_size:]
+            hout=torch.cat((hout_forward,hout_backward),dim=-1)
+        cmu = self.h2mu(hout)
+        ctheta = self.h2t(hout)
+        ctheta = self.softplus(ctheta)
+        context = self.vagauss(cmu,ctheta)
+        self.cmu=cmu
+        self.ctheta = ctheta
+        self.context=context
+        if self.coop_mode:
+            return context,hn
+        output = self.c2o(context)
+        output = self.softmax(output)
+
+        if self.adv_mode_flag:
+            adoutput = self.c2ao(context)
+            adoutput = self.softmax(adoutput)
+            return [output,adoutput], hn
+
+        # if add_logit is not None:
+        #     output=output+add_logit
+        # if not logit_mode:
+        #     output=self.softmax(output)
         return output,hn
 
     def initHidden(self,batch):

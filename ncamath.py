@@ -490,6 +490,7 @@ def cal_entropy_raw(data,data_discrete=True,data_bins=None):
     :param data_discrete: if data is discrete
     :return:
     """
+    data=np.array(data)
     assert len(data.shape) == 1
     if data_discrete:
         if len(set(data))<=1:
@@ -716,6 +717,21 @@ def sample_id(prob, shape):
     tsmat = torch.from_numpy(smat).type(torch.LongTensor)
 
     return tsmat
+
+def sort_w_arg(datal,down_order=True):
+    """
+    Sort data list with arg index information
+    :param datal: a list with data
+    :return: list of tuple [(arg,data),...]
+    """
+    l=len(datal)
+    sorttp = zip(np.linspace(0, l - 1, l), datal)
+    if down_order:
+        count_pairs = sorted(sorttp, key=lambda x: -x[1])
+    else:
+        count_pairs = sorted(sorttp, key=lambda x: x[1])
+    ids, data = list(zip(*count_pairs))
+    return ids, data
 
 def genDist(N):
     """

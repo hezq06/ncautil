@@ -946,6 +946,8 @@ class PyTrain_Custom(PyTrain_Lite):
         elif interface_para["class"] == "PyTrain_Interface_sup":
             pfver = interface_para.get("version", 0)
             self.interface = PyTrain_Interface_sup(version=pfver)
+        elif interface_para["class"] == "PyTrain_Interface_advsup":
+            self.interface = PyTrain_Interface_advsup()
         else:
             raise Exception("Interface class unknown")
 
@@ -1135,8 +1137,8 @@ class PyTrain_Interface_Default(object):
         :return:
         """
         self.test_print_interface=True
-        print("init_data: ")
-        self.init_data()
+        # print("init_data: ")
+        # self.init_data()
         print("get_data: ")
         self.get_data()
         print("lossf: ")
@@ -1575,7 +1577,7 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         # return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
         # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
         if self.version in [0,4]:
-            return self.KNWLoss_WeightReg(outputl, outlab, model=model, cstep=cstep)
+            return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
         elif self.version==1:
             return self.KNWLoss_HC(outputl, outlab, model=model, cstep=cstep)
         elif self.version==2:
@@ -1601,8 +1603,31 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
             return self.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep)
 
     def eval_mem(self, x, label, output, rnn):
-        # return self.eval_mem_Full_eval(x, label, output, rnn)
-        pass
+        return self.custom_eval_mem_context(x, label, output, rnn)
+        # pass
+
+    def custom_eval_mem_context(self, x, label, output, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.test_print_interface:
+            print("Eval mem interface: custom_eval_mem_sup")
+            return True
+
+
+        if self.pt.evalmem is None:
+            self.pt.evalmem = [[] for ii in range(3)]  # x,label,hd_middle
+
+        try:
+            self.pt.evalmem[0].append(x.cpu().data.numpy())
+            self.pt.evalmem[1].append(label.cpu().data.numpy())
+            self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
+        except:
+            # print("eval_mem failed")
+            pass
 
     def eval_mem_Full_eval(self, x, label, output, rnn):
         if self.test_print_interface:
@@ -1614,6 +1639,31 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         for ii in range(len(output)):
             self.pt.evalmem[ii].append(output[ii].cpu().detach().data)
         self.pt.evalmem[-1].append(label.cpu().detach().data)
+
+    def KNWLoss_EnergyReg(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_EnergyReg")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        energyloss = 0.5*torch.mean(torch.mul(model.context, model.context))
+
+        if model.gate_mode_flag:
+            loss_gate = torch.mean(model.sigmoid(model.siggate))
+        else:
+            loss_gate = 0
+
+        # wnorm1 = 0
+        # for namep in self.allname:
+        #     wattr = getattr(self.pt.rnn, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wnorm1 = wnorm1 / len(self.allname)
+
+        return loss1 + self.pt.reg_lamda * energyloss + self.pt.reg_lamda*loss_gate/10
 
 
     def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
@@ -3059,7 +3109,7 @@ class PyTrain_Interface_W2V(PyTrain_Interface_Default):
 
 class PyTrain_Interface_sup(PyTrain_Interface_Default):
     """
-    A pytrain interface object to plug into PyTrain_Custom, sepervised learning
+    A pytrain interface object to plug into PyTrain_Custom, supervised learning
     """
     def __init__(self,version=0):
         super(self.__class__, self).__init__()
@@ -3071,8 +3121,10 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
-        return self.KNWLoss_WeightReg(outputl, outlab, model=model, cstep=cstep)
-
+        if self.version == 0:
+            return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
+        elif self.version == 1:
+            return self.KNWLoss_VIB(outputl, outlab, model=model, cstep=cstep)
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
         return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
@@ -3081,23 +3133,58 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # return self.eval_mem_Full_eval(x, label, output, rnn)
         pass
 
-    def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
+    def KNWLoss_EnergyReg(self, outputl, outlab, model=None, cstep=None):
 
         if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss_WeightReg")
+            print("KNWLoss interface: KNWLoss_EnergyReg")
             return True
 
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
 
-        wnorm1 = 0
-        for namep in self.allname:
-            wattr = getattr(self.pt.rnn, namep)
-            wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        wnorm1 = wnorm1 / len(self.allname)
+        energyloss = 0.5*torch.mean(torch.mul(model.context, model.context))
 
-        return loss1 + self.pt.reg_lamda * wnorm1
+        if model.gate_mode_flag:
+            loss_gate = torch.mean(model.sigmoid(model.siggate))
+        else:
+            loss_gate = 0
+
+        # wnorm1 = 0
+        # for namep in self.allname:
+        #     wattr = getattr(self.pt.rnn, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wnorm1 = wnorm1 / len(self.allname)
+
+        return loss1 + self.pt.reg_lamda * energyloss + self.pt.reg_lamda*loss_gate/10
+
+    def KNWLoss_VIB(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss for variational information bottleneck
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_VIB")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        gausskl=0.5*torch.mean(torch.sum(model.ctheta**2+model.cmu**2-torch.log(model.ctheta**2)-1,dim=-1))
+
+        # wnorm1 = 0
+        # for namep in self.allname:
+        #     wattr = getattr(self.pt.rnn, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wnorm1 = wnorm1 / len(self.allname)
+
+        return loss1 + self.pt.reg_lamda*gausskl
 
     def KNWLoss(self, outputl, outlab, model=None, cstep=None):
 
@@ -3157,3 +3244,145 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             x = x.to(self.pt.device)
 
         return x, outlab, None
+
+    def eval_mem(self, x, label, output, rnn):
+        return self.custom_eval_mem_sup(x, label, output, rnn)
+
+    def custom_eval_mem_sup(self, x, label, output, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.test_print_interface:
+            print("Eval mem interface: custom_eval_mem_sup")
+            return True
+
+
+        if self.pt.evalmem is None:
+            self.pt.evalmem = [[] for ii in range(3)]  # x,label,hd_middle
+
+        try:
+            self.pt.evalmem[0].append(x.cpu().data.numpy())
+            self.pt.evalmem[1].append(label.cpu().data.numpy())
+            self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
+        except:
+            # print("eval_mem failed")
+            pass
+
+class PyTrain_Interface_advsup(PyTrain_Interface_Default):
+    """
+    A pytrain interface object to plug into PyTrain_Custom, supervised learning with adversary labels (not working)
+    """
+
+    def __init__(self, version=0):
+        super(self.__class__, self).__init__()
+        self.version = version
+        self.allname = ["h2c", "c2o","ac2o"]
+
+    def get_data(self, batch=None, rstartv=None):
+        return self.get_data_adsup(batch=batch, rstartv=rstartv)
+
+    def lossf(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss_WeightReg_adv(outputl, outlab, model=model, cstep=cstep)
+
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+        return self.KNWLoss_adv(outputl, outlab, model=model, cstep=cstep)
+
+    def eval_mem(self, x, label, output, rnn):
+        # return self.eval_mem_Full_eval(x, label, output, rnn)
+        pass
+
+    def KNWLoss_WeightReg_adv(self, outputl, outlab, model=None, cstep=None):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_WeightReg")
+            return True
+        output=outputl[0]
+        output = output.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(output, outlab[0])
+
+        advoutput = outputl[1]
+        advoutput = advoutput.permute(1, 2, 0)
+        loss2 = lossc(advoutput, outlab[1])
+
+        # wnorm1 = 0
+        # for namep in self.allname:
+        #     wattr = getattr(self.pt.rnn, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wnorm1 = wnorm1 / len(self.allname)
+
+        return loss1-self.pt.reg_lamda*loss2 # + self.pt.reg_lamda * wnorm1
+
+    def KNWLoss_adv(self, outputl, outlab, model=None, cstep=None, id=0):
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss")
+            return True
+
+        output = outputl[id].permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(output, outlab[id])
+        return loss1
+
+    def get_data_adsup(self, batch=None, rstartv=None, shift=False):
+        """
+
+        :param batch:
+        :param rstartv:
+        :param shift: default to true unless for transformer type network
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("get_data interface: get_data_sup")
+            return True
+
+        assert self.pt.digit_input
+        assert self.pt.supervise_mode
+
+        if batch is None:
+            batch = self.pt.batch
+
+
+        dataset = self.pt.dataset["dataset"]
+        labelset = self.pt.dataset["label"]
+        advlabelset = self.pt.dataset["advlabel"]
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - self.pt.window - 1))
+
+        yl = np.zeros((batch, self.pt.window))
+        for iib in range(batch):
+            if shift:
+                yl[iib, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.pt.window + 1]
+            else:
+                yl[iib, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+
+        al = np.zeros((batch, self.pt.window))
+        for iib in range(batch):
+            if shift:
+                al[iib, :] = advlabelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.pt.window + 1]
+            else:
+                al[iib, :] = advlabelset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+        adoutlab = torch.from_numpy(al)
+        adoutlab = adoutlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(self.pt.window, batch, self.pt.lsize_in)
+        for iib in range(batch):
+            ptdata = dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+            vec1 = self.pt.pt_emb(torch.LongTensor(ptdata))
+            vec1m[:, iib, :] = vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if self.pt.gpuavail:
+            outlab = outlab.to(self.pt.device)
+            adoutlab = adoutlab.to(self.pt.device)
+            x = x.to(self.pt.device)
+
+        return x, [outlab,adoutlab], None
