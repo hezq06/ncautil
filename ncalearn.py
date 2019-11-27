@@ -599,7 +599,7 @@ class PyTrain_Lite(object):
         self.coopseq = para.get("coopseq", None)
         self.invec_noise = para.get("invec_noise", 0.0)
         self.pre_training = para.get("pre_training", False)
-        self.loss_clip = para.get("loss_clip", 0.0)
+        self.loss_clip = para.get("loss_clip", 20.0)
         self.digit_input = para.get("digit_input", True)
         self.two_step_training = para.get("two_step_training", False)
         self.context_total = para.get("context_total", 1)
@@ -607,7 +607,6 @@ class PyTrain_Lite(object):
         self.reg_lamda = para.get("reg_lamda", 0.0)
         self.optimizer_label = para.get("optimizer_label", "adam")
         self.length_sorted = False
-        self.cuda_flag = para.get("cuda_flag", True)
         self.cuda_device = para.get("cuda_device", "cuda:0")
         self.figure_plot = para.get("figure_plot", True)
         self.custom_interface = para.get("custom_interface", None)
@@ -1565,42 +1564,27 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         return self.init_data_continous()
 
     def get_data(self, batch=None, rstartv=None):
-        # return self.get_data_sent_KLsup( batch=batch, rstartv=rstartv)
         if self.version in [0,1,2,3]:
-            # return self.get_data_continous(batch=batch, rstartv=rstartv)
             return self.get_data_continous(batch=batch, rstartv=rstartv, shift=False)
         elif self.version in [4,5]:
             return self.get_data_continous(batch=batch, rstartv=rstartv, shift=False) # None-shift label for Transformer
 
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
-        # return self.KNWLoss_GateReg_TDFF_L1(outputl, outlab, model=model, cstep=cstep)
-        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
-        if self.version in [0,4]:
-            return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
+        if self.version in [0]:
+            # return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
+            return self.KNWLoss_VIB(outputl, outlab, model=model, cstep=cstep)
         elif self.version==1:
-            return self.KNWLoss_HC(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==2:
-            return self.KNWLoss_HC_Full(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==3:
-            return self.KNWLoss_HC_Int(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==5:
-            return self.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep)
+            return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
 
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
         # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
-        if self.version in [0,4]:
+        if self.version in [0]:
             return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         elif self.version==1:
-            return self.KNWLoss_HC_eval(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==2:
-            return self.KNWLoss_HC_Full_eval(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==3:
-            return self.KNWLoss_HC_Int_eval(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==5:
-            return self.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep)
+            return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
 
     def eval_mem(self, x, label, output, rnn):
         return self.custom_eval_mem_context(x, label, output, rnn)
@@ -1640,6 +1624,37 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
             self.pt.evalmem[ii].append(output[ii].cpu().detach().data)
         self.pt.evalmem[-1].append(label.cpu().detach().data)
 
+    def KNWLoss_VIB(self, outputl, outlab, model=None, cstep=None):
+        """
+        Loss for variational information bottleneck
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        if self.test_print_interface:
+            print("KNWLoss interface: KNWLoss_VIB")
+            return True
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # self.loss_intf = [self.ctheta, self.cmu]
+        ctheta,cmu=model.loss_intf
+
+        gausskl=0.5*torch.mean(torch.sum(ctheta**2+cmu**2-torch.log(ctheta**2)-1,dim=-1))
+
+        # wnorm1 = 0
+        # for namep in self.allname:
+        #     wattr = getattr(self.pt.rnn, namep)
+        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
+        # wnorm1 = wnorm1 / len(self.allname)
+
+        return loss1 + self.pt.reg_lamda*gausskl
+
     def KNWLoss_EnergyReg(self, outputl, outlab, model=None, cstep=None):
 
         if self.test_print_interface:
@@ -1650,10 +1665,13 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
 
-        energyloss = 0.5*torch.mean(torch.mul(model.context, model.context))
+        # model.loss_intf = [self.context, self.siggate]
+        context,siggate=model.loss_intf
+
+        energyloss = 0.5*torch.mean(torch.mul(context, context))
 
         if model.gate_mode_flag:
-            loss_gate = torch.mean(model.sigmoid(model.siggate))
+            loss_gate = torch.mean(model.sigmoid(siggate))
         else:
             loss_gate = 0
 
@@ -3122,7 +3140,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == 0:
-            return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
+            # return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
+            return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         elif self.version == 1:
             return self.KNWLoss_VIB(outputl, outlab, model=model, cstep=cstep)
 

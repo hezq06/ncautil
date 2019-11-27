@@ -21,16 +21,89 @@ from ncautil.ptfunction import *
 
 from awd_lstm_lm.weight_drop import WeightDrop
 
-# class ABS_NLP_COOP(torch.nn.Module):
-#     """
-#     An abstrac cooperation container
-#     """
+class ABS_NLP_COOP(torch.nn.Module):
+    """
+    An abstrac cooperation container
+    """
+
+    def __init__(self, trainer, cooprer, output_size=None, para=None):
+        """
+
+        :param trainer: trainer can be None
+        :param cooprer: cooprer is not trained
+        :param para:
+        """
+        super(self.__class__, self).__init__()
+
+        self.trainer=trainer
+        self.cooprer=cooprer
+        self.cooprer.coop_mode = True
+
+        if self.trainer is not None:
+            self.context_cat_size=self.trainer.context_size+self.cooprer.context_size
+            self.trainer.coop_mode = True
+            self.c2o = torch.nn.Linear(self.context_cat_size, trainer.output_size)
+        else:
+            self.context_cat_size = self.cooprer.context_size
+            self.c2o = torch.nn.Linear(self.context_cat_size, output_size)
+
+        for param in self.cooprer.parameters():
+            param.requires_grad = False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def para(self,para):
+        pass
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+
+        context_coop, hn_coop = self.cooprer(input, hidden1[1], schedule=1.0)
+        if self.trainer is not None:
+            context_train, hn_train = self.trainer(input, hidden1[0], schedule=schedule)
+            self.loss_intf = self.trainer.loss_intf
+            context_cat = torch.cat((context_coop, context_train), dim=-1)
+            self.context_coop=context_coop
+            self.context_train=context_train
+        else:
+            context_cat = context_coop
+            hn_train = None
+
+        output = self.c2o(context_cat)
+
+        if add_logit is not None:
+            output = output + add_logit
+        if not logit_mode:
+            output = self.softmax(output)
+        return output, [hn_train, hn_coop]
+
+    def forward_comb(self,context_coop):
+        context_cat = torch.cat((context_coop, self.context_train), dim=-1)
+        output = self.c2o(context_cat)
+        output = self.softmax(output)
+        return output
+
+    def initHidden(self,batch):
+        trainer_hd = None
+        if self.trainer is not None:
+            trainer_hd=self.trainer.initHidden(batch)
+        return [trainer_hd,self.cooprer.initHidden(batch)]
+
+    def initHidden_cuda(self,device, batch):
+        trainer_hd = None
+        if self.trainer is not None:
+            trainer_hd = self.trainer.initHidden_cuda(device, batch)
+        return [trainer_hd, self.cooprer.initHidden_cuda(device, batch)]
+
 
 class BiGRU_NLP_COOP(torch.nn.Module):
     """
     PyTorch Bi-GRU for NLP cooperative version, for layer seperation of natural language
     """
-    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, bigru_coop, para=None):
+    def __init__(self, input_size, hidden_size, context_size, output_size, bigru_coop, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
@@ -61,10 +134,11 @@ class BiGRU_NLP_COOP(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
 
-        self.pad=torch.zeros((1,batch_size,self.input_size)).to(self.cuda_device)
-
         self.context = None
         self.siggate = None
+
+        self.batch_size = 1
+        self.pad = torch.zeros((1, self.batch_size, self.input_size)).to(self.cuda_device)
 
     def para(self,para):
         self.weight_dropout = para.get("weight_dropout", 0.0)
@@ -98,6 +172,10 @@ class BiGRU_NLP_COOP(torch.nn.Module):
         temperature = np.exp(-schedule * 5)
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
+        b_size = input.shape[1]
+        if self.batch_size != b_size:
+            self.batch_size = b_size
+            self.pad = torch.zeros((1, b_size, self.input_size)).to(self.cuda_device)
         if not self.self_include_flag:
             input2=torch.cat((self.pad, input, self.pad), dim=0)
         else:
@@ -152,10 +230,11 @@ class BiGRU_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
-    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None):
+    def __init__(self, input_size, hidden_size, context_size, output_size, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
+        self.output_size = output_size
         self.context_size=context_size
 
         self.coop_mode=False
@@ -184,10 +263,12 @@ class BiGRU_NLP(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
 
-        self.pad=torch.zeros((1,batch_size,self.input_size)).to(self.cuda_device)
-
         self.context = None
         self.siggate = None
+        self.loss_intf=[self.context,self.siggate]
+
+        self.batch_size = 1
+        self.pad = torch.zeros((1, self.batch_size, self.input_size)).to(self.cuda_device)
 
     def para(self,para):
         self.weight_dropout = para.get("weight_dropout", 0.0)
@@ -208,6 +289,10 @@ class BiGRU_NLP(torch.nn.Module):
         temperature = np.exp(-schedule * 5)
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
+        b_size = input.shape[1]
+        if self.batch_size != b_size:
+            self.batch_size = b_size
+            self.pad = torch.zeros((1, b_size, self.input_size)).to(self.cuda_device)
         if not self.self_include_flag:
             input=torch.cat((self.pad, input, self.pad), dim=0)
         hout, hn = self.gru(input,hidden1)
@@ -255,10 +340,11 @@ class BiGRU_NLP_VIB(torch.nn.Module):
     """
     PyTorch BiGRU for NLP with variational information bottleneck
     """
-    def __init__(self, input_size, hidden_size, context_size, output_size, batch_size, para=None):
+    def __init__(self, input_size, hidden_size, context_size, output_size, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
+        self.output_size = output_size
         self.context_size=context_size
 
         self.coop_mode=False
@@ -289,10 +375,11 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.softplus = torch.nn.Softplus()
         self.vagauss = VariationalGauss()
 
-        self.pad=torch.zeros((1,batch_size,self.input_size)).to(self.cuda_device)
-
         self.context = None
-        self.siggate = None
+        self.loss_intf=[self.ctheta, self.cmu]
+
+        self.batch_size = 1
+        self.pad = torch.zeros((1, self.batch_size, self.input_size)).to(self.cuda_device)
 
     def para(self,para):
         self.weight_dropout = para.get("weight_dropout", 0.0)
@@ -310,8 +397,14 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         :return:
         """
         # temperature = np.exp(-schedule * 5)
+
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
+        b_size = input.shape[1]
+        if self.batch_size != b_size:
+            self.batch_size = b_size
+            self.pad = torch.zeros((1, b_size, self.input_size)).to(self.cuda_device)
+            self.vagauss.noise=None
         if not self.self_include_flag:
             input=torch.cat((self.pad, input, self.pad), dim=0)
         hout, hn = self.gru(input,hidden1)
@@ -328,7 +421,7 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         context = self.vagauss(cmu,ctheta)
         self.cmu=cmu
         self.ctheta = ctheta
-        self.context=context
+        self.context = context
         if self.coop_mode:
             return context,hn
         output = self.c2o(context)
