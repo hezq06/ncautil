@@ -937,13 +937,12 @@ class PyTrain_Custom(PyTrain_Lite):
 
     def init_interface(self,interface_para):
 
+        pfver = interface_para.get("version", "default")
         if interface_para["class"] == "PyTrain_Interface_continous":
-            pfver=interface_para.get("version",0)
             self.interface = PyTrain_Interface_continous(version=pfver)
         elif interface_para["class"] == "PyTrain_Interface_W2V":
             self.interface = PyTrain_Interface_W2V(interface_para["prior"],interface_para["threshold"])
         elif interface_para["class"] == "PyTrain_Interface_sup":
-            pfver = interface_para.get("version", 0)
             self.interface = PyTrain_Interface_sup(version=pfver)
         elif interface_para["class"] == "PyTrain_Interface_advsup":
             self.interface = PyTrain_Interface_advsup()
@@ -1152,15 +1151,15 @@ class PyTrain_Interface_Default(object):
         self.example_data_collection(None,None,None,None)
         self.test_print_interface = False
 
-    def init_data(self,*args,**kwargs):
-        """
-        Data initialization
-
-        :param args:
-        :param kwargs:
-        :return:
-        """
-        return self.init_data_sent_sup()
+    # def init_data(self,*args,**kwargs):
+    #     """
+    #     Data initialization
+    #
+    #     :param args:
+    #     :param kwargs:
+    #     :return:
+    #     """
+    #     return self.init_data_sent_sup()
 
     def get_data(self, batch=None, rstartv=None):
         return self.get_data_sent_sup(batch=batch, rstartv=rstartv)
@@ -1564,27 +1563,33 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         return self.init_data_continous()
 
     def get_data(self, batch=None, rstartv=None):
-        if self.version in [0,1,2,3]:
-            return self.get_data_continous(batch=batch, rstartv=rstartv, shift=False)
-        elif self.version in [4,5]:
-            return self.get_data_continous(batch=batch, rstartv=rstartv, shift=False) # None-shift label for Transformer
-
+        return self.get_data_continous(batch=batch, rstartv=rstartv, shift=False)
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
-        if self.version in [0]:
+        if self.version == "vib":
             # return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
-            return self.KNWLoss_VIB(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==1:
-            return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
+            # return self.KNWLoss_VIB(outputl, outlab, model=model, cstep=cstep)
+            return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model)
+        elif self.version == "ereg":
+            # return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
+            return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
+        elif self.version == "mask_vib_coop":
+            return MyLossFun.KNWLoss_withmask_VIB(outputl, outlab, self.pt.reg_lamda, model.trainer)
+        else:
+            return MyLossFun.KNWLoss(outputl, outlab)
 
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
         # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
-        if self.version in [0]:
-            return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
-        elif self.version==1:
-            return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        # if self.version in [0]:
+        #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        # elif self.version==1:
+        #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        if self.version == "mask_vib_coop":
+            return MyLossFun.KNWLoss_withmask(outputl, outlab, model.trainer)
+        else:
+            return MyLossFun.KNWLoss(outputl, outlab)
 
     def eval_mem(self, x, label, output, rnn):
         return self.custom_eval_mem_context(x, label, output, rnn)
@@ -1608,7 +1613,7 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         try:
             self.pt.evalmem[0].append(x.cpu().data.numpy())
             self.pt.evalmem[1].append(label.cpu().data.numpy())
-            self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
+            self.pt.evalmem[2].append(rnn.trainer.context.cpu().data.numpy())
         except:
             # print("eval_mem failed")
             pass
@@ -1623,97 +1628,6 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         for ii in range(len(output)):
             self.pt.evalmem[ii].append(output[ii].cpu().detach().data)
         self.pt.evalmem[-1].append(label.cpu().detach().data)
-
-    def KNWLoss_VIB(self, outputl, outlab, model=None, cstep=None):
-        """
-        Loss for variational information bottleneck
-        :param outputl:
-        :param outlab:
-        :param model:
-        :param cstep:
-        :return:
-        """
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss_VIB")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-
-        # self.loss_intf = [self.ctheta, self.cmu]
-        ctheta,cmu=model.loss_intf
-
-        gausskl=0.5*torch.mean(torch.sum(ctheta**2+cmu**2-torch.log(ctheta**2)-1,dim=-1))
-
-        # wnorm1 = 0
-        # for namep in self.allname:
-        #     wattr = getattr(self.pt.rnn, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # wnorm1 = wnorm1 / len(self.allname)
-
-        return loss1 + self.pt.reg_lamda*gausskl
-
-    def KNWLoss_EnergyReg(self, outputl, outlab, model=None, cstep=None):
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss_EnergyReg")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-
-        # model.loss_intf = [self.context, self.siggate]
-        context,siggate=model.loss_intf
-
-        energyloss = 0.5*torch.mean(torch.mul(context, context))
-
-        if model.gate_mode_flag:
-            loss_gate = torch.mean(model.sigmoid(siggate))
-        else:
-            loss_gate = 0
-
-        # wnorm1 = 0
-        # for namep in self.allname:
-        #     wattr = getattr(self.pt.rnn, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # wnorm1 = wnorm1 / len(self.allname)
-
-        return loss1 + self.pt.reg_lamda * energyloss + self.pt.reg_lamda*loss_gate/10
-
-
-    def KNWLoss_WeightReg(self, outputl, outlab, model=None, cstep=None):
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss_WeightReg")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-
-        wnorm1 = 0
-        for namep in self.allname:
-            wattr = getattr(self.pt.rnn, namep)
-            wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        wnorm1 = wnorm1 / len(self.allname)
-        return loss1 + self.pt.reg_lamda * wnorm1
-
-    def KNWLoss_withmask(self, outputl, outlab, model=None, cstep=None):
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss_withmask")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss(reduce=False)
-        loss1 = lossc(outputl, outlab)
-        loss=torch.sum(loss1*(1-model.input_mask))/torch.sum(1-model.input_mask)
-        # loss = torch.sum(loss1 * model.input_mask) / torch.sum(model.input_mask) # should be perfect i    nformation
-
-        return loss
 
     def KNWLoss_HC(self, outputl, outlab, model=None, cstep=None):
         """
@@ -1872,17 +1786,6 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         # wnorm1 = wnorm1 / len(self.allname)
 
         return (loss1,loss2)
-
-    def KNWLoss(self, outputl, outlab, model=None, cstep=None):
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-        return loss1
 
     # def init_data_continous(self,limit=1e9):
     #
@@ -3137,84 +3040,23 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
     def get_data(self, batch=None, rstartv=None):
         return self.get_data_sup(batch=batch, rstartv=rstartv)
 
-
     def lossf(self, outputl, outlab, model=None, cstep=None):
-        if self.version == 0:
-            # return self.KNWLoss_EnergyReg(outputl, outlab, model=model, cstep=cstep)
-            return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
-        elif self.version == 1:
-            return self.KNWLoss_VIB(outputl, outlab, model=model, cstep=cstep)
+        if self.version == "vib":
+            return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model)
+        elif self.version== "ereg":
+            return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
+        else:
+            return MyLossFun.KNWLoss(outputl, outlab)
+
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
-        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
-
-    def eval_mem(self, x, label, output, rnn):
-        # return self.eval_mem_Full_eval(x, label, output, rnn)
-        pass
-
-    def KNWLoss_EnergyReg(self, outputl, outlab, model=None, cstep=None):
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss_EnergyReg")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-
-        energyloss = 0.5*torch.mean(torch.mul(model.context, model.context))
-
-        if model.gate_mode_flag:
-            loss_gate = torch.mean(model.sigmoid(model.siggate))
-        else:
-            loss_gate = 0
-
-        # wnorm1 = 0
-        # for namep in self.allname:
-        #     wattr = getattr(self.pt.rnn, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # wnorm1 = wnorm1 / len(self.allname)
-
-        return loss1 + self.pt.reg_lamda * energyloss + self.pt.reg_lamda*loss_gate/10
-
-    def KNWLoss_VIB(self, outputl, outlab, model=None, cstep=None):
-        """
-        Loss for variational information bottleneck
-        :param outputl:
-        :param outlab:
-        :param model:
-        :param cstep:
-        :return:
-        """
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss_VIB")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-
-        gausskl=0.5*torch.mean(torch.sum(model.ctheta**2+model.cmu**2-torch.log(model.ctheta**2)-1,dim=-1))
-
-        # wnorm1 = 0
-        # for namep in self.allname:
-        #     wattr = getattr(self.pt.rnn, namep)
-        #     wnorm1 = wnorm1 + torch.mean(torch.abs(wattr.weight))
-        # wnorm1 = wnorm1 / len(self.allname)
-
-        return loss1 + self.pt.reg_lamda*gausskl
-
-    def KNWLoss(self, outputl, outlab, model=None, cstep=None):
-
-        if self.test_print_interface:
-            print("KNWLoss interface: KNWLoss")
-            return True
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-        return loss1
+        # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
+        # if self.version in [0]:
+        #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        # elif self.version==1:
+        #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+        return MyLossFun.KNWLoss(outputl, outlab)
 
     def get_data_sup(self, batch=None, rstartv=None, shift=False):
         """
@@ -3280,12 +3122,14 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
 
         if self.pt.evalmem is None:
-            self.pt.evalmem = [[] for ii in range(3)]  # x,label,hd_middle
+            self.pt.evalmem = [[] for ii in range(5)]  # x,label,context
 
         try:
             self.pt.evalmem[0].append(x.cpu().data.numpy())
             self.pt.evalmem[1].append(label.cpu().data.numpy())
             self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
+            self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
+            self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
         except:
             # print("eval_mem failed")
             pass
@@ -3405,3 +3249,103 @@ class PyTrain_Interface_advsup(PyTrain_Interface_Default):
             x = x.to(self.pt.device)
 
         return x, [outlab,adoutlab], None
+
+class MyLossFun(object):
+
+    @staticmethod
+    def KNWLoss(outputl, outlab):
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        return loss1
+
+    @staticmethod
+    def KNWLoss_WeightReg(outputl, outlab, reg_lamda, model):
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        wnorm1 = 0
+        for weight in model.loss_intf:
+            wnorm1 = wnorm1 + torch.mean(torch.abs(weight))
+        wnorm1 = wnorm1 / len(model.loss_intf)
+        return loss1 + reg_lamda * wnorm1
+
+    @staticmethod
+    def KNWLoss_EnergyReg(outputl, outlab, reg_lamda, model, balance_para=10, gate_mode_flag=True):
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # model.loss_intf = [self.context, self.siggate]
+        context,siggate=model.loss_intf
+
+        energyloss = 0.5*torch.mean(torch.mul(context, context))
+
+        if gate_mode_flag and siggate is not None:
+            loss_gate = torch.mean(model.sigmoid(siggate))
+        else:
+            loss_gate = 0
+
+        return loss1 + reg_lamda * energyloss + reg_lamda*loss_gate/balance_para
+
+    @staticmethod
+    def KNWLoss_VIB(outputl, outlab, reg_lamda, model):
+        """
+        Loss for variational information bottleneck
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # self.loss_intf = [self.ctheta, self.cmu]
+        ctheta,cmu=model.loss_intf
+
+        gausskl=0.5*torch.mean(torch.sum(ctheta**2+cmu**2-torch.log(ctheta**2)-1,dim=-1))
+
+        return loss1 + reg_lamda*gausskl
+
+    @staticmethod
+    def KNWLoss_withmask(outputl, outlab, model=None, cstep=None):
+        """
+        transformer style masked loss
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+        outputl=outputl.permute(1, 2, 0)
+        lossc=torch.nn.CrossEntropyLoss(reduce=False)
+        loss1 = lossc(outputl, outlab)
+        loss=torch.sum(loss1*(1-model.input_mask))/torch.sum(1-model.input_mask)
+        # loss = torch.sum(loss1 * model.input_mask) / torch.sum(model.input_mask) # should be perfect information
+        return loss
+
+    @staticmethod
+    def KNWLoss_withmask_VIB(outputl, outlab, reg_lamda, model, cstep=None):
+        """
+        transformer style masked loss, VIB version
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+        outputl = outputl.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss(reduce=False)
+        loss1 = lossc(outputl, outlab)
+        loss1 = torch.sum(loss1 * (1 - model.input_mask)) / torch.sum(1 - model.input_mask)
+        # loss = torch.sum(loss1 * model.input_mask) / torch.sum(model.input_mask) # should be perfect information
+
+        gausskl = 0.5 * torch.mean(torch.sum(model.ctheta ** 2 + model.cmu ** 2 - torch.log(model.ctheta ** 2) - 1, dim=-1))
+
+        return loss1 + reg_lamda * gausskl

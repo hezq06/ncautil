@@ -21,6 +21,78 @@ from ncautil.ptfunction import *
 
 from awd_lstm_lm.weight_drop import WeightDrop
 
+class ABS_NLP_COOP_LOGIT(torch.nn.Module):
+    """
+    An abstrac cooperation container for logit cooperation
+    """
+
+    def __init__(self, trainer, cooprer, para=None):
+        """
+
+        :param trainer: trainer can be None
+        :param cooprer: cooprer is not trained
+        :param para:
+        """
+        super(self.__class__, self).__init__()
+
+        self.coop_mode = False # For recursive cooreration
+
+        self.trainer = trainer
+        self.cooprer = cooprer
+
+        for param in self.cooprer.parameters():
+            param.requires_grad = False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.sigmoid = torch.nn.Sigmoid()
+
+        self.logit_train=None
+
+    def para(self,para):
+        pass
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+
+        logit_coop, hn_coop = self.cooprer(input, hidden1[1], logit_mode=True, schedule=1.0)
+        logit_train, hn_train = self.trainer(input, hidden1[0], logit_mode=True, schedule=schedule)
+        self.loss_intf = self.trainer.loss_intf
+
+        output=logit_coop+logit_train
+        self.logit_train=logit_train
+
+        if add_logit is not None:
+            output = output + add_logit
+        if not logit_mode:
+            output = self.softmax(output)
+        return output, [hn_train, hn_coop]
+
+    def forward_comb(self,context_coop):
+        """
+        forward with substitue coop
+        :param context_coop:
+        :return:
+        """
+        logit_coop=self.cooprer.c2o(context_coop)
+        output = logit_coop + self.logit_train
+        output = self.softmax(output)
+        return output
+
+    def initHidden(self,batch):
+        trainer_hd = None
+        if self.trainer is not None:
+            trainer_hd=self.trainer.initHidden(batch)
+        return [trainer_hd,self.cooprer.initHidden(batch)]
+
+    def initHidden_cuda(self,device, batch):
+        trainer_hd = None
+        if self.trainer is not None:
+            trainer_hd = self.trainer.initHidden_cuda(device, batch)
+        return [trainer_hd, self.cooprer.initHidden_cuda(device, batch)]
+
 class ABS_NLP_COOP(torch.nn.Module):
     """
     An abstrac cooperation container
@@ -35,17 +107,19 @@ class ABS_NLP_COOP(torch.nn.Module):
         """
         super(self.__class__, self).__init__()
 
-        self.trainer=trainer
-        self.cooprer=cooprer
+        self.coop_mode = False # For recursive cooreration
+
+        self.trainer = trainer
+        self.cooprer = cooprer
         self.cooprer.coop_mode = True
 
         if self.trainer is not None:
-            self.context_cat_size=self.trainer.context_size+self.cooprer.context_size
+            self.context_size=self.cooprer.context_size+self.trainer.context_size
             self.trainer.coop_mode = True
-            self.c2o = torch.nn.Linear(self.context_cat_size, trainer.output_size)
+            self.c2o = torch.nn.Linear(self.context_size, trainer.output_size)
         else:
-            self.context_cat_size = self.cooprer.context_size
-            self.c2o = torch.nn.Linear(self.context_cat_size, output_size)
+            self.context_size = self.cooprer.context_size
+            self.c2o = torch.nn.Linear(self.context_size, output_size)
 
         for param in self.cooprer.parameters():
             param.requires_grad = False
@@ -55,6 +129,7 @@ class ABS_NLP_COOP(torch.nn.Module):
         self.para(para)
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.sigmoid = torch.nn.Sigmoid()
 
     def para(self,para):
         pass
@@ -71,6 +146,11 @@ class ABS_NLP_COOP(torch.nn.Module):
         else:
             context_cat = context_coop
             hn_train = None
+
+        self.context=context_cat
+
+        if self.coop_mode:
+            return context_cat, [hn_train, hn_coop]
 
         output = self.c2o(context_cat)
 
@@ -314,6 +394,7 @@ class BiGRU_NLP(torch.nn.Module):
             context=context*siggate
         context = mydiscrete(context, self.precision, cuda_device=self.cuda_device)
         self.context=context
+        self.loss_intf = [self.context, self.siggate]
         if self.coop_mode:
             return context,hn
         output = self.c2o(context)
@@ -373,10 +454,12 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
         self.softplus = torch.nn.Softplus()
-        self.vagauss = VariationalGauss()
+        self.vagauss = VariationalGauss(cuda_device=self.cuda_device)
 
         self.context = None
-        self.loss_intf=[self.ctheta, self.cmu]
+        self.ctheta = None
+        self.cmu = None
+        self.loss_intf = [self.ctheta, self.cmu]  # Mainly for ABS_COOP interface
 
         self.batch_size = 1
         self.pad = torch.zeros((1, self.batch_size, self.input_size)).to(self.cuda_device)
@@ -388,6 +471,8 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.adv_mode_flag = para.get("adv_mode_flag", False)
         self.adv_output_size = para.get("adv_output_size", None)
         self.precision = para.get("precision", 0.1)
+        self.rnd_input_mask = para.get("rnd_input_mask", False)
+        self.mask_rate = para.get("mask_rate", 0.0)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -405,6 +490,13 @@ class BiGRU_NLP_VIB(torch.nn.Module):
             self.batch_size = b_size
             self.pad = torch.zeros((1, b_size, self.input_size)).to(self.cuda_device)
             self.vagauss.noise=None
+
+        if self.rnd_input_mask:
+            rnd = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self.input_mask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self.input_mask[rnd > self.mask_rate] = 1
+            input = input * self.input_mask.view(input.shape[0], input.shape[1], 1).expand_as(input)
+
         if not self.self_include_flag:
             input=torch.cat((self.pad, input, self.pad), dim=0)
         hout, hn = self.gru(input,hidden1)
@@ -421,6 +513,7 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         context = self.vagauss(cmu,ctheta)
         self.cmu=cmu
         self.ctheta = ctheta
+        self.loss_intf = [self.ctheta, self.cmu]
         self.context = context
         if self.coop_mode:
             return context,hn
@@ -454,7 +547,7 @@ class BiTRF_NLP(torch.nn.Module):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.model_size = model_size
-        self.window_size=window_size
+        self.window_size = window_size
 
         if para is None:
             para = dict([])
@@ -566,6 +659,158 @@ class BiTRF_NLP(torch.nn.Module):
         return None
 
     def initHidden_cuda(self,device, batch):
+        return None
+
+
+class BiTRF_NLP_VIB(torch.nn.Module):
+    """
+    Bi-directional simplified Transformer for NLP, based-on source code from "attention is all you need"
+    from "Yu-Hsiang Huang"
+    With variational information bottleneck
+    """
+    def __init__(self, input_size, model_size, hidden_size, context_size, output_size, window_size, para=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.model_size = model_size
+        self.window_size = window_size
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        # self.slf_attn = MultiHeadAttention(self.n_head, self.model_size, self.d_k, self.d_v, dropout=self.dropout)
+        # self.pos_ffn = PositionwiseFeedForward(self.model_size, self.hidden_size, dropout=self.dropout)
+
+        self.i2m = torch.nn.Linear(input_size, model_size)
+
+        self.posi_sinmat = self.get_sinusoid_encoding_table(window_size, model_size)
+        # self.posi_mat, self.n_posiemb = self.posi_embed(self.window_size,
+        #                                                 switch="log")  # (self.input_len,self.n_posiemb)
+
+        self.trf_layers = torch.nn.ModuleList([
+            torch.nn.ModuleList(
+                [MultiHeadAttention(self.n_head, self.model_size, self.d_k, self.d_v, dropout=self.dropout),
+                 PositionwiseFeedForward(self.model_size, self.hidden_size, dropout=self.dropout)])
+            for _ in range(self.num_layers)])
+
+        self.h2mu = torch.nn.Linear(model_size, context_size)
+        self.h2t = torch.nn.Linear(model_size, context_size)
+        self.c2o = torch.nn.Linear(context_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.layer_norm = torch.nn.LayerNorm(self.model_size)
+        self.softplus = torch.nn.Softplus()
+        self.vagauss = VariationalGauss(cuda_device=self.cuda_device)
+
+        # self.selfattn_mask=torch.eye(self.window_size)
+        # self.selfattn_mask = self.selfattn_mask.type(torch.uint8)
+        if torch.cuda.is_available():
+            self.posi_sinmat = self.posi_sinmat.to(self.cuda_device)
+            # self.selfattn_mask = self.selfattn_mask.to(self.cuda_device)
+
+        self.input_mask = None
+
+    def para(self, para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.dropout = para.get("dropout", 0.1)
+        self.mask_rate = para.get("mask_rate", 0.15)
+        self.n_head = para.get("n_head", 2)
+        self.d_k = para.get("d_k", 99)
+        self.d_v = para.get("d_v", 101)
+        self.num_layers = para.get("num_layers", 1)
+        self.self_unmask_rate = para.get("self_unmask_rate", 0.1)
+
+    def get_sinusoid_encoding_table(self, n_position, model_size):
+        ''' Sinusoid position encoding table '''
+
+        def cal_angle(position, hid_idx):
+            return position / np.power(10000, 2 * (hid_idx // 2) / model_size)
+
+        def get_posi_angle_vec(position):
+            return [cal_angle(position, hid_j) for hid_j in range(model_size)]
+
+        sinusoid_table = np.array([get_posi_angle_vec(pos_i) for pos_i in range(n_position)])
+
+        sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
+        sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+
+        return torch.FloatTensor(sinusoid_table)
+
+    def posi_embed(self, emb_len, switch="onehot"):
+        if switch == "log":
+            n_posiemb = int(np.log(emb_len) / np.log(2)) + 1
+            posi_mat = torch.ones((emb_len, n_posiemb))
+            for ii in range(n_posiemb):
+                step = 2 ** (ii + 1)
+                for ii2 in range(2 ** ii):
+                    posi_mat[ii2::step, ii] = 0
+        elif switch == "onehot":
+            n_posiemb = emb_len
+            posi_mat = torch.eye(emb_len)
+        else:
+            raise Exception("Switch not known")
+        print(posi_mat)
+        if torch.cuda.is_available():
+            posi_mat = posi_mat.to(self.cuda_device)
+        return posi_mat, n_posiemb
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        assert len(input.shape) == 3
+        length, batch, l_size = input.shape
+        input = input.permute((1, 0, 2))  # Due to transformer, use [batch, seq_len, hd_size] convention
+        rnd = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
+        self.input_mask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
+        self.input_mask[rnd > self.mask_rate] = 1
+        # Self unmask sampling
+        rnd2 = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
+        self_unmask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
+        self_unmask[rnd2 < self.self_unmask_rate] = 1
+        comb_mask=self.input_mask+self_unmask
+        comb_mask[comb_mask > 0.999] = 1
+
+        input = input * comb_mask.view(input.shape[0], input.shape[1], 1).expand_as(input)
+
+        modelin = self.i2m(input)
+        modelin = self.tanh(modelin)
+        enc_output = modelin + self.posi_sinmat.view(1, -1, self.model_size)
+        ### or
+        # enc_output = torch.cat(
+        #     (self.posi_mat.view(1, length , self.n_posiemb).expand(batch, length, self.n_posiemb), input), dim=-1)
+
+        for trf_l in self.trf_layers:
+            enc_output, attn = trf_l[0](enc_output, enc_output, enc_output)
+            enc_output = trf_l[1](enc_output)
+
+        cmu = self.h2mu(enc_output)
+        ctheta = self.h2t(enc_output)
+        ctheta = self.softplus(ctheta)
+        context = self.vagauss(cmu, ctheta)
+        self.cmu = cmu
+        self.ctheta = ctheta
+        self.loss_intf = [self.ctheta, self.cmu]
+        self.context = context
+
+        output = self.c2o(context)
+        if not logit_mode:
+            output = self.softmax(output)
+
+        output = output.permute((1, 0, 2))
+
+        return output, None
+
+    def initHidden(self, batch):
+        return None
+
+    def initHidden_cuda(self, device, batch):
         return None
 
 class ScaledDotProductAttention(torch.nn.Module):

@@ -17,6 +17,7 @@ import scipy.linalg as la
 import torch
 from sklearn.manifold import TSNE
 from scipy.cluster.hierarchy import dendrogram
+from tqdm import tqdm
 
 def cluster(data,n_clusters,mode="kmeans"):
     """
@@ -594,6 +595,50 @@ def cal_entropy(data,logit=False,byte_flag=True):
     data_adj=np.zeros(data.shape)+data
     data_adj[data_adj==0]=1e-9
     ent=-np.sum(data*np.log(data_adj)/adj)
+    return ent
+
+def cal_entropy_continous_raw(data,bins=10000):
+    data = np.array(data)
+    assert len(data.shape) == 1
+    # entl=[]
+    # for ii in tqdm(range(30)):
+    #     nbins=int(1.2**(ii+55))
+    #     pdata, bins = np.histogram(data, bins=nbins)
+    #     pdata = pdata / np.sum(pdata)
+    #     ent= cal_entropy(pdata)
+    #
+    #     entl.append(ent+np.log(dbin))
+        # entl.append(ent)
+    pdata, bins = np.histogram(data, bins=bins)
+    dx = bins[1] - bins[0]
+    pdata = pdata / np.sum(pdata)/dx
+    ent=0
+    one=0
+    for ii in range(len(pdata)):
+        if pdata[ii]>0:
+            ent=ent-pdata[ii]*np.log(pdata[ii])*dx
+    return ent
+
+
+def cal_entropy_gauss(theta):
+    """
+    calculate the multi-variate entropy of theta
+    :param theta:
+    :return:
+    """
+    if type(theta) is float:
+        ent = 0.5 + 0.5 * np.log(2 * np.pi) + 0.5 * np.log(theta)
+    elif type(theta) is list:
+        k=len(theta)
+        PIt=1
+        for item in theta:
+            PIt=PIt*item
+        ent = 0.5*k + 0.5 * k * np.log(2 * np.pi) + 0.5 * np.log(PIt)
+    else:
+        assert len(theta) == len(theta[0])
+        k = len(theta)
+        PIt = np.linalg.det(np.array(theta))
+        ent = 0.5 * k + 0.5 * k * np.log(2 * np.pi) + 0.5 * np.log(PIt)
     return ent
 
 def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
