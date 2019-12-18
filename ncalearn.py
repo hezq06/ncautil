@@ -667,7 +667,7 @@ class PyTrain_Lite(object):
     def eval_mem(self, x, label, output, rnn):
         pass
 
-    def do_eval(self,step_eval=300,schedule=1.0,posi_ctrl=None,allordermode=False):
+    def do_eval(self,step_eval=300,schedule=1.0,posi_ctrl=None,allordermode=False,eval_mem_flag=False):
         startt = time.time()
         self.rnn.eval()
         if self.gpuavail:
@@ -692,7 +692,8 @@ class PyTrain_Lite(object):
                 loss = self.lossf_eval(output, label, self.rnn, None)
             else:
                 loss = self.lossf_eval(output[posi_ctrl,:,:].view(1,output.shape[1],output.shape[2]), label[:,posi_ctrl].view(label.shape[0],1), self.rnn, None)
-            self.eval_mem(x, label, output, self.rnn)
+            if eval_mem_flag:
+                self.eval_mem(x, label, output, self.rnn)
 
             # else:
             #     outputl=None
@@ -871,14 +872,14 @@ class PyTrain_Lite(object):
         if self.figure_plot:
             try:
                 plt.plot(x[:, 0], x[:, 1])
+                if self.loss_clip > 0:
+                    # plt.ylim((-self.loss_clip, self.loss_clip))
+                    plt.ylim((0, self.loss_clip))
                 if type(self.save_fig) != type(None):
                     plt.savefig(self.save_fig)
                     self.log = self.log + "Figure saved: " + str(self.save_fig) + "\n"
                     plt.gcf().clear()
                 else:
-                    if self.loss_clip > 0:
-                        # plt.ylim((-self.loss_clip, self.loss_clip))
-                        plt.ylim((0, self.loss_clip))
                     plt.show()
             except:
                 pass
@@ -1587,7 +1588,8 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
         # elif self.version==1:
         #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         if self.version == "mask_vib_coop":
-            return MyLossFun.KNWLoss_withmask(outputl, outlab, model.trainer)
+            # return MyLossFun.KNWLoss_withmask(outputl, outlab, model.trainer)
+            return MyLossFun.KNWLoss(outputl, outlab)
         else:
             return MyLossFun.KNWLoss(outputl, outlab)
 
@@ -3042,7 +3044,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == "vib":
-            return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model)
+            # return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model)
+            return MyLossFun.KNWLoss_VIB_Gauss(outputl, outlab, self.pt.reg_lamda, model)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
         else:
@@ -3056,7 +3059,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         # elif self.version==1:
         #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
-        return MyLossFun.KNWLoss(outputl, outlab)
+        # return MyLossFun.KNWLoss(outputl, outlab)
+        return MyLossFun.KNWLoss_Gauss(outputl, outlab, model)
 
     def get_data_sup(self, batch=None, rstartv=None, shift=False):
         """
@@ -3122,7 +3126,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
 
         if self.pt.evalmem is None:
-            self.pt.evalmem = [[] for ii in range(5)]  # x,label,context
+            self.pt.evalmem = [[] for ii in range(6)]  # x,label,context
 
         try:
             self.pt.evalmem[0].append(x.cpu().data.numpy())
@@ -3130,6 +3134,9 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
             self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
             self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
+            # ent = cal_entropy(output, logit=True, byte_flag=False, torch_flag=True)
+            self.pt.evalmem[5].append(output.cpu().data.numpy())
+            # self.pt.evalmem[5].append(output.cpu().data.numpy())
         except:
             # print("eval_mem failed")
             pass
@@ -3312,6 +3319,48 @@ class MyLossFun(object):
         gausskl=0.5*torch.mean(torch.sum(ctheta**2+cmu**2-torch.log(ctheta**2)-1,dim=-1))
 
         return loss1 + reg_lamda*gausskl
+
+    @staticmethod
+    def KNWLoss_VIB_Gauss(outputl, outlab, reg_lamda, model):
+        """
+        Loss for variational information bottleneck, Gauss Expanded
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+
+        outputl = torch.exp(outputl)
+        outputl = torch.mean(outputl, dim=-2)
+        outputl[outputl<=0]=1e-9
+        outputl=torch.log(outputl)
+        if (outputl != outputl).any():
+            raise Exception("NaN Error")
+        outputl = outputl.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # self.loss_intf = [self.ctheta, self.cmu]
+        ctheta, cmu = model.loss_intf
+
+        gausskl = 0.5 * torch.mean(torch.sum(ctheta ** 2 + cmu ** 2 - torch.log(ctheta ** 2) - 1, dim=-1))
+
+        return loss1 + reg_lamda * gausskl
+
+    @staticmethod
+    def KNWLoss_Gauss(outputl, outlab, model):
+        # outputl[w,b,s,l]
+        outputl = torch.exp(outputl)
+        outputl = torch.mean(outputl, dim=-2)
+        outputl[outputl <= 0] = 1e-9
+        outputl = torch.log(outputl)
+        if (outputl != outputl).any():
+            raise Exception("NaN Error")
+        outputl = outputl.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+        return loss1
 
     @staticmethod
     def KNWLoss_withmask(outputl, outlab, model=None, cstep=None):

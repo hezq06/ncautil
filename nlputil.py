@@ -56,7 +56,7 @@ class NLPutil(object):
         self.dir="tmp/"
         self.corpus=None
         self.tagged_sents = None
-        self.sub_size = 100000
+        self.sub_size = 1000000
         self.sub_corpus = None
         self.sub_mat=None
         self.word_to_id=None
@@ -403,7 +403,7 @@ class NLPutil(object):
     def cal_cosdist(self,v1,v2):
         return np.dot(v1,v2)/np.linalg.norm(v1)/np.linalg.norm(v2)
 
-    def cal_v2w(self,vec,numW=10,dist="cos"):
+    def cal_v2w(self,vec,numW=10):
         """
         Calculate leading numW nearest using cosine distance definition
         :param vec: input vector

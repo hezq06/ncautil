@@ -577,24 +577,25 @@ def cal_muinfo_raw_ND_discrete(X,Z):
     return Hx+Hz-Hxz
 
 
-def cal_entropy(data,logit=False,byte_flag=True):
+def cal_entropy(data,logit=False,byte_flag=False, torch_flag=False):
     """
     Cal entropy of a vector
     :param data:
     :param logit: if input data is logit mode
     :return:
     """
-    # print(data)
+    if torch_flag:
+        data=data.detach().cpu().numpy()
     adj=1
     if byte_flag:
         adj=np.log(2)
     if logit:
         data=np.exp(data)
-    data=data/np.sum(data)
-    assert len(data.shape) == 1
+    # assert len(data.shape) == 1
     data_adj=np.zeros(data.shape)+data
     data_adj[data_adj==0]=1e-9
-    ent=-np.sum(data*np.log(data_adj)/adj)
+    data_adj = data_adj / np.sum(data_adj, axis=-1,keepdims=True)
+    ent=-np.sum(data_adj*np.log(data_adj)/adj,axis=-1)
     return ent
 
 def cal_entropy_continous_raw(data,bins=10000):
@@ -613,7 +614,6 @@ def cal_entropy_continous_raw(data,bins=10000):
     dx = bins[1] - bins[0]
     pdata = pdata / np.sum(pdata)/dx
     ent=0
-    one=0
     for ii in range(len(pdata)):
         if pdata[ii]>0:
             ent=ent-pdata[ii]*np.log(pdata[ii])*dx
@@ -627,18 +627,11 @@ def cal_entropy_gauss(theta):
     :return:
     """
     if type(theta) is float:
-        ent = 0.5 + 0.5 * np.log(2 * np.pi) + 0.5 * np.log(theta)
+        ent = np.log(theta*np.sqrt(2*np.pi*np.e))
     elif type(theta) is list:
-        k=len(theta)
-        PIt=1
+        ent=0
         for item in theta:
-            PIt=PIt*item
-        ent = 0.5*k + 0.5 * k * np.log(2 * np.pi) + 0.5 * np.log(PIt)
-    else:
-        assert len(theta) == len(theta[0])
-        k = len(theta)
-        PIt = np.linalg.det(np.array(theta))
-        ent = 0.5 * k + 0.5 * k * np.log(2 * np.pi) + 0.5 * np.log(PIt)
+            ent=ent+np.log(item*np.sqrt(2*np.pi*np.e))
     return ent
 
 def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
@@ -686,6 +679,50 @@ def cal_mulinfo(p,q,pq):
     assert len(p)*len(q) == pq.shape[0]*pq.shape[1]
     ptq=p.reshape(-1,1)*q.reshape(1,-1)
     return cal_kldiv(pq,ptq)
+
+def cal_mulinfo_hybrid_raw(xn,y,bins=100):
+    """
+    Calculate hybrid mutual information from discrete xn to continous y by raw data
+    :param xn: discrete xn
+    :param y: continuous
+    :return:
+    """
+    xn = np.array(xn)
+    y = np.array(y)
+    assert len(xn.shape) == 1
+    assert len(y.shape) == 1
+
+    np_data_bins=np.array(list(set(xn)))
+    data_bins_s = np.sort(np_data_bins)
+    prec=data_bins_s[1]-data_bins_s[0]
+    data_bins = np.concatenate((data_bins_s.reshape(-1,1),np.array(data_bins_s[-1]+prec).reshape(1,1)),axis=0)
+    data_bins=data_bins.reshape(-1)
+    data_bins=data_bins-prec/2
+    pxn, _ = np.histogram(xn, bins=data_bins)
+    pxn=pxn/np.sum(pxn)
+
+    sx=set(xn)
+    ynnx=[[] for nnx in sx]
+    lsx = list(set(xn))
+    for ii in range(len(xn)):
+        ynnx[lsx.index(xn[ii])].append(y[ii])
+
+    ent=0
+    py, binsl = np.histogram(y, bins=bins)
+    dy = binsl[1] - binsl[0]
+    pydata = py / np.sum(py) / dy
+
+    # plt.bar(binsl[:-1], py)
+    # plt.show()
+    # print(binsl[:-1], py)
+
+    for iin in range(len(sx)):
+        pxy, _ = np.histogram(ynnx[iin], bins=binsl)
+        pxydata = pxy / np.sum(pxy) / dy
+        for ii in range(len(pydata)):
+            if pxydata[ii] > 0 and pydata[ii] > 0:
+                ent = ent + pxn[iin] * pxydata[ii] * np.log(pxydata[ii]/pydata[ii]) * dy
+    return ent
 
 def cal_kldiv(p,q):
     """
@@ -763,19 +800,37 @@ def sample_id(prob, shape):
 
     return tsmat
 
-def sort_w_arg(datal,down_order=True):
+def sort_w_arg(datal,down_order=True,top_k=None):
     """
     Sort data list with arg index information
     :param datal: a list with data
     :return: list of tuple [(arg,data),...]
     """
-    l=len(datal)
-    sorttp = zip(np.linspace(0, l - 1, l), datal)
-    if down_order:
-        count_pairs = sorted(sorttp, key=lambda x: -x[1])
+    if top_k is None:
+        l=len(datal)
+        sorttp = zip(np.linspace(0, l - 1, l), datal)
+        if down_order:
+            count_pairs = sorted(sorttp, key=lambda x: -x[1])
+        else:
+            count_pairs = sorted(sorttp, key=lambda x: x[1])
+        ids, data = list(zip(*count_pairs))
     else:
-        count_pairs = sorted(sorttp, key=lambda x: x[1])
-    ids, data = list(zip(*count_pairs))
+        res = []
+        for ii in range(top_k):
+            if down_order:
+                res.append(("UNK", -1e99))
+            else:
+                res.append(("UNK", 1e99))
+        for (ii, data) in enumerate(datal):
+            if down_order:
+                if data > res[top_k - 1][1]:
+                    res[top_k - 1] = (ii,data)
+                    res.sort(key=lambda tup: tup[1], reverse=True)
+            else:
+                if data < res[top_k - 1][1]:
+                    res[top_k - 1] = (ii,data)
+                    res.sort(key=lambda tup: tup[1])
+        ids, data = list(zip(*res))
     return ids, data
 
 def genDist(N):

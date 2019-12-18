@@ -417,6 +417,110 @@ class BiGRU_NLP(torch.nn.Module):
     def initHidden_cuda(self,device, batch):
         return Variable(torch.zeros(2, batch, self.hidden_size), requires_grad=True).to(device)
 
+class VariationalGauss(torch.nn.Module):
+    """
+    A gaussian noise module
+    """
+    def __init__(self, cuda_device="cuda:0", multi_sample_flag=True, sample_size=16):
+
+        super(self.__class__, self).__init__()
+
+        self.noise = None
+        self.cuda_device = cuda_device
+        self.sample_size=sample_size
+        self.multi_sample_flag=multi_sample_flag
+
+        self.gpuavail = torch.cuda.is_available()
+
+    def forward(self, mu, theta):
+        assert mu.shape==theta.shape
+        shape = np.array(mu.shape)
+        if self.multi_sample_flag:
+            shape=np.insert(shape,-1,self.sample_size)
+            mushape=copy.copy(shape)
+            mushape[-2]=1
+            mu=mu.view(tuple(mushape))
+            theta = theta.view(tuple(mushape))
+        if self.noise is None:
+            self.noise = torch.nn.init.normal_(torch.empty(tuple(shape)))
+            if self.gpuavail:
+                self.noise = self.noise.to(self.cuda_device)
+        else:
+            self.noise.data.normal_(0,std=1.0)
+        if self.training:
+            return mu + theta * self.noise
+        else:
+            return mu + theta * self.noise
+
+class FF_VIB(torch.nn.Module):
+    """
+    PyTorch BiGRU for NLP with variational information bottleneck
+    """
+    def __init__(self, input_size, hidden_size, context_size, output_size, para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.context_size = context_size
+        self.hidden_size = hidden_size
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.i2mu = torch.nn.Linear(input_size, context_size)
+        self.i2t = torch.nn.Linear(input_size, context_size)
+        self.c2h = torch.nn.Linear(context_size, hidden_size)
+        self.h2o = torch.nn.Linear(hidden_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.softplus = torch.nn.Softplus()
+        self.vagauss = VariationalGauss(cuda_device=self.cuda_device,multi_sample_flag=self.multi_sample_flag,
+                                        sample_size=self.sample_size)
+
+        self.context = None
+        self.ctheta = None
+        self.cmu = None
+
+        self.loss_intf = [self.ctheta, self.cmu]
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.sample_size = para.get("sample_size", 16)
+        self.multi_sample_flag = para.get("multi_sample_flag", True)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        # temperature = np.exp(-schedule * 5)
+
+        cmu = self.i2mu(input)
+        ctheta = self.i2t(input)
+        ctheta = self.softplus(ctheta)
+        context = self.vagauss(cmu,ctheta)
+        self.cmu=cmu
+        self.ctheta = ctheta
+        self.context = context
+        self.loss_intf = [self.ctheta, self.cmu]
+        hidden = self.c2h(context)
+        hidden = self.tanh(hidden)
+        output = self.h2o(hidden)
+        output = self.softmax(output)
+
+        return output, None
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
+
 class BiGRU_NLP_VIB(torch.nn.Module):
     """
     PyTorch BiGRU for NLP with variational information bottleneck
@@ -437,7 +541,15 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.gru=torch.nn.GRU(input_size,hidden_size,bidirectional=True)
         self.h2mu = torch.nn.Linear(hidden_size * 2, context_size)
         self.h2t = torch.nn.Linear(hidden_size * 2, context_size) # from hidden to gating
-        self.c2o = torch.nn.Linear(context_size, output_size)
+
+        if self.mlp_num_layers>0:
+            self.c2h = torch.nn.Linear(context_size, hidden_size)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size, bias=True), torch.nn.Tanh())
+                for _ in range(self.mlp_num_layers)])
+            self.h2o = torch.nn.Linear(hidden_size, output_size)
+        else:
+            self.c2o = torch.nn.Linear(context_size, output_size)
 
         if self.adv_mode_flag: # Adversary mode
             self.c2ao = torch.nn.Linear(context_size, self.adv_output_size)
@@ -454,7 +566,8 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
         self.softplus = torch.nn.Softplus()
-        self.vagauss = VariationalGauss(cuda_device=self.cuda_device)
+        self.vagauss = VariationalGauss(cuda_device=self.cuda_device,multi_sample_flag=self.multi_sample_flag,
+                                        sample_size=self.sample_size)
 
         self.context = None
         self.ctheta = None
@@ -473,6 +586,9 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.precision = para.get("precision", 0.1)
         self.rnd_input_mask = para.get("rnd_input_mask", False)
         self.mask_rate = para.get("mask_rate", 0.0)
+        self.sample_size = para.get("sample_size", 16)
+        self.multi_sample_flag = para.get("multi_sample_flag", True)
+        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -517,7 +633,13 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.context = context
         if self.coop_mode:
             return context,hn
-        output = self.c2o(context)
+        if self.mlp_num_layers > 0:
+            hidden_c=self.c2h(context)
+            for fmd in self.linear_layer_stack:
+                hidden_c = fmd(hidden_c)
+            output=self.h2o(hidden_c)
+        else:
+            output = self.c2o(context)
         output = self.softmax(output)
 
         if self.adv_mode_flag:
@@ -767,17 +889,18 @@ class BiTRF_NLP_VIB(torch.nn.Module):
         assert len(input.shape) == 3
         length, batch, l_size = input.shape
         input = input.permute((1, 0, 2))  # Due to transformer, use [batch, seq_len, hd_size] convention
-        rnd = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
-        self.input_mask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
-        self.input_mask[rnd > self.mask_rate] = 1
-        # Self unmask sampling
-        rnd2 = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
-        self_unmask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
-        self_unmask[rnd2 < self.self_unmask_rate] = 1
-        comb_mask=self.input_mask+self_unmask
-        comb_mask[comb_mask > 0.999] = 1
 
-        input = input * comb_mask.view(input.shape[0], input.shape[1], 1).expand_as(input)
+        if self.training:
+            rnd = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self.input_mask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self.input_mask[rnd > self.mask_rate] = 1
+            # Self unmask sampling
+            rnd2 = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self_unmask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self_unmask[rnd2 < self.self_unmask_rate] = 1
+            comb_mask=self.input_mask+self_unmask
+            comb_mask[comb_mask > 0.999] = 1
+            input = input * comb_mask.view(input.shape[0], input.shape[1], 1).expand_as(input)
 
         modelin = self.i2m(input)
         modelin = self.tanh(modelin)
