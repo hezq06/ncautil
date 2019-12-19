@@ -3331,12 +3331,13 @@ class MyLossFun(object):
         :return:
         """
 
-        outputl = torch.exp(outputl)
-        outputl = torch.mean(outputl, dim=-2)
-        outputl[outputl<=0]=1e-9
-        outputl=torch.log(outputl)
-        if (outputl != outputl).any():
-            raise Exception("NaN Error")
+        if model.multi_sample_flag:
+            outputl = torch.exp(outputl)
+            outputl = torch.mean(outputl, dim=-2)
+            outputl[outputl<=0]=1e-9
+            outputl=torch.log(outputl)
+            if (outputl != outputl).any():
+                raise Exception("NaN Error")
         outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
@@ -3351,12 +3352,13 @@ class MyLossFun(object):
     @staticmethod
     def KNWLoss_Gauss(outputl, outlab, model):
         # outputl[w,b,s,l]
-        outputl = torch.exp(outputl)
-        outputl = torch.mean(outputl, dim=-2)
-        outputl[outputl <= 0] = 1e-9
-        outputl = torch.log(outputl)
-        if (outputl != outputl).any():
-            raise Exception("NaN Error")
+        if model.multi_sample_flag:
+            outputl = torch.exp(outputl)
+            outputl = torch.mean(outputl, dim=-2)
+            outputl[outputl <= 0] = 1e-9
+            outputl = torch.log(outputl)
+            if (outputl != outputl).any():
+                raise Exception("NaN Error")
         outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)

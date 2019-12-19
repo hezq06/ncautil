@@ -96,10 +96,10 @@ class NLPutil(object):
                 self.corpus.append(item.lower())
             self.sub_corpus = self.corpus[:self.sub_size]
             _,lablist=zip(*treebank.tagged_words())
-            self.labels = set(lablist)
+            self.labels = lablist
             counter = collections.Counter(lablist)
             count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
-            self.labels, _ = list(zip(*count_pairs))
+            self.setlabels, _ = list(zip(*count_pairs))
             self.tagged_sents = treebank.tagged_sents()
         elif corpus=="selfgen" and data is not None:
             self.corpus=data
@@ -237,7 +237,8 @@ class NLPutil(object):
                 model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
                 return model
             elif mode=="torchnlp":
-                model = GloVe()
+                cache_path="/data03/home/hezq17/MyWorkSpace/NLConLayer/.word_vectors_cache"
+                model = GloVe(cache=cache_path)
             self.w2v_dict = dict([])
             skip = []
             for ii in range(Nvac):
@@ -563,10 +564,13 @@ class SQuADutil(object):
             self.parser = stanford.StanfordParser()
         except:
             print("Stanford parser not working!!!")
-        path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
+        # path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
+        path = "/data03/home/hezq17/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models"
         os.environ['STANFORD_MODELS'] = path
-        self.pos = StanfordPOSTagger('english-caseless-left3words-distsim.tagger',
-                                path_to_jar=path + '/../stanford-postagger.jar')
+        model = 'english-caseless-left3words-distsim.tagger'
+        # model="english-bidirectional-distsim.tagger"
+        self.pos = StanfordPOSTagger(model,
+                                path_to_jar=path + '/../stanford-postagger.jar',java_options='-mx16g')
 
     def get_data(self,mode="pickle"):
         if mode=="json":
@@ -900,36 +904,41 @@ class SQuADutil(object):
         sents = nltk.sent_tokenize(sent)
         return sents
 
-    def pos_tagger(self,sent):
+    def pos_tagger(self,sent): # Suprisingly low accuracy
         """
         Calculate the part of speech tag
+        :sent: list of word ["Hello","world","!"]
         :return: [(word,NN),...]
         """
-        if type(sent)==list:
-            sent=""
-            for w in sent:
-                sent=sent+" "+w
-        psents = self.parser.raw_parse_sents([sent])
+        # if type(sent)==list:
+        #     sent=""
+        #     for w in sent:
+        #         sent=sent+" "+w
+        psents = self.parser.raw_parse_sents(sent)
         a = []
         # GUI
         for line in psents:
             for sentence in line:
                 a.append(sentence)
 
-        ptree = a[0]
-        pos = ptree.pos()
-        return pos
+        posls=[]
+        for ptree in a:
+            pos = ptree.pos()
+            posls.append(pos[0])
 
-    def pos_tagger_fast(self,sent):
+        return posls
+
+    def pos_tagger_fast(self,sent): # 90% accuracy for PTB
         if type(sent)==type("string"):
             sent=word_tokenize(sent)
             sent = [w.lower() for w in sent]
-        def ini_pos():
-            path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
-            os.environ['STANFORD_MODELS'] = path
-            pos = StanfordPOSTagger('english-bidirectional-distsim.tagger',
-                                         path_to_jar=path + '/../stanford-postagger.jar')
-            return pos
+        # def ini_pos():
+            # path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
+            # path="/data03/home/hezq17/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models"
+            # os.environ['STANFORD_MODELS'] = path
+            # pos = StanfordPOSTagger('english-bidirectional-distsim.tagger',
+            #                              path_to_jar=path + '/../stanford-postagger.jar')
+            # return pos
         # pos=ini_pos()
         res=self.pos.tag(sent)
         return res
