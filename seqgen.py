@@ -13,13 +13,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from random import random
 
-from ncautil.tfnlp import TFNet
+# from ncautil.tfnlp import TFNet
 from ncautil.ncalearn import *
 from ncautil.ncamath import *
 from ncautil.nlputil import NLPutil
 
 
-import tensorflow as tf
+# import tensorflow as tf
 import torch
 import copy
 from torch.autograd import Variable
@@ -3860,93 +3860,93 @@ class PT_FFN_wrong(object):
         self.model=model
 
 
-class TF_FFN(TFNet):
-    """
-    Fensorflow Feedforward Net
-    """
-    def __init__(self,seqgen,option=None):
-        if type(option)==type(None):
-            option=dict([])
-        super(TF_FFN, self).__init__(option=option)
-        self.seqgen=seqgen
-        self.trainN=10000
-        self.testN=2000
-
-    def inference(self,vec_in):
-        with tf.name_scope("hidden1"):
-            M1 = tf.Variable(tf.random_uniform([4,4],-1.0,1.0,name="M1"))
-            M1b = tf.Variable(tf.zeros([1,4],name="M1b"))
-            nhu1=tf.nn.sigmoid(tf.matmul(vec_in,M1)+M1b)
-        # with tf.name_scope("hidden2"):
-        #     M2 = tf.Variable(tf.random_uniform([4,4], -1.0, 1.0, name="M2"))
-        #     M2b = tf.Variable(tf.zeros([1,self.Ntags], name="M2b"))
-        #     nhu2 = tf.matmul(nhu1,M2)+M2b
-        return nhu1,[]
-
-    def loss(self,infvec,result):
-        distvec=result-infvec
-        loss=tf.norm(distvec)
-        return loss,[]
-
-    def evaluation(self, infvec, result):
-        infres=tf.sign(infvec-0.5)
-        distvec = infres - result
-        return tf.norm(distvec)
-
-    def get_trainingDataSet(self):
-        seqs=self.seqgen.gen_ABseq(self.trainN)
-        return seqs
-
-    def do_eval(self,
-                sess,
-                eval_correct,
-                invec,
-                outvec):
-        id1 = int(np.floor(np.random.rand() * 2))
-        if id1 == 0:
-            id2 = int(np.floor(np.random.rand() * len(self.seqgen.vocab["cA"])))
-            invec_init=self.seqgen.numtobin(self.seqgen.vocab["cA"][id2])
-        else:
-            id2 = int(np.floor(np.random.rand() * len(self.seqgen.vocab["cB"])))
-            invec_init = self.seqgen.numtobin(self.seqgen.vocab["cB"][id2])
-        feed_dict = {
-            invec: np.array(invec_init).reshape(1,-1),
-            outvec: np.array(invec_init).reshape(1,-1)
-        }
-        seqres=[]
-        seqres.append(invec_init)
-        for ii in range(self.testN):
-            # nhu1,_=self.inference(invec)
-            infres = tf.sign(- tf.constant([-0.5,-0.5,-0.5,-0.5]))
-            res = sess.run([infres], feed_dict=feed_dict)
-            feed_dict = {
-                invec: np.array(res).reshape(1,-1),
-                outvec: np.array(res).reshape(1,-1)
-            }
-            seqres.append(res)
-        print(len(res))
-
-
-    def fill_feed_dict(self,datain,dataout,seqs):
-        resin=[]
-        resout=[]
-        nS=len(seqs)-1
-        for ii in range(self.batch_size):
-            id = int(np.floor(np.random.rand() * nS))
-            resin.append(seqs[id])
-            resout.append(seqs[id+1])
-        feed_dict = {
-            datain: np.array(resin).reshape((self.batch_size,-1)),
-            dataout: np.array(resout).reshape((self.batch_size,-1))
-        }
-        return feed_dict
-
-    def run(self,save_dir=None,mode=None):
-        with tf.Graph().as_default(), tf.Session() as sess:
-            datain = tf.placeholder(dtype=tf.float32, shape=(None, 4))
-            dataout = tf.placeholder(dtype=tf.float32, shape=(None,4))
-            if type(save_dir)!=type(None):
-                self.resume_training(sess,save_dir,datain,dataout)
-            else:
-                self.run_training(sess,datain,dataout,mode=None)
-
+# class TF_FFN(TFNet):
+#     """
+#     Fensorflow Feedforward Net
+#     """
+#     def __init__(self,seqgen,option=None):
+#         if type(option)==type(None):
+#             option=dict([])
+#         super(TF_FFN, self).__init__(option=option)
+#         self.seqgen=seqgen
+#         self.trainN=10000
+#         self.testN=2000
+#
+#     def inference(self,vec_in):
+#         with tf.name_scope("hidden1"):
+#             M1 = tf.Variable(tf.random_uniform([4,4],-1.0,1.0,name="M1"))
+#             M1b = tf.Variable(tf.zeros([1,4],name="M1b"))
+#             nhu1=tf.nn.sigmoid(tf.matmul(vec_in,M1)+M1b)
+#         # with tf.name_scope("hidden2"):
+#         #     M2 = tf.Variable(tf.random_uniform([4,4], -1.0, 1.0, name="M2"))
+#         #     M2b = tf.Variable(tf.zeros([1,self.Ntags], name="M2b"))
+#         #     nhu2 = tf.matmul(nhu1,M2)+M2b
+#         return nhu1,[]
+#
+#     def loss(self,infvec,result):
+#         distvec=result-infvec
+#         loss=tf.norm(distvec)
+#         return loss,[]
+#
+#     def evaluation(self, infvec, result):
+#         infres=tf.sign(infvec-0.5)
+#         distvec = infres - result
+#         return tf.norm(distvec)
+#
+#     def get_trainingDataSet(self):
+#         seqs=self.seqgen.gen_ABseq(self.trainN)
+#         return seqs
+#
+#     def do_eval(self,
+#                 sess,
+#                 eval_correct,
+#                 invec,
+#                 outvec):
+#         id1 = int(np.floor(np.random.rand() * 2))
+#         if id1 == 0:
+#             id2 = int(np.floor(np.random.rand() * len(self.seqgen.vocab["cA"])))
+#             invec_init=self.seqgen.numtobin(self.seqgen.vocab["cA"][id2])
+#         else:
+#             id2 = int(np.floor(np.random.rand() * len(self.seqgen.vocab["cB"])))
+#             invec_init = self.seqgen.numtobin(self.seqgen.vocab["cB"][id2])
+#         feed_dict = {
+#             invec: np.array(invec_init).reshape(1,-1),
+#             outvec: np.array(invec_init).reshape(1,-1)
+#         }
+#         seqres=[]
+#         seqres.append(invec_init)
+#         for ii in range(self.testN):
+#             # nhu1,_=self.inference(invec)
+#             infres = tf.sign(- tf.constant([-0.5,-0.5,-0.5,-0.5]))
+#             res = sess.run([infres], feed_dict=feed_dict)
+#             feed_dict = {
+#                 invec: np.array(res).reshape(1,-1),
+#                 outvec: np.array(res).reshape(1,-1)
+#             }
+#             seqres.append(res)
+#         print(len(res))
+#
+#
+#     def fill_feed_dict(self,datain,dataout,seqs):
+#         resin=[]
+#         resout=[]
+#         nS=len(seqs)-1
+#         for ii in range(self.batch_size):
+#             id = int(np.floor(np.random.rand() * nS))
+#             resin.append(seqs[id])
+#             resout.append(seqs[id+1])
+#         feed_dict = {
+#             datain: np.array(resin).reshape((self.batch_size,-1)),
+#             dataout: np.array(resout).reshape((self.batch_size,-1))
+#         }
+#         return feed_dict
+#
+#     def run(self,save_dir=None,mode=None):
+#         with tf.Graph().as_default(), tf.Session() as sess:
+#             datain = tf.placeholder(dtype=tf.float32, shape=(None, 4))
+#             dataout = tf.placeholder(dtype=tf.float32, shape=(None,4))
+#             if type(save_dir)!=type(None):
+#                 self.resume_training(sess,save_dir,datain,dataout)
+#             else:
+#                 self.run_training(sess,datain,dataout,mode=None)
+#

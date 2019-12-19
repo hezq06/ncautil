@@ -237,7 +237,8 @@ class NLPutil(object):
                 model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
                 return model
             elif mode=="torchnlp":
-                cache_path="/data03/home/hezq17/MyWorkSpace/NLConLayer/.word_vectors_cache"
+                hdir=os.getenv("HOME")
+                cache_path=os.path.join(hdir,"MyWorkSpace/NLConLayer/.word_vectors_cache")
                 model = GloVe(cache=cache_path)
             self.w2v_dict = dict([])
             skip = []
