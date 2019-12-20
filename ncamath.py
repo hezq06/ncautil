@@ -586,6 +586,8 @@ def cal_entropy(data,logit=False,byte_flag=False, torch_flag=False):
     """
     if torch_flag:
         data=data.detach().cpu().numpy()
+    else:
+        data=np.array(data)
     adj=1
     if byte_flag:
         adj=np.log(2)

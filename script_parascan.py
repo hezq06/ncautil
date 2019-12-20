@@ -63,6 +63,8 @@ class ParallelUtil(object):
 
 # if __name__ == "__main__":
 #
+#     from ncautil.script_parascan import ParallelUtil
+#
 #     para1 = 1
 #     para2 = 2
 #

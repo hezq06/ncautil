@@ -3332,13 +3332,17 @@ class MyLossFun(object):
         """
 
         if model.multi_sample_flag:
-            outputl = torch.exp(outputl)
-            outputl = torch.mean(outputl, dim=-2)
-            outputl[outputl<=0]=1e-9
-            outputl=torch.log(outputl)
-            if (outputl != outputl).any():
-                raise Exception("NaN Error")
-        outputl = outputl.permute(1, 2, 0)
+            # outputl = torch.exp(outputl)
+            # outputl = torch.mean(outputl, dim=-2)
+            # outputl[outputl<=0]=1e-9
+            # outputl=torch.log(outputl)
+            # if (outputl != outputl).any():
+            #     raise Exception("NaN Error")
+            w, b, s, l = outputl.shape
+            outlab = outlab.view((b, w, 1)).expand((b, w, s))
+            outputl = outputl.permute(1, 3, 0, 2)
+        else:
+            outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
 
@@ -3351,15 +3355,19 @@ class MyLossFun(object):
 
     @staticmethod
     def KNWLoss_Gauss(outputl, outlab, model):
-        # outputl[w,b,s,l]
+        # outputl[w,b,s,l] outlab[b,w]
         if model.multi_sample_flag:
-            outputl = torch.exp(outputl)
-            outputl = torch.mean(outputl, dim=-2)
-            outputl[outputl <= 0] = 1e-9
-            outputl = torch.log(outputl)
-            if (outputl != outputl).any():
-                raise Exception("NaN Error")
-        outputl = outputl.permute(1, 2, 0)
+            # outputl = torch.exp(outputl)
+            # outputl = torch.mean(outputl, dim=-2)
+            # outputl[outputl <= 0] = 1e-9
+            # outputl = torch.log(outputl)
+            # if (outputl != outputl).any():
+            #     raise Exception("NaN Error")
+            w, b, s, l = outputl.shape
+            outlab=outlab.view((b, w, 1)).expand(( b, w, s))
+            outputl = outputl.permute(1, 3, 0, 2)
+        else:
+            outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
         return loss1
