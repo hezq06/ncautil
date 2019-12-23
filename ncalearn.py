@@ -637,6 +637,8 @@ class PyTrain_Lite(object):
                 print("Using SGD optimizer")
                 self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=lr)
 
+        current_lr=lr
+
         if self.lr_scheduler_flag:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, factor=self.sch_factor,
                                                                    patience=self.sch_patience, verbose=True,
@@ -676,6 +678,10 @@ class PyTrain_Lite(object):
                 print("Validation of epoch ", ii_epoch, ":")
                 loss_eval=self.do_eval(data_pt="data_valid")
                 scheduler.step(loss_eval)
+                temp_lr = self.optimizer.param_groups[0]["lr"]
+                if current_lr != temp_lr:
+                    self.log = self.log +"Learning rate change detected: "+str(current_lr)+" -> "+str(temp_lr)+ "\n"
+                    current_lr=temp_lr
 
         endt = time.time()
         print("Time used in training:", endt - startt)

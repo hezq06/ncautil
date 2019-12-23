@@ -41,7 +41,7 @@ class ScanUtil(object):
             f.close()
             subprocess.call(['cp', self.python_main, os.path.join(directory, self.python_main)])
             subprocess.call(['python', os.path.join(directory, self.python_main)] + self.para_scan[ii] + [directory])
-            subprocess.call(['rm', os.path.join(directory, self.python_main)])
+            # subprocess.call(['rm', os.path.join(directory, self.python_main)])
 
 class ParallelUtil(object):
     def __init__(self,para_scan_l,python_main,run_cont=False):

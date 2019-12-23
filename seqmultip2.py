@@ -822,7 +822,15 @@ class BiTRF_NLP_VIB(torch.nn.Module):
 
         self.h2mu = torch.nn.Linear(model_size, context_size)
         self.h2t = torch.nn.Linear(model_size, context_size)
-        self.c2o = torch.nn.Linear(context_size, output_size)
+
+        if self.mlp_num_layers > 0:
+            self.c2h = torch.nn.Linear(context_size, hidden_size)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size, bias=True), torch.nn.Tanh())
+                for _ in range(self.mlp_num_layers)])
+            self.h2o = torch.nn.Linear(hidden_size, output_size)
+        else:
+            self.c2o = torch.nn.Linear(context_size, output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -848,6 +856,8 @@ class BiTRF_NLP_VIB(torch.nn.Module):
         self.d_v = para.get("d_v", 101)
         self.num_layers = para.get("num_layers", 1)
         self.self_unmask_rate = para.get("self_unmask_rate", 0.1)
+        self.multi_sample_flag = para.get("multi_sample_flag", False)
+        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
 
     def get_sinusoid_encoding_table(self, n_position, model_size):
         ''' Sinusoid position encoding table '''
@@ -926,7 +936,14 @@ class BiTRF_NLP_VIB(torch.nn.Module):
         self.loss_intf = [self.ctheta, self.cmu]
         self.context = context
 
-        output = self.c2o(context)
+        if self.mlp_num_layers > 0:
+            hidden_c = self.c2h(context)
+            for fmd in self.linear_layer_stack:
+                hidden_c = fmd(hidden_c)
+            output = self.h2o(hidden_c)
+        else:
+            output = self.c2o(context)
+
         if not logit_mode:
             output = self.softmax(output)
 
