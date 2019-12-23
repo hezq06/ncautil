@@ -525,21 +525,20 @@ class PyTrain_Lite(object):
     A class trying to wrap all possible training practice nicely and litely
     """
 
-    def __init__(self, dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, para=None):
+    # def __init__(self, dataset, lsize, rnn, step, learning_rate=1e-2, batch=20, window=30, para=None):
+    def __init__(self, dataset, lsize, rnn, batch=20, window=30, para=None):
         """
-        A lite version of pytrain
+
+        :param dataset: {"data_train":data_train,"data_valid":data_valid,"data_test":data_test}
         :param lsize:
         :param rnn:
-        :param step:
-        :param custom:
-        :param learning_rate:
         :param batch:
         :param window:
         :param para:
         """
+        assert type(dataset)==dict
 
         self.rnn = rnn
-        self.step = step
         self.dataset = dataset
         self.batch = batch
         self.window = window
@@ -560,16 +559,16 @@ class PyTrain_Lite(object):
         self.loss = None
 
         # profiler
-        self.prtstep = int(step / 20)
+        # self.prtstep = int(step / 20)
         self.train_hist = []
 
         # optimizer
-        if self.optimizer_label=="adam":
-            print("Using adam optimizer")
-            self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=learning_rate, weight_decay=0.0)
-        else:
-            print("Using SGD optimizer")
-            self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=learning_rate)
+        # if self.optimizer_label=="adam":
+        #     print("Using adam optimizer")
+        #     self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=learning_rate, weight_decay=0.0)
+        # else:
+        #     print("Using SGD optimizer")
+        #     self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=learning_rate)
 
         # CUDA
         if self.cuda_flag:
@@ -613,14 +612,20 @@ class PyTrain_Lite(object):
         self.loss_exp_flag = para.get("loss_exp_flag", True)
         self.specialized_digit_eval = para.get("specialized_digit_eval", None)
         self.mem_limit = para.get("mem_limit", 1e12)
+        self.lr_scheduler_flag = para.get("lr_scheduler_flag", True)
+        self.sch_factor = para.get("sch_factor", 0.2)
+        self.sch_patience = para.get("sch_patience", 2)
+        self.sch_threshold = para.get("sch_threshold", 0.01)
+        self.sch_cooldown = para.get("sch_cooldown", 2)
 
-    def run_training(self,step=None,lr=None,optimizer_label=None,print_step=50):
+    def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
 
         self.rnn.train()
 
-        if step is not None:
-            self.step=step
-            self.prtstep=int(step/print_step)
+        # if step is not None:
+        #     self.step=step
+        #     self.prtstep=int(step/print_step)
+        self.prtstep = print_step
 
         if lr is not None:
             if optimizer_label is None:
@@ -632,32 +637,45 @@ class PyTrain_Lite(object):
                 print("Using SGD optimizer")
                 self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=lr)
 
+        if self.lr_scheduler_flag:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, factor=self.sch_factor,
+                                                                   patience=self.sch_patience, verbose=True,
+                                                                   threshold=self.sch_threshold,
+                                                                   cooldown=self.sch_cooldown)
+
         startt = time.time()
 
-        for iis in range(self.step):
-        # for iis in tqdm(range(self.step)):
-            if self.gpuavail:
-                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
-            else:
-                hidden = self.rnn.initHidden(self.batch)
+        for ii_epoch in range(epoch):
+            self.rnn.train()
+            for iis in range(step_per_epoch):
+                if self.gpuavail:
+                    hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+                else:
+                    hidden = self.rnn.initHidden(self.batch)
 
-            x, label, _ = self.get_data()
-            outputl, hidden = self.rnn(x, hidden, schedule=iis / self.step)
-            # else:
-            #     outputl=None
-            #     x, label, _ = self.get_data()
-            #     for iiw in range(self.window):
-            #         output, hidden = self.rnn(x[iiw,:,:], hidden, schedule=iis / self.step)
-            #         if outputl is None:
-            #             outputl = output.view(1, self.batch, self.lsize_out)
-            #         else:
-            #             outputl = torch.cat((outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)), dim=0)
-            self.loss = self.lossf(outputl, label, self.rnn, iis)
-            self._profiler(iis, self.loss)
-            self.optimizer.zero_grad()
-            self.loss.backward()
-            self.optimizer.step()
-            self.while_training(iis)
+                x, label, _ = self.get_data(self.dataset["data_train"])
+
+                ii_tot = iis + ii_epoch * step_per_epoch
+                outputl, hidden = self.rnn(x, hidden, schedule=ii_tot / (epoch*step_per_epoch))
+                # else:
+                #     outputl=None
+                #     x, label, _ = self.get_data()
+                #     for iiw in range(self.window):
+                #         output, hidden = self.rnn(x[iiw,:,:], hidden, schedule=iis / self.step)
+                #         if outputl is None:
+                #             outputl = output.view(1, self.batch, self.lsize_out)
+                #         else:
+                #             outputl = torch.cat((outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)), dim=0)
+                self.loss = self.lossf(outputl, label, self.rnn, ii_tot)
+                self._profiler(ii_tot, self.loss)
+                self.optimizer.zero_grad()
+                self.loss.backward()
+                self.optimizer.step()
+                self.while_training(ii_tot)
+            if self.lr_scheduler_flag:
+                print("Validation of epoch ", ii_epoch, ":")
+                loss_eval=self.do_eval(data_pt="data_valid")
+                scheduler.step(loss_eval)
 
         endt = time.time()
         print("Time used in training:", endt - startt)
@@ -667,7 +685,17 @@ class PyTrain_Lite(object):
     def eval_mem(self, x, label, output, rnn):
         pass
 
-    def do_eval(self,step_eval=300,schedule=1.0,posi_ctrl=None,allordermode=False,eval_mem_flag=False):
+    def do_eval(self,step_eval=600,schedule=1.0,posi_ctrl=None,allordermode=False,eval_mem_flag=False,data_pt="data_valid"):
+        """
+
+        :param step_eval:
+        :param schedule:
+        :param posi_ctrl:
+        :param allordermode:
+        :param eval_mem_flag:
+        :param data_pt: "data_valid" or "data_test"
+        :return:
+        """
         startt = time.time()
         self.rnn.eval()
         if self.gpuavail:
@@ -683,9 +711,9 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden(self.batch)
             if allordermode:
                 rstartv=iis*self.batch+np.linspace(0,self.batch-1,self.batch)
-                x, label, _ = self.get_data(rstartv=rstartv)
+                x, label, _ = self.get_data(self.dataset[data_pt],rstartv=rstartv)
             else:
-                x, label, _ = self.get_data()
+                x, label, _ = self.get_data(self.dataset[data_pt])
 
             output, hidden = self.rnn(x, hidden, schedule=schedule)
             if posi_ctrl is None:
@@ -738,7 +766,7 @@ class PyTrain_Lite(object):
         self.log = self.log + "Time used in evaluation:"+ str(endt - startt) + "\n"
         return perp
 
-    def do_test(self,step_test=300,schedule=1.0,posi_ctrl=None,seqmode=True):
+    def do_test(self,step_test=600,schedule=1.0,posi_ctrl=None,seqmode=True):
         """
         Calculate correct rate
         :param step_test:
@@ -756,7 +784,7 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
-            x, label, _ = self.get_data()
+            x, label, _ = self.get_data(self.dataset["data_eval"])
             output, hidden = self.rnn(x, hidden, schedule=schedule)
             if seqmode:
                 output = output.permute(1, 2, 0)
@@ -858,6 +886,13 @@ class PyTrain_Lite(object):
             self.train_hist.append(np.exp(loss.item()))
         else:
             self.train_hist.append(loss.item())
+        # elif mode=="valid":
+        #     if self.loss_exp_flag:
+        #         print("Validation Perlexity: ", iis, np.exp(loss.item()))
+        #         self.log = self.log + "Validation Perlexity: " + str(iis) + " " + str(np.exp(loss.item())) + "\n"
+        #     else:
+        #         print("Validation Loss: ", iis, loss.item())
+        #         self.log = self.log + "Validation Loss: " + str(iis) + " " + str(loss.item()) + "\n"
 
         # if int(iis / self.prtstep) != self.his:
         #     print("Loss: ", iis, loss.item())
@@ -888,12 +923,12 @@ class PyTrain_Custom(PyTrain_Lite):
     """
     A pytrain custom object aiding PyTrain_Lite
     """
-    def __init__(self, dataset, lsize, rnn, step, interface_para, learning_rate=1e-2, batch=20, window=30, para=None):
+    def __init__(self, dataset, lsize, rnn, interface_para, batch=20, window=30,para=None):
         """
         PyTrain custom
         :param para:
         """
-        super(self.__class__, self).__init__(dataset, lsize, rnn, step, learning_rate=learning_rate, batch=batch, window=window, para=para)
+        super(self.__class__, self).__init__(dataset, lsize, rnn, batch=batch, window=30, para=para)
 
         self.data_init = None
         self.databp = None
@@ -1080,41 +1115,41 @@ class PyTrain_Custom(PyTrain_Lite):
         if self.gpuavail:
             torch.cuda.empty_cache()
 
-    def custom_get_data_pos_auto(self):
-        """
-        Customed data get subroutine for both pos tag and self tag
-        :return:
-        """
-        assert self.supervise_mode
-        label=np.array(self.dataset["label"])
-        dataset = np.array(self.dataset["dataset"])
-        rstartv = np.floor(np.random.rand(self.batch) * (len(dataset) - self.window - 1))
-
-        autol = np.zeros((self.batch, self.window))
-        labell = np.zeros((self.batch, self.window))
-        for iib in range(self.batch):
-            labell[iib, :] = label[int(rstartv[iib]):int(rstartv[iib]) + self.window]
-            autol[iib, :] = dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
-        poslab = torch.from_numpy(labell)
-        poslab = poslab.type(torch.LongTensor)
-        autolab = torch.from_numpy(autol)
-        autolab = autolab.type(torch.LongTensor)
-
-        vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
-        for iib in range(self.batch):
-            if self.data_init:
-                vec1 = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
-            else:
-                vec1 = self.__build_databp(dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
-            vec1m[:, iib, :] = vec1
-        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
-
-        if self.gpuavail:
-            x = x.to(self.device)
-            poslab = poslab.to(self.device)
-            autolab = autolab.to(self.device)
-
-        return x, [poslab,autolab]
+    # def custom_get_data_pos_auto(self):
+    #     """
+    #     Customed data get subroutine for both pos tag and self tag
+    #     :return:
+    #     """
+    #     assert self.supervise_mode
+    #     label=np.array(self.dataset["label"])
+    #     dataset = np.array(self.dataset["dataset"])
+    #     rstartv = np.floor(np.random.rand(self.batch) * (len(dataset) - self.window - 1))
+    #
+    #     autol = np.zeros((self.batch, self.window))
+    #     labell = np.zeros((self.batch, self.window))
+    #     for iib in range(self.batch):
+    #         labell[iib, :] = label[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+    #         autol[iib, :] = dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window]
+    #     poslab = torch.from_numpy(labell)
+    #     poslab = poslab.type(torch.LongTensor)
+    #     autolab = torch.from_numpy(autol)
+    #     autolab = autolab.type(torch.LongTensor)
+    #
+    #     vec1m = torch.zeros(self.window, self.batch, self.lsize_in)
+    #     for iib in range(self.batch):
+    #         if self.data_init:
+    #             vec1 = self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.window, :]
+    #         else:
+    #             vec1 = self.__build_databp(dataset[int(rstartv[iib]):int(rstartv[iib]) + self.window])
+    #         vec1m[:, iib, :] = vec1
+    #     x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+    #
+    #     if self.gpuavail:
+    #         x = x.to(self.device)
+    #         poslab = poslab.to(self.device)
+    #         autolab = autolab.to(self.device)
+    #
+    #     return x, [poslab,autolab]
 
 
     # def example_data_collection(self, x, output, hidden, label,items="all"):
@@ -3039,8 +3074,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.version = version
         self.allname=["h2c","c2o"]
 
-    def get_data(self, batch=None, rstartv=None):
-        return self.get_data_sup(batch=batch, rstartv=rstartv)
+    def get_data(self, dataset, batch=None, rstartv=None):
+        return self.get_data_sup(dataset, batch=batch, rstartv=rstartv)
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == "vib":
@@ -3062,7 +3097,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # return MyLossFun.KNWLoss(outputl, outlab)
         return MyLossFun.KNWLoss_Gauss(outputl, outlab, model)
 
-    def get_data_sup(self, batch=None, rstartv=None, shift=False):
+    def get_data_sup(self, dataset_dict, batch=None, rstartv=None, shift=False):
         """
 
         :param batch:
@@ -3081,8 +3116,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         if batch is None:
             batch=self.pt.batch
 
-        labelset = self.pt.dataset["label"]
-        dataset = self.pt.dataset["dataset"]
+        labelset = dataset_dict["label"]
+        dataset = dataset_dict["dataset"]
 
         # Generating output label
         if rstartv is None:

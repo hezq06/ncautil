@@ -525,12 +525,13 @@ class BiGRU_NLP_VIB(torch.nn.Module):
     """
     PyTorch BiGRU for NLP with variational information bottleneck
     """
-    def __init__(self, input_size, hidden_size, context_size, output_size, para=None):
+    def __init__(self, input_size, hidden_size, context_size, output_size, num_layers=1 ,para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.output_size = output_size
         self.context_size=context_size
+        self.num_layers=num_layers
 
         self.coop_mode=False
 
@@ -538,7 +539,10 @@ class BiGRU_NLP_VIB(torch.nn.Module):
             para = dict([])
         self.para(para)
 
-        self.gru=torch.nn.GRU(input_size,hidden_size,bidirectional=True)
+        if num_layers>1:
+            assert self.self_include_flag
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
         self.h2mu = torch.nn.Linear(hidden_size * 2, context_size)
         self.h2t = torch.nn.Linear(hidden_size * 2, context_size) # from hidden to gating
 
@@ -587,7 +591,7 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.rnd_input_mask = para.get("rnd_input_mask", False)
         self.mask_rate = para.get("mask_rate", 0.0)
         self.sample_size = para.get("sample_size", 16)
-        self.multi_sample_flag = para.get("multi_sample_flag", True)
+        self.multi_sample_flag = para.get("multi_sample_flag", False)
         self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
@@ -654,10 +658,10 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         return output,hn
 
     def initHidden(self,batch):
-        return Variable(torch.zeros(2, batch,self.hidden_size), requires_grad=True)
+        return Variable(torch.zeros(self.num_layers*2, batch,self.hidden_size), requires_grad=True)
 
     def initHidden_cuda(self,device, batch):
-        return Variable(torch.zeros(2, batch, self.hidden_size), requires_grad=True).to(device)
+        return Variable(torch.zeros(self.num_layers*2, batch, self.hidden_size), requires_grad=True).to(device)
 
 
 class BiTRF_NLP(torch.nn.Module):

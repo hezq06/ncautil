@@ -19,15 +19,21 @@ class ScanUtil(object):
         self.python_main=python_main
         self.pwd=os.getcwd()
 
-    def run(self):
+    def run(self,run_cont=False):
+        """
+        run
+        :param run_cont: if continued running is needed
+        :return:
+        """
         for ii in range(len(self.para_scan)):
             dirname = "Workspace" + str(self.para_scan[ii])
             directory = os.path.join(self.pwd,dirname)
-            try:
-                subprocess.call(['rm', '-r', directory])
-            except:
-                pass
-            subprocess.call(['mkdir', directory])
+            if not run_cont:
+                try:
+                    subprocess.call(['rm', '-r', directory])
+                except:
+                    pass
+                subprocess.call(['mkdir', directory])
             f = open(os.path.join(directory, "para.txt"), "a")
             f.write("Parameter for this run")
             f.write(str(self.para_scan[ii]))
@@ -38,7 +44,7 @@ class ScanUtil(object):
             subprocess.call(['rm', os.path.join(directory, self.python_main)])
 
 class ParallelUtil(object):
-    def __init__(self,para_scan_l,python_main):
+    def __init__(self,para_scan_l,python_main,run_cont=False):
         """
         Parallel computing util
         :param para_scan_l: a list of para_scan [[para1_w1,para2_w1],[[para1_w2,para2_w2]],...]
@@ -47,12 +53,14 @@ class ParallelUtil(object):
         self.num=len(para_scan_l)
         self.para_scan_l=para_scan_l
         self.python_main=python_main
+        self.run_cont=run_cont
 
     def worker(self,ii):
         sutil=ScanUtil(self.para_scan_l[ii],self.python_main)
-        sutil.run()
+        sutil.run(run_cont=self.run_cont)
 
-    def run(self):
+    def run(self,run_cont=False):
+        self.run_cont=run_cont
         threads = []
         print("Start "+str(self.num)+" thread.")
         for ii in range(self.num):
