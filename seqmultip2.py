@@ -421,7 +421,7 @@ class VariationalGauss(torch.nn.Module):
     """
     A gaussian noise module
     """
-    def __init__(self, cuda_device="cuda:0", multi_sample_flag=True, sample_size=16):
+    def __init__(self, cuda_device="cuda:0", multi_sample_flag=False, sample_size=None):
 
         super(self.__class__, self).__init__()
 

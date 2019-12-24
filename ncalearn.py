@@ -929,12 +929,12 @@ class PyTrain_Custom(PyTrain_Lite):
     """
     A pytrain custom object aiding PyTrain_Lite
     """
-    def __init__(self, dataset, lsize, rnn, interface_para, batch=20, window=30,para=None):
+    def __init__(self, dataset, lsize, rnn, interface_para, batch=20, window=30, para=None):
         """
         PyTrain custom
         :param para:
         """
-        super(self.__class__, self).__init__(dataset, lsize, rnn, batch=batch, window=30, para=para)
+        super(self.__class__, self).__init__(dataset, lsize, rnn, batch=batch, window=window, para=para)
 
         self.data_init = None
         self.databp = None
