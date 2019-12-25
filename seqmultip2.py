@@ -827,6 +827,7 @@ class BiTRF_NLP_VIB(torch.nn.Module):
             self.c2h = torch.nn.Linear(context_size, hidden_size)
             self.linear_layer_stack = torch.nn.ModuleList([
                 torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size, bias=True), torch.nn.Tanh())
+                # torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size, bias=True), torch.nn.ReLU())
                 for _ in range(self.mlp_num_layers)])
             self.h2o = torch.nn.Linear(hidden_size, output_size)
         else:
@@ -863,7 +864,7 @@ class BiTRF_NLP_VIB(torch.nn.Module):
         ''' Sinusoid position encoding table '''
 
         def cal_angle(position, hid_idx):
-            return position / np.power(10000, 2 * (hid_idx // 2) / model_size)
+            return position / np.power(1000, 2 * (hid_idx // 2) / model_size)
 
         def get_posi_angle_vec(position):
             return [cal_angle(position, hid_j) for hid_j in range(model_size)]
@@ -918,7 +919,7 @@ class BiTRF_NLP_VIB(torch.nn.Module):
 
         modelin = self.i2m(input)
         modelin = self.tanh(modelin)
-        enc_output = modelin + self.posi_sinmat.view(1, -1, self.model_size)
+        enc_output = self.layer_norm(modelin) + self.layer_norm(self.posi_sinmat.view(1, -1, self.model_size))
         ### or
         # enc_output = torch.cat(
         #     (self.posi_mat.view(1, length , self.n_posiemb).expand(batch, length, self.n_posiemb), input), dim=-1)

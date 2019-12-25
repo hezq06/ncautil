@@ -617,6 +617,7 @@ class PyTrain_Lite(object):
         self.sch_patience = para.get("sch_patience", 2)
         self.sch_threshold = para.get("sch_threshold", 0.01)
         self.sch_cooldown = para.get("sch_cooldown", 2)
+        self.beta_warmup = para.get("beta_warmup", 0.2) # measured in schedule
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
 
@@ -647,6 +648,7 @@ class PyTrain_Lite(object):
 
         startt = time.time()
 
+        warmup_notprintyet=True
         for ii_epoch in range(epoch):
             self.rnn.train()
             for iis in range(step_per_epoch):
@@ -658,7 +660,8 @@ class PyTrain_Lite(object):
                 x, label, _ = self.get_data(self.dataset["data_train"])
 
                 ii_tot = iis + ii_epoch * step_per_epoch
-                outputl, hidden = self.rnn(x, hidden, schedule=ii_tot / (epoch*step_per_epoch))
+                cstep=ii_tot / (epoch*step_per_epoch)
+                outputl, hidden = self.rnn(x, hidden, schedule=cstep)
                 # else:
                 #     outputl=None
                 #     x, label, _ = self.get_data()
@@ -668,7 +671,7 @@ class PyTrain_Lite(object):
                 #             outputl = output.view(1, self.batch, self.lsize_out)
                 #         else:
                 #             outputl = torch.cat((outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)), dim=0)
-                self.loss = self.lossf(outputl, label, self.rnn, ii_tot)
+                self.loss = self.lossf(outputl, label, self.rnn, ii_tot/(epoch*step_per_epoch))
                 self._profiler(ii_tot, self.loss)
                 self.optimizer.zero_grad()
                 self.loss.backward()
@@ -677,11 +680,15 @@ class PyTrain_Lite(object):
             if self.lr_scheduler_flag:
                 print("Validation of epoch ", ii_epoch, ":")
                 loss_eval=self.do_eval(data_pt="data_valid")
-                scheduler.step(loss_eval)
-                temp_lr = self.optimizer.param_groups[0]["lr"]
-                if current_lr != temp_lr:
-                    self.log = self.log +"Learning rate change detected: "+str(current_lr)+" -> "+str(temp_lr)+ "\n"
-                    current_lr=temp_lr
+                if cstep>self.beta_warmup:
+                    if warmup_notprintyet:
+                        print("Warm up finished!")
+                        warmup_notprintyet=False
+                    scheduler.step(loss_eval)
+                    temp_lr = self.optimizer.param_groups[0]["lr"]
+                    if current_lr != temp_lr:
+                        self.log = self.log +"Learning rate change detected: "+str(current_lr)+" -> "+str(temp_lr)+ "\n"
+                        current_lr=temp_lr
 
         endt = time.time()
         print("Time used in training:", endt - startt)
@@ -3086,7 +3093,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == "vib":
             # return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model)
-            return MyLossFun.KNWLoss_VIB_Gauss(outputl, outlab, self.pt.reg_lamda, model)
+            return MyLossFun.KNWLoss_VIB_Gauss(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
         else:
@@ -3362,7 +3369,7 @@ class MyLossFun(object):
         return loss1 + reg_lamda*gausskl
 
     @staticmethod
-    def KNWLoss_VIB_Gauss(outputl, outlab, reg_lamda, model):
+    def KNWLoss_VIB_Gauss(outputl, outlab, reg_lamda, model, cstep, beta_warmup):
         """
         Loss for variational information bottleneck, Gauss Expanded
         :param outputl:
@@ -3392,7 +3399,13 @@ class MyLossFun(object):
 
         gausskl = 0.5 * torch.mean(torch.sum(ctheta ** 2 + cmu ** 2 - torch.log(ctheta ** 2) - 1, dim=-1))
 
-        return loss1 + reg_lamda * gausskl
+        # beta_scaling = 1.0-np.exp(-cstep * 5)
+        if cstep<beta_warmup:
+            beta_scaling = cstep/beta_warmup
+        else:
+            beta_scaling = 1.0
+
+        return loss1 + beta_scaling * reg_lamda * gausskl
 
     @staticmethod
     def KNWLoss_Gauss(outputl, outlab, model):
