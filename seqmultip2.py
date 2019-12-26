@@ -525,12 +525,13 @@ class BiGRU_NLP_VIB(torch.nn.Module):
     """
     PyTorch BiGRU for NLP with variational information bottleneck
     """
-    def __init__(self, input_size, hidden_size, context_size, output_size, num_layers=1 ,para=None):
+    def __init__(self, input_size, hidden_size, context_size, mlp_hidden, output_size, num_layers=1 ,para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.output_size = output_size
         self.context_size=context_size
+        self.mlp_hidden=mlp_hidden
         self.num_layers=num_layers
 
         self.coop_mode=False
@@ -547,11 +548,11 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.h2t = torch.nn.Linear(hidden_size * 2, context_size) # from hidden to gating
 
         if self.mlp_num_layers>0:
-            self.c2h = torch.nn.Linear(context_size, hidden_size)
+            self.c2h = torch.nn.Linear(context_size, mlp_hidden)
             self.linear_layer_stack = torch.nn.ModuleList([
-                torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size, bias=True), torch.nn.Tanh())
+                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.Tanh())
                 for _ in range(self.mlp_num_layers)])
-            self.h2o = torch.nn.Linear(hidden_size, output_size)
+            self.h2o = torch.nn.Linear(mlp_hidden, output_size)
         else:
             self.c2o = torch.nn.Linear(context_size, output_size)
 
@@ -794,11 +795,12 @@ class BiTRF_NLP_VIB(torch.nn.Module):
     from "Yu-Hsiang Huang"
     With variational information bottleneck
     """
-    def __init__(self, input_size, model_size, hidden_size, context_size, output_size, window_size, para=None):
+    def __init__(self, input_size, model_size, hidden_size, context_size, mlp_hidden,output_size, window_size, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.model_size = model_size
+        self.mlp_hidden=mlp_hidden
         self.window_size = window_size
 
         if para is None:
@@ -824,12 +826,12 @@ class BiTRF_NLP_VIB(torch.nn.Module):
         self.h2t = torch.nn.Linear(model_size, context_size)
 
         if self.mlp_num_layers > 0:
-            self.c2h = torch.nn.Linear(context_size, hidden_size)
+            self.c2h = torch.nn.Linear(context_size, mlp_hidden)
             self.linear_layer_stack = torch.nn.ModuleList([
-                torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size, bias=True), torch.nn.Tanh())
+                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.Tanh())
                 # torch.nn.Sequential(torch.nn.Linear(hidden_size, hidden_size, bias=True), torch.nn.ReLU())
                 for _ in range(self.mlp_num_layers)])
-            self.h2o = torch.nn.Linear(hidden_size, output_size)
+            self.h2o = torch.nn.Linear(mlp_hidden, output_size)
         else:
             self.c2o = torch.nn.Linear(context_size, output_size)
 
