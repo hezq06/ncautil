@@ -795,7 +795,7 @@ class BiTRF_NLP_VIB(torch.nn.Module):
     from "Yu-Hsiang Huang"
     With variational information bottleneck
     """
-    def __init__(self, input_size, model_size, hidden_size, context_size, mlp_hidden,output_size, window_size, para=None):
+    def __init__(self, input_size, model_size, hidden_size, context_size, mlp_hidden, output_size, window_size, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size

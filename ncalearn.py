@@ -617,7 +617,7 @@ class PyTrain_Lite(object):
         self.sch_patience = para.get("sch_patience", 2)
         self.sch_threshold = para.get("sch_threshold", 0.01)
         self.sch_cooldown = para.get("sch_cooldown", 2)
-        self.beta_warmup = para.get("beta_warmup", 0.2) # measured in schedule
+        self.beta_warmup = para.get("beta_warmup", 0.0) # measured in schedule
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
 
