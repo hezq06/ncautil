@@ -636,6 +636,19 @@ def cal_entropy_gauss(theta):
             ent=ent+np.log(item*np.sqrt(2*np.pi*np.e))
     return ent
 
+def cal_entropy_gauss_gpu(theta,cuda_device="cuda:0"):
+    """
+    gpuversion of calculating gauss entropy average
+    :param theta:
+    :return:entropy
+    """
+    assert theta.shape[0]>theta.shape[1]
+    pttheta=torch.FloatTensor(theta).to(cuda_device)
+    res_ent=torch.log(pttheta * np.sqrt(2 * np.pi * np.e))
+    res_ent=torch.sum(res_ent,dim=-1)
+    res_ent=torch.mean(res_ent)
+    return res_ent.cpu().item()
+
 def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
     """
     Calculation of mutual information between x,y from raw data

@@ -14,6 +14,9 @@ import time, os, pickle
 import torch
 import copy
 from torch.autograd import Variable
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 import matplotlib.ticker as ticker
 from mpl_toolkits.mplot3d import Axes3D
@@ -538,7 +541,6 @@ class PyTrain_Lite(object):
         """
         assert type(dataset)==dict
 
-        self.rnn = rnn
         self.dataset = dataset
         self.batch = batch
         self.window = window
@@ -553,6 +555,12 @@ class PyTrain_Lite(object):
         else:
             self.lsize_in = lsize
             self.lsize_out = lsize
+
+
+        if self.data_parallel is not None:
+            self.rnn = torch.nn.DataParallel(rnn, device_ids=self.data_parallel,dim=self.data_parallel_dim)
+        else:
+            self.rnn = rnn
 
         self.lossf = None
         self.lossf_eval = None
@@ -618,6 +626,8 @@ class PyTrain_Lite(object):
         self.sch_threshold = para.get("sch_threshold", 0.01)
         self.sch_cooldown = para.get("sch_cooldown", 2)
         self.beta_warmup = para.get("beta_warmup", 0.0) # measured in schedule
+        self.data_parallel = para.get("data_parallel", None) # data parallel switch
+        self.data_parallel_dim = para.get("data_parallel_dim", 1)  # data parallel switch
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
 
@@ -649,13 +659,19 @@ class PyTrain_Lite(object):
         startt = time.time()
 
         warmup_notprintyet=True
+
+        if self.data_parallel is None:
+            pt_rnn = self.rnn
+        else:
+            pt_rnn = self.rnn.module
+
         for ii_epoch in range(epoch):
             self.rnn.train()
             for iis in range(step_per_epoch):
                 if self.gpuavail:
-                    hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+                    hidden = pt_rnn.initHidden_cuda(self.device, self.batch)
                 else:
-                    hidden = self.rnn.initHidden(self.batch)
+                    hidden = pt_rnn.initHidden(self.batch)
 
                 x, label, _ = self.get_data(self.dataset["data_train"])
 
@@ -671,13 +687,15 @@ class PyTrain_Lite(object):
                 #             outputl = output.view(1, self.batch, self.lsize_out)
                 #         else:
                 #             outputl = torch.cat((outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)), dim=0)
-                self.loss = self.lossf(outputl, label, self.rnn, ii_tot/(epoch*step_per_epoch))
+                self.loss = self.lossf(outputl, label, pt_rnn, ii_tot/(epoch*step_per_epoch))
                 self._profiler(ii_tot, self.loss)
                 self.optimizer.zero_grad()
                 self.loss.backward()
                 self.optimizer.step()
                 self.while_training(ii_tot)
             if self.lr_scheduler_flag:
+                midt = time.time()
+                print("Time used till now:", midt - startt)
                 print("Validation of epoch ", ii_epoch, ":")
                 loss_eval=self.do_eval(data_pt="data_valid")
                 if cstep>self.beta_warmup:
@@ -709,32 +727,37 @@ class PyTrain_Lite(object):
         :param data_pt: "data_valid" or "data_test"
         :return:
         """
+        if self.data_parallel is None:
+            pt_rnn = self.rnn
+        else:
+            pt_rnn = self.rnn.module
+
         startt = time.time()
-        self.rnn.eval()
+        pt_rnn.eval()
         if self.gpuavail:
-            self.rnn.to(self.device)
+            pt_rnn.to(self.device)
         perpl=[]
         if allordermode:
             step_eval=int(self.dataset_length/self.batch)
             print(step_eval)
         for iis in range(step_eval):
             if self.gpuavail:
-                hidden = self.rnn.initHidden_cuda(self.device, self.batch)
+                hidden = pt_rnn.initHidden_cuda(self.device, self.batch)
             else:
-                hidden = self.rnn.initHidden(self.batch)
+                hidden = pt_rnn.initHidden(self.batch)
             if allordermode:
                 rstartv=iis*self.batch+np.linspace(0,self.batch-1,self.batch)
                 x, label, _ = self.get_data(self.dataset[data_pt],rstartv=rstartv)
             else:
                 x, label, _ = self.get_data(self.dataset[data_pt])
 
-            output, hidden = self.rnn(x, hidden, schedule=schedule)
+            output, hidden = pt_rnn(x, hidden, schedule=schedule)
             if posi_ctrl is None:
-                loss = self.lossf_eval(output, label, self.rnn, None)
+                loss = self.lossf_eval(output, label, pt_rnn, None)
             else:
-                loss = self.lossf_eval(output[posi_ctrl,:,:].view(1,output.shape[1],output.shape[2]), label[:,posi_ctrl].view(label.shape[0],1), self.rnn, None)
+                loss = self.lossf_eval(output[posi_ctrl,:,:].view(1,output.shape[1],output.shape[2]), label[:,posi_ctrl].view(label.shape[0],1), pt_rnn, None)
             if eval_mem_flag:
-                self.eval_mem(x, label, output, self.rnn)
+                self.eval_mem(x, label, output, pt_rnn)
 
             # else:
             #     outputl=None
@@ -1028,7 +1051,7 @@ class PyTrain_Custom(PyTrain_Lite):
         #     self.data_init = False
         #     print("Warning, large dataset, not pre-processed.")
 
-        if (type(dataset) is dict) != self.supervise_mode:
+        if (type(dataset["data_train"]) is dict) != self.supervise_mode:
             raise Exception("Supervise mode Error.")
 
     # def eval_mem(self, x, label, rnn):
@@ -1611,8 +1634,11 @@ class PyTrain_Interface_continous(PyTrain_Interface_Default):
     def init_data(self,*args,**kwargs):
         return self.init_data_continous()
 
-    def get_data(self, batch=None, rstartv=None):
-        return self.get_data_continous(batch=batch, rstartv=rstartv, shift=False)
+    def get_data(self, dataset, batch=None, rstartv=None):
+        if batch is None:
+            batch=self.pt.batch
+        data_shape=[self.pt.window, batch, self.pt.lsize_in]
+        return MyDataFun.get_data_continous(dataset, data_shape, self.pt.pt_emb, self.pt, rstartv=None, shift=False)
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == "vib":
@@ -3093,7 +3119,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == "vib":
             # return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model)
-            return MyLossFun.KNWLoss_VIB_Gauss(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
+            return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
         else:
@@ -3108,7 +3134,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # elif self.version==1:
         #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         # return MyLossFun.KNWLoss(outputl, outlab)
-        return MyLossFun.KNWLoss_Gauss(outputl, outlab, model)
+        return MyLossFun.KNWLoss_VIB_EVAL(outputl, outlab, model)
 
     def get_data_sup(self, dataset_dict, batch=None, rstartv=None, shift=False):
         """
@@ -3305,6 +3331,103 @@ class PyTrain_Interface_advsup(PyTrain_Interface_Default):
 
         return x, [outlab,adoutlab], None
 
+class MyDataFun(object):
+
+    @staticmethod
+    def get_data_sup(dataset_dict, data_shape, pt_emb, ptrain_pt, rstartv=None, shift=False):
+        """
+
+        :param dataset_dict:
+        :param data_shape: shape like [window, batch, lsize_in]
+        :param pt_emb: embedding
+        :param ptrain_pt: pytrain interface
+        :param rstartv: random start
+        :param shift: data shift
+        :return:
+        """
+        assert len(data_shape)==3
+
+        window, batch, lsize_in = data_shape
+
+
+        assert ptrain_pt.digit_input
+        assert ptrain_pt.supervise_mode
+
+        labelset = dataset_dict["label"]
+        dataset = dataset_dict["dataset"]
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+        yl = np.zeros((batch,window))
+
+        for iib in range(batch):
+            if shift:
+                yl[iib,:] = labelset[int(rstartv[iib])+1:int(rstartv[iib]) + window+1]
+            else:
+                yl[iib, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(window, batch,lsize_in)
+        for iib in range(batch):
+            ptdata=dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec1=pt_emb(torch.LongTensor(ptdata))
+            vec1m[:,iib,:]=vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if ptrain_pt.gpuavail:
+            outlab = outlab.to(ptrain_pt.device)
+            x = x.to(ptrain_pt.device)
+
+        return x, outlab, None
+
+    @staticmethod
+    def get_data_continous(dataset, data_shape, pt_emb, ptrain_pt, rstartv=None, shift=False):
+
+        window, batch, lsize_in = data_shape
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+        yl = np.zeros((batch,window))
+        # xl = np.zeros((batch,self.pt.window))
+        for iib in range(batch):
+            # xl[iib,:]=self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+            if shift:
+                yl[iib,:] = dataset[int(rstartv[iib])+1:int(rstartv[iib]) + window+1]
+            else:
+                yl[iib, :] = dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+        # inlab = torch.from_numpy(xl)
+        # inlab = inlab.type(torch.LongTensor)
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+        # inlab = outlab
+
+        vec1m = torch.zeros(window, batch, lsize_in)
+        for iib in range(batch):
+            # if self.pt.data_init:
+            #     vec1=self.databp[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window, :]
+            # else:
+            # vec1=self.pt._build_databp(self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window])
+            ptdata = dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec1 = pt_emb(torch.LongTensor(ptdata))
+            # vec2 = self.databp[int(rstartv[iib]) + 1:int(rstartv[iib]) + self.window + 1, :]
+            vec1m[:,iib,:]=vec1
+            # vec2m[:, iib, :] = vec2
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor) #
+        # y = Variable(vec2m, requires_grad=True)
+
+        if ptrain_pt.gpuavail:
+            # inlab, outlab = inlab.to(self.device), outlab.to(self.device)
+            outlab = outlab.to(ptrain_pt.device)
+            x = x.to(ptrain_pt.device)
+
+        return x, outlab, None
+
+
+
+
 class MyLossFun(object):
 
     @staticmethod
@@ -3346,30 +3469,30 @@ class MyLossFun(object):
 
         return loss1 + reg_lamda * energyloss + reg_lamda*loss_gate/balance_para
 
+    # @staticmethod
+    # def KNWLoss_VIB(outputl, outlab, reg_lamda, model):
+    #     """
+    #     Loss for variational information bottleneck
+    #     :param outputl:
+    #     :param outlab:
+    #     :param model:
+    #     :param cstep:
+    #     :return:
+    #     """
+    #
+    #     outputl=outputl.permute(1, 2, 0)
+    #     lossc=torch.nn.CrossEntropyLoss()
+    #     loss1 = lossc(outputl, outlab)
+    #
+    #     # self.loss_intf = [self.ctheta, self.cmu]
+    #     ctheta,cmu=model.loss_intf
+    #
+    #     gausskl=0.5*torch.mean(torch.sum(ctheta**2+cmu**2-torch.log(ctheta**2)-1,dim=-1))
+    #
+    #     return loss1 + reg_lamda*gausskl
+
     @staticmethod
-    def KNWLoss_VIB(outputl, outlab, reg_lamda, model):
-        """
-        Loss for variational information bottleneck
-        :param outputl:
-        :param outlab:
-        :param model:
-        :param cstep:
-        :return:
-        """
-
-        outputl=outputl.permute(1, 2, 0)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
-
-        # self.loss_intf = [self.ctheta, self.cmu]
-        ctheta,cmu=model.loss_intf
-
-        gausskl=0.5*torch.mean(torch.sum(ctheta**2+cmu**2-torch.log(ctheta**2)-1,dim=-1))
-
-        return loss1 + reg_lamda*gausskl
-
-    @staticmethod
-    def KNWLoss_VIB_Gauss(outputl, outlab, reg_lamda, model, cstep, beta_warmup):
+    def KNWLoss_VIB(outputll, outlab, reg_lamda, model, cstep, beta_warmup):
         """
         Loss for variational information bottleneck, Gauss Expanded
         :param outputl:
@@ -3379,23 +3502,24 @@ class MyLossFun(object):
         :return:
         """
 
-        if model.multi_sample_flag:
-            # outputl = torch.exp(outputl)
-            # outputl = torch.mean(outputl, dim=-2)
-            # outputl[outputl<=0]=1e-9
-            # outputl=torch.log(outputl)
-            # if (outputl != outputl).any():
-            #     raise Exception("NaN Error")
-            w, b, s, l = outputl.shape
-            outlab = outlab.view((b, w, 1)).expand((b, w, s))
-            outputl = outputl.permute(1, 3, 0, 2)
-        else:
-            outputl = outputl.permute(1, 2, 0)
+        # if model.multi_sample_flag:
+        #     # outputl = torch.exp(outputl)
+        #     # outputl = torch.mean(outputl, dim=-2)
+        #     # outputl[outputl<=0]=1e-9
+        #     # outputl=torch.log(outputl)
+        #     # if (outputl != outputl).any():
+        #     #     raise Exception("NaN Error")
+        #     w, b, s, l = outputl.shape
+        #     outlab = outlab.view((b, w, 1)).expand((b, w, s))
+        #     outputl = outputl.permute(1, 3, 0, 2)
+        # else:
+        outputl=outputll[0]
+        outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
 
         # self.loss_intf = [self.ctheta, self.cmu]
-        ctheta, cmu = model.loss_intf
+        ctheta, cmu = outputll[1]
 
         gausskl = 0.5 * torch.mean(torch.sum(ctheta ** 2 + cmu ** 2 - torch.log(ctheta ** 2) - 1, dim=-1))
 
@@ -3408,20 +3532,21 @@ class MyLossFun(object):
         return loss1 + beta_scaling * reg_lamda * gausskl
 
     @staticmethod
-    def KNWLoss_Gauss(outputl, outlab, model):
+    def KNWLoss_VIB_EVAL(outputll, outlab, model):
         # outputl[w,b,s,l] outlab[b,w]
-        if model.multi_sample_flag:
-            # outputl = torch.exp(outputl)
-            # outputl = torch.mean(outputl, dim=-2)
-            # outputl[outputl <= 0] = 1e-9
-            # outputl = torch.log(outputl)
-            # if (outputl != outputl).any():
-            #     raise Exception("NaN Error")
-            w, b, s, l = outputl.shape
-            outlab=outlab.view((b, w, 1)).expand(( b, w, s))
-            outputl = outputl.permute(1, 3, 0, 2)
-        else:
-            outputl = outputl.permute(1, 2, 0)
+        # if model.multi_sample_flag:
+        #     # outputl = torch.exp(outputl)
+        #     # outputl = torch.mean(outputl, dim=-2)
+        #     # outputl[outputl <= 0] = 1e-9
+        #     # outputl = torch.log(outputl)
+        #     # if (outputl != outputl).any():
+        #     #     raise Exception("NaN Error")
+        #     w, b, s, l = outputl.shape
+        #     outlab=outlab.view((b, w, 1)).expand(( b, w, s))
+        #     outputl = outputl.permute(1, 3, 0, 2)
+        # else:
+        outputl = outputll[0]
+        outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
         return loss1
@@ -3462,3 +3587,55 @@ class MyLossFun(object):
         gausskl = 0.5 * torch.mean(torch.sum(model.ctheta ** 2 + model.cmu ** 2 - torch.log(model.ctheta ** 2) - 1, dim=-1))
 
         return loss1 + reg_lamda * gausskl
+
+
+### Distributed DataParallel
+
+# def dist_setup(rank, world_size):
+#     """
+#     https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
+#     :return:
+#     """
+#     os.environ['MASTER_ADDR'] = 'localhost'
+#     os.environ['MASTER_PORT'] = '12355'
+#
+#     # initialize the process group
+#     dist.init_process_group("gloo", rank=rank, world_size=world_size)
+#
+#     # Explicitly setting seed to make sure that models created in two processes
+#     # start from same random weights and biases.
+#     torch.manual_seed(42)
+#
+# def dist_cleanup():
+#     dist.destroy_process_group()
+#
+# def demo_basic(rank, world_size):
+#     setup(rank, world_size)
+#
+#     # setup devices for this process, rank 1 uses GPUs [0, 1, 2, 3] and
+#     # rank 2 uses GPUs [4, 5, 6, 7].
+#     n = torch.cuda.device_count() // world_size
+#     device_ids = list(range(rank * n, (rank + 1) * n))
+#
+#     # create model and move it to device_ids[0]
+#     model = ToyModel().to(device_ids[0])
+#     # output_device defaults to device_ids[0]
+#     ddp_model = DDP(model, device_ids=device_ids)
+#
+#     loss_fn = nn.MSELoss()
+#     optimizer = optim.SGD(ddp_model.parameters(), lr=0.001)
+#
+#     optimizer.zero_grad()
+#     outputs = ddp_model(torch.randn(20, 10))
+#     labels = torch.randn(20, 5).to(device_ids[0])
+#     loss_fn(outputs, labels).backward()
+#     optimizer.step()
+#
+#     cleanup()
+# 
+#
+# def run_demo(demo_fn, world_size):
+#     mp.spawn(demo_fn,
+#              args=(world_size,),
+#              nprocs=world_size,
+#              join=True)

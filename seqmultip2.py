@@ -60,15 +60,16 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         logit_coop, hn_coop = self.cooprer(input, hidden1[1], logit_mode=True, schedule=1.0)
         logit_train, hn_train = self.trainer(input, hidden1[0], logit_mode=True, schedule=schedule)
         self.loss_intf = self.trainer.loss_intf
+        # print(self.loss_intf)
 
-        output=logit_coop+logit_train
+        output=logit_coop[0]+logit_train[0]
         self.logit_train=logit_train
 
         if add_logit is not None:
             output = output + add_logit
         if not logit_mode:
             output = self.softmax(output)
-        return output, [hn_train, hn_coop]
+        return [output,logit_train[1]], [hn_train, hn_coop]
 
     def forward_comb(self,context_coop):
         """
@@ -95,7 +96,7 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
 
 class ABS_NLP_COOP(torch.nn.Module):
     """
-    An abstrac cooperation container
+    An abstract cooperation container
     """
 
     def __init__(self, trainer, cooprer, output_size=None, para=None):
@@ -421,18 +422,17 @@ class VariationalGauss(torch.nn.Module):
     """
     A gaussian noise module
     """
-    def __init__(self, cuda_device="cuda:0", multi_sample_flag=False, sample_size=None):
+    def __init__(self, multi_sample_flag=False, sample_size=None):
 
         super(self.__class__, self).__init__()
 
         self.noise = None
-        self.cuda_device = cuda_device
         self.sample_size=sample_size
         self.multi_sample_flag=multi_sample_flag
 
         self.gpuavail = torch.cuda.is_available()
 
-    def forward(self, mu, theta):
+    def forward(self, mu, theta, cuda_device="cuda:0"):
         assert mu.shape==theta.shape
         shape = np.array(mu.shape)
         if self.multi_sample_flag:
@@ -444,7 +444,7 @@ class VariationalGauss(torch.nn.Module):
         if self.noise is None:
             self.noise = torch.nn.init.normal_(torch.empty(tuple(shape)))
             if self.gpuavail:
-                self.noise = self.noise.to(self.cuda_device)
+                self.noise = self.noise.to(cuda_device)
         else:
             self.noise.data.normal_(0,std=1.0)
         if self.training:
@@ -534,7 +534,7 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.mlp_hidden=mlp_hidden
         self.num_layers=num_layers
 
-        self.coop_mode=False
+        # self.coop_mode=False
 
         if para is None:
             para = dict([])
@@ -569,10 +569,9 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
+        # self.gsigmoid = Gumbel_Sigmoid(cuda_device=self.cuda_device)
         self.softplus = torch.nn.Softplus()
-        self.vagauss = VariationalGauss(cuda_device=self.cuda_device,multi_sample_flag=self.multi_sample_flag,
-                                        sample_size=self.sample_size)
+        self.vagauss = VariationalGauss(multi_sample_flag=self.multi_sample_flag,sample_size=self.sample_size)
 
         self.context = None
         self.ctheta = None
@@ -580,11 +579,13 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         self.loss_intf = [self.ctheta, self.cmu]  # Mainly for ABS_COOP interface
 
         self.batch_size = 1
-        self.pad = torch.zeros((1, self.batch_size, self.input_size)).to(self.cuda_device)
+        # self.pad = torch.zeros((1, self.batch_size, self.input_size)).to(self.cuda_device)
+
+        # self.cuda_device=None
 
     def para(self,para):
         self.weight_dropout = para.get("weight_dropout", 0.0)
-        self.cuda_device = para.get("cuda_device", "cuda:0")
+        # self.cuda_device = para.get("cuda_device", "cuda:0")
         self.self_include_flag = para.get("self_include_flag", False)
         self.adv_mode_flag = para.get("adv_mode_flag", False)
         self.adv_output_size = para.get("adv_output_size", None)
@@ -603,6 +604,9 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         :return:
         """
         # temperature = np.exp(-schedule * 5)
+
+        # if self.cuda_device is None:
+        self.cuda_device=input.device
 
         if len(input.shape)==2:
             input=input.view(1,input.shape[0],input.shape[1])
@@ -631,13 +635,13 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         cmu = self.h2mu(hout)
         ctheta = self.h2t(hout)
         ctheta = self.softplus(ctheta)
-        context = self.vagauss(cmu,ctheta)
+        context = self.vagauss(cmu,ctheta,cuda_device=self.cuda_device)
         self.cmu=cmu
         self.ctheta = ctheta
         self.loss_intf = [self.ctheta, self.cmu]
         self.context = context
-        if self.coop_mode:
-            return context,hn
+        # if self.coop_mode:
+        #     return context,hn
         if self.mlp_num_layers > 0:
             hidden_c=self.c2h(context)
             for fmd in self.linear_layer_stack:
@@ -656,7 +660,7 @@ class BiGRU_NLP_VIB(torch.nn.Module):
         #     output=output+add_logit
         # if not logit_mode:
         #     output=self.softmax(output)
-        return output,hn
+        return [output,self.loss_intf],hn
 
     def initHidden(self,batch):
         return Variable(torch.zeros(self.num_layers*2, batch,self.hidden_size), requires_grad=True)

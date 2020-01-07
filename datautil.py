@@ -45,8 +45,12 @@ def save_model(model,file):
     torch.save(model.state_dict(), file)
     print("Model saved to ", file)
 
-def load_model(model,file):
-    model.load_state_dict(torch.load(file))
+def load_model(model,file,map_location=None):
+    if map_location is None:
+        model.load_state_dict(torch.load(file))
+    else:
+        model.load_state_dict(torch.load(file,map_location=map_location))
+
     print("Model load from ", file)
     return model
 
