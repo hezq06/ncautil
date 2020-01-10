@@ -16,7 +16,6 @@ import copy
 from torch.autograd import Variable
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 import matplotlib.ticker as ticker
 from mpl_toolkits.mplot3d import Axes3D
@@ -30,6 +29,7 @@ from tqdm import tqdm
 import datetime
 
 from ncautil.ncamath import *
+from ncautil.datautil import save_model
 
 def pltscatter(data,dim=(0,1),labels=None,title=None,xlabel=None,ylabel=None,color=None):
     assert data.shape[0]>data.shape[1]
@@ -556,8 +556,10 @@ class PyTrain_Lite(object):
             self.lsize_in = lsize
             self.lsize_out = lsize
 
-
-        if self.data_parallel is not None:
+        if self.dist_data_parallel:
+            rnn.to(self.cuda_device)
+            self.rnn = torch.nn.parallel.DistributedDataParallel(rnn, device_ids=[self.cuda_device], output_device=self.cuda_device,dim=self.dist_data_parallel_dim)
+        elif self.data_parallel is not None:
             self.rnn = torch.nn.DataParallel(rnn, device_ids=self.data_parallel,dim=self.data_parallel_dim)
         else:
             self.rnn = rnn
@@ -587,7 +589,7 @@ class PyTrain_Lite(object):
             self.gpuavail = False
             self.device = torch.device("cpu")
         # If we are on a CUDA machine, then this should print a CUDA device:
-        print(self.device)
+        print("PyTrain Init, Using device:",self.device)
 
         currentDT = datetime.datetime.now()
         self.log="Time of creation: "+str(currentDT)+"\n"
@@ -628,6 +630,8 @@ class PyTrain_Lite(object):
         self.beta_warmup = para.get("beta_warmup", 0.0) # measured in schedule
         self.data_parallel = para.get("data_parallel", None) # data parallel switch
         self.data_parallel_dim = para.get("data_parallel_dim", 1)  # data parallel switch
+        self.dist_data_parallel = para.get("dist_data_parallel", False)  # distributed data parallel switch
+        self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)  # data parallel switch
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
 
@@ -660,7 +664,9 @@ class PyTrain_Lite(object):
 
         warmup_notprintyet=True
 
-        if self.data_parallel is None:
+        if self.dist_data_parallel:
+            pt_rnn = self.rnn.module
+        elif self.data_parallel is None:
             pt_rnn = self.rnn
         else:
             pt_rnn = self.rnn.module
@@ -697,7 +703,7 @@ class PyTrain_Lite(object):
                 midt = time.time()
                 print("Time used till now:", midt - startt)
                 print("Validation of epoch ", ii_epoch, ":")
-                loss_eval=self.do_eval(data_pt="data_valid")
+                loss_eval=self.do_eval(data_pt="data_valid", schedule=cstep)
                 if cstep>self.beta_warmup:
                     if warmup_notprintyet:
                         print("Warm up finished!")
@@ -716,7 +722,7 @@ class PyTrain_Lite(object):
     def eval_mem(self, x, label, output, rnn):
         pass
 
-    def do_eval(self,step_eval=600,schedule=1.0,posi_ctrl=None,allordermode=False,eval_mem_flag=False,data_pt="data_valid"):
+    def do_eval(self,step_eval=600,schedule=1.0,batch=None,posi_ctrl=None,allordermode=False,eval_mem_flag=False,data_pt="data_valid",print_step=None):
         """
 
         :param step_eval:
@@ -727,10 +733,15 @@ class PyTrain_Lite(object):
         :param data_pt: "data_valid" or "data_test"
         :return:
         """
-        if self.data_parallel is None:
+        if self.dist_data_parallel:
+            pt_rnn = self.rnn.module
+        elif self.data_parallel is None:
             pt_rnn = self.rnn
         else:
             pt_rnn = self.rnn.module
+
+        if batch is None:
+            batch=self.batch
 
         startt = time.time()
         pt_rnn.eval()
@@ -738,18 +749,21 @@ class PyTrain_Lite(object):
             pt_rnn.to(self.device)
         perpl=[]
         if allordermode:
-            step_eval=int(self.dataset_length/self.batch)
+            step_eval=int(self.dataset_length/batch)
             print(step_eval)
         for iis in range(step_eval):
+            if print_step is not None:
+                if iis%print_step==0:
+                    print("Evaluation step ",iis)
             if self.gpuavail:
-                hidden = pt_rnn.initHidden_cuda(self.device, self.batch)
+                hidden = pt_rnn.initHidden_cuda(self.device, batch)
             else:
-                hidden = pt_rnn.initHidden(self.batch)
+                hidden = pt_rnn.initHidden(batch)
             if allordermode:
-                rstartv=iis*self.batch+np.linspace(0,self.batch-1,self.batch)
-                x, label, _ = self.get_data(self.dataset[data_pt],rstartv=rstartv)
+                rstartv=iis*batch+np.linspace(0,batch-1,batch)
+                x, label, _ = self.get_data(self.dataset[data_pt],rstartv=rstartv,batch=batch)
             else:
-                x, label, _ = self.get_data(self.dataset[data_pt])
+                x, label, _ = self.get_data(self.dataset[data_pt],batch=batch)
 
             output, hidden = pt_rnn(x, hidden, schedule=schedule)
             if posi_ctrl is None:
@@ -946,9 +960,11 @@ class PyTrain_Lite(object):
                 if self.loss_clip > 0:
                     # plt.ylim((-self.loss_clip, self.loss_clip))
                     plt.ylim((0, self.loss_clip))
-                if type(self.save_fig) != type(None):
-                    plt.savefig(self.save_fig)
-                    self.log = self.log + "Figure saved: " + str(self.save_fig) + "\n"
+                if self.save_fig is not None:
+                    filename=self.save_fig+str(self.cuda_device)+".png"
+                    print(filename)
+                    plt.savefig(filename)
+                    self.log = self.log + "Figure saved: " + filename + "\n"
                     plt.gcf().clear()
                 else:
                     plt.show()
@@ -3118,13 +3134,13 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == "vib":
-            # return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model)
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
+        elif self.version == "gsvib":
+            return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
         else:
             return MyLossFun.KNWLoss(outputl, outlab)
-
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
         # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
@@ -3200,20 +3216,19 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
 
         if self.pt.evalmem is None:
-            self.pt.evalmem = [[] for ii in range(6)]  # x,label,context
+            self.pt.evalmem = [[] for ii in range(7)]  # x,label,context
 
-        try:
-            self.pt.evalmem[0].append(x.cpu().data.numpy())
-            self.pt.evalmem[1].append(label.cpu().data.numpy())
-            self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
-            self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
-            self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
-            # ent = cal_entropy(output, logit=True, byte_flag=False, torch_flag=True)
-            self.pt.evalmem[5].append(output.cpu().data.numpy())
-            # self.pt.evalmem[5].append(output.cpu().data.numpy())
-        except:
-            # print("eval_mem failed")
-            pass
+
+        self.pt.evalmem[0].append(x.cpu().data.numpy())
+        self.pt.evalmem[1].append(label.cpu().data.numpy())
+        self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
+        # self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
+        # self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
+        # self.pt.evalmem[5].append(output.cpu().data.numpy())
+        self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
+        ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
+        self.pt.evalmem[4].append(ent.cpu().data.numpy())
+        # self.pt.evalmem[6].append(rnn.context_coop.cpu().data.numpy())
 
 class PyTrain_Interface_advsup(PyTrain_Interface_Default):
     """
@@ -3492,7 +3507,7 @@ class MyLossFun(object):
     #     return loss1 + reg_lamda*gausskl
 
     @staticmethod
-    def KNWLoss_VIB(outputll, outlab, reg_lamda, model, cstep, beta_warmup):
+    def KNWLoss_VIB(outputl, outlab, reg_lamda, model, cstep, beta_warmup):
         """
         Loss for variational information bottleneck, Gauss Expanded
         :param outputl:
@@ -3513,7 +3528,7 @@ class MyLossFun(object):
         #     outlab = outlab.view((b, w, 1)).expand((b, w, s))
         #     outputl = outputl.permute(1, 3, 0, 2)
         # else:
-        outputl=outputll[0]
+        # outputl=outputll[0]
         outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
@@ -3532,7 +3547,40 @@ class MyLossFun(object):
         return loss1 + beta_scaling * reg_lamda * gausskl
 
     @staticmethod
-    def KNWLoss_VIB_EVAL(outputll, outlab, model):
+    def KNWLoss_GSVIB(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1):
+        """
+        Loss for variational information bottleneck, Gauss Expanded
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+        outputl = outputl.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # context,prior should be log probability
+        context,prior = model.loss_intf
+        gs_head, context_size = prior.shape
+
+        ent_prior=-torch.mean(torch.sum(torch.exp(prior)*prior,dim=-1))
+
+        prior=prior.view(1,1,gs_head,context_size).expand_as(context)
+
+        flatkl = torch.mean(torch.sum(torch.exp(context)*(context-prior),dim=-1))
+
+        # beta_scaling = 1.0-np.exp(-cstep * 5)
+        # if cstep < beta_warmup:
+        #     beta_scaling = cstep / beta_warmup
+        # else:
+        #     beta_scaling = 1.0
+        beta_scaling = 1.0
+
+        return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor*ent_prior)
+
+    @staticmethod
+    def KNWLoss_VIB_EVAL(outputl, outlab, model):
         # outputl[w,b,s,l] outlab[b,w]
         # if model.multi_sample_flag:
         #     # outputl = torch.exp(outputl)
@@ -3545,7 +3593,7 @@ class MyLossFun(object):
         #     outlab=outlab.view((b, w, 1)).expand(( b, w, s))
         #     outputl = outputl.permute(1, 3, 0, 2)
         # else:
-        outputl = outputll[0]
+        # outputl = outputll[0]
         outputl = outputl.permute(1, 2, 0)
         lossc = torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
@@ -3591,24 +3639,24 @@ class MyLossFun(object):
 
 ### Distributed DataParallel
 
-# def dist_setup(rank, world_size):
-#     """
-#     https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
-#     :return:
-#     """
-#     os.environ['MASTER_ADDR'] = 'localhost'
-#     os.environ['MASTER_PORT'] = '12355'
-#
-#     # initialize the process group
-#     dist.init_process_group("gloo", rank=rank, world_size=world_size)
-#
-#     # Explicitly setting seed to make sure that models created in two processes
-#     # start from same random weights and biases.
-#     torch.manual_seed(42)
-#
-# def dist_cleanup():
-#     dist.destroy_process_group()
-#
+def dist_setup(rank, world_size, seed):
+    """
+    https://pytorch.org/tutorials/intermediate/ddp_tutorial.html
+    :return:
+    """
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+
+    # initialize the process group
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+    # Explicitly setting seed to make sure that models created in two processes
+    # start from same random weights and biases.
+    torch.manual_seed(seed)
+
+def dist_cleanup():
+    dist.destroy_process_group()
+
 # def demo_basic(rank, world_size):
 #     setup(rank, world_size)
 #
@@ -3632,10 +3680,24 @@ class MyLossFun(object):
 #     optimizer.step()
 #
 #     cleanup()
-# 
-#
-# def run_demo(demo_fn, world_size):
-#     mp.spawn(demo_fn,
-#              args=(world_size,),
-#              nprocs=world_size,
-#              join=True)
+
+def run_training_worker(rank, world_size, dataset, lsize, rnn, interface_para, batch, window, para, run_para):
+
+    num_epoch, learning_rate, step_per_epoch, print_step, seed = run_para
+    dist_setup(rank, world_size, seed)
+
+    para["cuda_device"] = rank
+    para["dist_data_parallel"] = True
+    pt1 = PyTrain_Custom(dataset, lsize, rnn, interface_para, batch=batch, window=window, para=para)
+    pt1.run_training(epoch = num_epoch, lr = learning_rate,step_per_epoch = step_per_epoch, print_step = print_step)
+    save_model(rnn,"bigru_pos"+str(rank)+".model")
+
+    dist_cleanup()
+
+
+def dist_run_training(device_ids, dataset, lsize, rnn, interface_para, batch=20, window=30, para=None,run_para=[30,1e-3,2000,500,12345]):
+    world_size=len(device_ids)
+    mp.spawn(run_training_worker,
+             args=(world_size,dataset, lsize, rnn, interface_para, batch, window, para,run_para),
+             nprocs=world_size,
+             join=True)

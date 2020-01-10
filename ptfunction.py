@@ -288,35 +288,6 @@ def mydiscrete(input, prec, cuda_device="cuda:0"):
     gl_cuda_device=cuda_device
     return MyDiscrete.apply(input,prec)
 
-
-class Gumbel_Softmax(torch.nn.Module):
-    """
-    PyTorch Gumbel softmax function
-    Categorical Reprarameteruzation with Gumbel-Softmax
-    """
-    def __init__(self,cuda_device="cuda:0"):
-        super(self.__class__, self).__init__()
-
-        self.gpuavail = torch.cuda.is_available()
-        self.device = torch.device(cuda_device if self.gpuavail else "cpu")
-
-    def forward(self, input, temperature=1.0):
-        """
-        Forward
-        :param input:
-        :param hidden:
-        :return:
-        """
-
-        gi = torch.rand(input.shape)
-        lpii = torch.log(input)
-        if self.gpuavail:
-            gi = gi.to(self.device)
-
-        yi=torch.exp((lpii+gi)/temperature)/torch.sum(torch.exp((lpii+gi)/temperature),axis=-1)
-
-        return yi
-
 class Gumbel_Sigmoid(torch.nn.Module):
     """
     PyTorch GRU for Gumbel Sigmoid

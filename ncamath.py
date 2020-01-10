@@ -484,6 +484,34 @@ def cal_pdistance(data):
     dist=np.sum(np.abs(data-orin))*np.sum(np.abs(data-orin))/2
     return dist
 
+def cal_entropy(data,log_flag=False,byte_flag=False, torch_flag=False,cuda_device="cuda:1"):
+    """
+    Cal entropy of a vector
+    :param data:
+    :param log_flag: if input data is log probability
+    :return:
+    """
+    adj = 1
+    if byte_flag:
+        adj = np.log(2)
+    if not torch_flag:
+        data=np.array(data)
+        if log_flag:
+            data=np.exp(data)
+        # assert len(data.shape) == 1
+        data_adj=np.zeros(data.shape)+data
+        data_adj[data_adj==0]=1e-9
+        data_adj = data_adj / np.sum(data_adj, axis=-1,keepdims=True)
+        ent=-np.sum(data_adj*np.log(data_adj)/adj,axis=-1)
+    else:
+        data=data.to(cuda_device)
+        if log_flag:
+            data=torch.exp(data)
+        data[data == 0] = 1e-9
+        data = data / torch.sum(data, dim=-1, keepdims=True)
+        ent = -torch.sum(data * torch.log(data) / adj, dim=-1)
+    return ent
+
 def cal_entropy_raw(data,data_discrete=True,data_bins=None):
     """
     Calculate entropy of raw data
@@ -546,6 +574,99 @@ def cal_entropy_raw_ND_discrete(data):
 
     return cal_entropy(pvec)
 
+def cal_entropy_gauss(theta):
+    """
+    calculate the multi-variate entropy of theta
+    :param theta:
+    :return:
+    """
+    if type(theta) is float:
+        ent = np.log(theta*np.sqrt(2*np.pi*np.e))
+    elif type(theta) is list:
+        ent=0
+        for item in theta:
+            ent=ent+np.log(item*np.sqrt(2*np.pi*np.e))
+    return ent
+
+def cal_entropy_gauss_gpu(theta,cuda_device="cuda:0"):
+    """
+    gpuversion of calculating gauss entropy average
+    :param theta:
+    :return:entropy
+    """
+    assert theta.shape[0]>theta.shape[1]
+    pttheta=torch.FloatTensor(theta).to(cuda_device)
+    res_ent=torch.log(pttheta * np.sqrt(2 * np.pi * np.e))
+    res_ent=torch.sum(res_ent,dim=-1)
+    res_ent=torch.mean(res_ent)
+    return res_ent.cpu().item()
+
+def cal_entropy_continous_raw(data,bins=10000):
+    data = np.array(data)
+    assert len(data.shape) == 1
+    # entl=[]
+    # for ii in tqdm(range(30)):
+    #     nbins=int(1.2**(ii+55))
+    #     pdata, bins = np.histogram(data, bins=nbins)
+    #     pdata = pdata / np.sum(pdata)
+    #     ent= cal_entropy(pdata)
+    #
+    #     entl.append(ent+np.log(dbin))
+        # entl.append(ent)
+    pdata, bins = np.histogram(data, bins=bins)
+    dx = bins[1] - bins[0]
+    pdata = pdata / np.sum(pdata)/dx
+    ent=0
+    for ii in range(len(pdata)):
+        if pdata[ii]>0:
+            ent=ent-pdata[ii]*np.log(pdata[ii])*dx
+    return ent
+
+def cal_muinfo(p,q,pq):
+    """
+    Calculate multual information
+    :param p: marginal p
+    :param q: marginal q
+    :param pq: joint pq
+    :return:
+    """
+    assert len(p)*len(q) == pq.shape[0]*pq.shape[1]
+    ptq=p.reshape(-1,1)*q.reshape(1,-1)
+    return cal_kldiv(pq,ptq)
+
+def cal_muinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
+    """
+    Calculation of mutual information between x,y from raw data
+    :param x: [Ndata of value]
+    :param y: [Ndata of value]
+    :param x_discrete: if x is discrete
+    :param y_discrete: if y is discrete
+    :param x_res: x resolution (None if discrete)
+    :param y_res: y resolution (None if discrete)
+    :return:
+    """
+    x=np.array(x)
+    y = np.array(y)
+
+    assert len(x) == len(y)
+    assert len(x.shape) == 1
+    assert len(y.shape) == 1
+
+    if x_discrete:
+        x_bins=len(set(x))
+    px,_ = np.histogram(x, bins=x_bins)
+    px = px/np.sum(px)
+
+    if y_discrete:
+        y_bins=len(set(y))
+    py, _ = np.histogram(y, bins=y_bins)
+    py = py / np.sum(py)
+
+    pxy,_,_= np.histogram2d(x,y,bins=[x_bins,y_bins])
+    pxy=pxy/np.sum(pxy)
+
+    return cal_muinfo(px,py,pxy)
+
 def cal_muinfo_raw_ND_discrete(X,Z):
     """
     Calculate multual information of N dimensional discrete data X and Z
@@ -576,126 +697,67 @@ def cal_muinfo_raw_ND_discrete(X,Z):
 
     return Hx+Hz-Hxz
 
-
-def cal_entropy(data,logit=False,byte_flag=False, torch_flag=False):
+def  cal_muinfo_continous_raw(x,y,bins=[301,299]):
     """
-    Cal entropy of a vector
-    :param data:
-    :param logit: if input data is logit mode
+    Calculation of continous mutual information from definition (Gaussian Test passed)
+    :param x: x data
+    :param y:y data
+    :param bins:
     :return:
     """
-    if torch_flag:
-        data=data.detach().cpu().numpy()
-    else:
-        data=np.array(data)
-    adj=1
-    if byte_flag:
-        adj=np.log(2)
-    if logit:
-        data=np.exp(data)
-    # assert len(data.shape) == 1
-    data_adj=np.zeros(data.shape)+data
-    data_adj[data_adj==0]=1e-9
-    data_adj = data_adj / np.sum(data_adj, axis=-1,keepdims=True)
-    ent=-np.sum(data_adj*np.log(data_adj)/adj,axis=-1)
-    return ent
-
-def cal_entropy_continous_raw(data,bins=10000):
-    data = np.array(data)
-    assert len(data.shape) == 1
-    # entl=[]
-    # for ii in tqdm(range(30)):
-    #     nbins=int(1.2**(ii+55))
-    #     pdata, bins = np.histogram(data, bins=nbins)
-    #     pdata = pdata / np.sum(pdata)
-    #     ent= cal_entropy(pdata)
-    #
-    #     entl.append(ent+np.log(dbin))
-        # entl.append(ent)
-    pdata, bins = np.histogram(data, bins=bins)
-    dx = bins[1] - bins[0]
-    pdata = pdata / np.sum(pdata)/dx
-    ent=0
-    for ii in range(len(pdata)):
-        if pdata[ii]>0:
-            ent=ent-pdata[ii]*np.log(pdata[ii])*dx
-    return ent
-
-
-def cal_entropy_gauss(theta):
-    """
-    calculate the multi-variate entropy of theta
-    :param theta:
-    :return:
-    """
-    if type(theta) is float:
-        ent = np.log(theta*np.sqrt(2*np.pi*np.e))
-    elif type(theta) is list:
-        ent=0
-        for item in theta:
-            ent=ent+np.log(item*np.sqrt(2*np.pi*np.e))
-    return ent
-
-def cal_entropy_gauss_gpu(theta,cuda_device="cuda:0"):
-    """
-    gpuversion of calculating gauss entropy average
-    :param theta:
-    :return:entropy
-    """
-    assert theta.shape[0]>theta.shape[1]
-    pttheta=torch.FloatTensor(theta).to(cuda_device)
-    res_ent=torch.log(pttheta * np.sqrt(2 * np.pi * np.e))
-    res_ent=torch.sum(res_ent,dim=-1)
-    res_ent=torch.mean(res_ent)
-    return res_ent.cpu().item()
-
-def cal_mulinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
-    """
-    Calculation of mutual information between x,y from raw data
-    :param x: [Ndata of value]
-    :param y: [Ndata of value]
-    :param x_discrete: if x is discrete
-    :param y_discrete: if y is discrete
-    :param x_res: x resolution (None if discrete)
-    :param y_res: y resolution (None if discrete)
-    :return: 
-    """
-    x=np.array(x)
+    x = np.array(x)
     y = np.array(y)
-
-    assert len(x) == len(y)
     assert len(x.shape) == 1
     assert len(y.shape) == 1
+    pdataxy, xbins, ybins = np.histogram2d(x,y,bins=bins)
+    dx = xbins[1] - xbins[0]
+    dy = ybins[1] - ybins[0]
+    # pdatax, _ = np.histogram(x, bins=bins[0])
+    # pdatay, _ = np.histogram(y, bins=bins[1])
+    pdatax = np.sum(pdataxy,axis=1)
+    pdatax = pdatax/np.sum(pdatax)/dx
+    pdatay = np.sum(pdataxy, axis=0)
+    pdatay = pdatay / np.sum(pdatay) / dy
+    pdataxy = pdataxy / np.sum(pdataxy) / dx / dy
 
-    if x_discrete:
-        x_bins=len(set(x))
-    px,_ = np.histogram(x, bins=x_bins)
-    px = px/np.sum(px)
+    ent = 0
+    for ii in range(len(pdatax)):
+        for jj in range(len(pdatay)):
+            if pdataxy[ii,jj] > 0:
+                ent = ent+pdataxy[ii,jj]*np.log((pdataxy[ii,jj])/(pdatax[ii]*pdatay[jj]))*dx*dy
+    return ent
 
-    if y_discrete:
-        y_bins=len(set(y))
-    py, _ = np.histogram(y, bins=y_bins)
-    py = py / np.sum(py)
-
-    pxy,_,_= np.histogram2d(x,y,bins=[x_bins,y_bins])
-    pxy=pxy/np.sum(pxy)
-
-    return cal_mulinfo(px,py,pxy)
-
-
-def cal_mulinfo(p,q,pq):
+def cal_muinfo_raw_ND_continous(X,Y,precision=0.01):
     """
-    Calculate multual information
-    :param p: marginal p
-    :param q: marginal q
-    :param pq: joint pq
+    Estimate multidimensional continous mutual information via discretization (Gaussian Test passed)
+    :param X:
+    :param Y:
+    :param precision: discretization precision
     :return:
     """
-    assert len(p)*len(q) == pq.shape[0]*pq.shape[1]
-    ptq=p.reshape(-1,1)*q.reshape(1,-1)
-    return cal_kldiv(pq,ptq)
+    X = np.array(X)
+    Y = np.array(Y)
+    X = np.floor(X/precision)
+    Y = np.floor(Y/precision)
+    return cal_muinfo_raw_ND_discrete(X,Y)
 
-def cal_mulinfo_hybrid_raw(xn,y,bins=100):
+def cal_kldiv(p,q):
+    """
+    Cal KL divergence of p over q
+    :param data:
+    :return:
+    """
+    p = np.array(p)+1e-9
+    q = np.array(q)+1e-9
+    p = p / np.sum(p)
+    q = q / np.sum(q)
+    assert p.shape == q.shape
+    assert np.min(p)>0
+    assert np.min(q)>0
+    kld=np.sum(p*np.log(p/q))
+    return kld
+
+def cal_muinfo_hybrid_raw(xn,y,bins=100):
     """
     Calculate hybrid mutual information from discrete xn to continous y by raw data
     :param xn: discrete xn
@@ -738,22 +800,6 @@ def cal_mulinfo_hybrid_raw(xn,y,bins=100):
             if pxydata[ii] > 0 and pydata[ii] > 0:
                 ent = ent + pxn[iin] * pxydata[ii] * np.log(pxydata[ii]/pydata[ii]) * dy
     return ent
-
-def cal_kldiv(p,q):
-    """
-    Cal KL divergence of p over q
-    :param data:
-    :return:
-    """
-    p = np.array(p)+1e-9
-    q = np.array(q)+1e-9
-    p = p / np.sum(p)
-    q = q / np.sum(q)
-    assert p.shape == q.shape
-    assert np.min(p)>0
-    assert np.min(q)>0
-    kld=np.sum(p*np.log(p/q))
-    return kld
 
 def cal_kldiv_torch(p,q):
     """
