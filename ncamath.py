@@ -508,7 +508,7 @@ def cal_entropy(data,log_flag=False,byte_flag=False, torch_flag=False,cuda_devic
         if log_flag:
             data=torch.exp(data)
         data[data == 0] = 1e-9
-        data = data / torch.sum(data, dim=-1, keepdims=True)
+        data = data / torch.sum(data, dim=-1, keepdim=True)
         ent = -torch.sum(data * torch.log(data) / adj, dim=-1)
     return ent
 

@@ -694,8 +694,8 @@ class Gumbel_Softmax(torch.nn.Module):
         # lpii = torch.log(input)
 
         ui = torch.rand(inmat.shape)
+        ui = ui.to(cuda_device)
         gi = -torch.log(-torch.log(ui))
-        gi = gi.to(cuda_device)
         betax1 = (inmat + gi) / temperature
         self.betax1 = betax1
         betam,_=torch.max(betax1,-1,keepdim=True)
