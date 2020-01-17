@@ -632,6 +632,7 @@ class PyTrain_Lite(object):
         self.data_parallel_dim = para.get("data_parallel_dim", 1)  # data parallel switch
         self.dist_data_parallel = para.get("dist_data_parallel", False)  # distributed data parallel switch
         self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)  # data parallel switch
+        self.scale_factor=para.get("scale_factor", 0.1)
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
 
@@ -3136,7 +3137,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         if self.version == "vib":
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
         elif self.version == "gsvib":
-            return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup)
+            return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
         else:
@@ -3228,7 +3229,11 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
         ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
         self.pt.evalmem[4].append(ent.cpu().data.numpy())
-        # self.pt.evalmem[6].append(rnn.context_coop.cpu().data.numpy())
+        try:
+            self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
+            self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+        except:
+            pass
 
 class PyTrain_Interface_advsup(PyTrain_Interface_Default):
     """
@@ -3534,7 +3539,7 @@ class MyLossFun(object):
         loss1 = lossc(outputl, outlab)
 
         # self.loss_intf = [self.ctheta, self.cmu]
-        ctheta, cmu = outputll[1]
+        ctheta, cmu = model.loss_intf
 
         gausskl = 0.5 * torch.mean(torch.sum(ctheta ** 2 + cmu ** 2 - torch.log(ctheta ** 2) - 1, dim=-1))
 
@@ -3681,7 +3686,7 @@ def dist_cleanup():
 #
 #     cleanup()
 
-def run_training_worker(rank, world_size, dataset, lsize, rnn, interface_para, batch, window, para, run_para):
+def run_training_worker(rank, world_size, dataset, lsize, rnn, interface_para, batch, window, para, run_para, model_name):
 
     num_epoch, learning_rate, step_per_epoch, print_step, seed = run_para
     dist_setup(rank, world_size, seed)
@@ -3690,14 +3695,22 @@ def run_training_worker(rank, world_size, dataset, lsize, rnn, interface_para, b
     para["dist_data_parallel"] = True
     pt1 = PyTrain_Custom(dataset, lsize, rnn, interface_para, batch=batch, window=window, para=para)
     pt1.run_training(epoch = num_epoch, lr = learning_rate,step_per_epoch = step_per_epoch, print_step = print_step)
-    save_model(rnn,"bigru_pos"+str(rank)+".model")
+    log_name="log"+str(rank)+".txt"
+    f = open(log_name, "a")
+    f.write("Log for this run\n")
+    f.write(pt1.log)
+    f.close()
+
+    if rank==0:
+        # save_model(rnn,"bigru_pos"+str(rank)+".model")
+        save_model(rnn, model_name)
 
     dist_cleanup()
 
 
-def dist_run_training(device_ids, dataset, lsize, rnn, interface_para, batch=20, window=30, para=None,run_para=[30,1e-3,2000,500,12345]):
+def dist_run_training(device_ids, dataset, lsize, rnn, interface_para, batch=20, window=30, para=None,run_para=[30,1e-3,2000,500,12345],model_name="bigru.model"):
     world_size=len(device_ids)
     mp.spawn(run_training_worker,
-             args=(world_size,dataset, lsize, rnn, interface_para, batch, window, para,run_para),
+             args=(world_size,dataset, lsize, rnn, interface_para, batch, window, para,run_para,model_name),
              nprocs=world_size,
              join=True)

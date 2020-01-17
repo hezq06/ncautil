@@ -62,9 +62,11 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         self.loss_intf = self.trainer.loss_intf
         # print(self.loss_intf)
         self.context=self.trainer.context
-        self.ctheta = self.trainer.ctheta
-        self.cmu = self.trainer.cmu
+        self.gssample=self.trainer.gssample
+        # self.ctheta = self.trainer.ctheta
+        # self.cmu = self.trainer.cmu
         self.context_coop = self.cooprer.context
+        self.gssample_coop = self.cooprer.gssample
 
         # output=logit_coop[0]+logit_train[0]
         output = logit_coop + logit_train
@@ -735,8 +737,8 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         if self.mlp_num_layers>0:
             self.c2h = torch.nn.Linear(context_size*gs_head, mlp_hidden)
             self.linear_layer_stack = torch.nn.ModuleList([
-                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.Tanh())
-                for _ in range(self.mlp_num_layers)])
+                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.LayerNorm(mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
             self.h2o = torch.nn.Linear(mlp_hidden, output_size)
         else:
             self.c2o = torch.nn.Linear(context_size*gs_head, output_size)
@@ -749,6 +751,7 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
 
     def para(self,para):
         self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
+        self.freeze_mode = para.get("freeze_mode", False)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
         """
@@ -757,7 +760,10 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         :param hidden:
         :return:
         """
-        temperature = np.exp(-schedule * 5)
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
 
         self.cuda_device=input.device
         hout, hn = self.gru(input,hidden1)
