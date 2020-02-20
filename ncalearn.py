@@ -631,7 +631,7 @@ class PyTrain_Lite(object):
         self.data_parallel = para.get("data_parallel", None) # data parallel switch
         self.data_parallel_dim = para.get("data_parallel_dim", 1)  # data parallel switch
         self.dist_data_parallel = para.get("dist_data_parallel", False)  # distributed data parallel switch
-        self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)  # data parallel switch
+        self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)  # distributed data parallel dimention
         self.scale_factor=para.get("scale_factor", 0.1)
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
@@ -750,8 +750,10 @@ class PyTrain_Lite(object):
             pt_rnn.to(self.device)
         perpl=[]
         if allordermode:
-            step_eval=int(self.dataset_length/batch)
-            print(step_eval)
+            dataset_length=len(self.dataset[data_pt]["dataset"])
+            step_eval=int(dataset_length/batch/self.window)
+            print("All ordermode step eval:",step_eval)
+            print("Data length:",dataset_length)
         for iis in range(step_eval):
             if print_step is not None:
                 if iis%print_step==0:
@@ -761,7 +763,7 @@ class PyTrain_Lite(object):
             else:
                 hidden = pt_rnn.initHidden(batch)
             if allordermode:
-                rstartv=iis*batch+np.linspace(0,batch-1,batch)
+                rstartv=iis*batch*self.window+np.linspace(0,batch-1,batch)*self.window
                 x, label, _ = self.get_data(self.dataset[data_pt],rstartv=rstartv,batch=batch)
             else:
                 x, label, _ = self.get_data(self.dataset[data_pt],batch=batch)
@@ -813,8 +815,12 @@ class PyTrain_Lite(object):
 
         currentDT = datetime.datetime.now()
         self.log = self.log + "Time at evaluation: " + str(currentDT) + "\n"
-        self.log = self.log + "Evaluation Perplexity: "+ str(np.exp(np.mean(np.array(perpl)))) + "\n"
+        self.log = self.log + "Evaluation Perplexity: "+ str(perp) + "\n"
         self.log = self.log + "Time used in evaluation:"+ str(endt - startt) + "\n"
+
+        plt.hist(perpl,bins=30)
+        plt.show()
+
         return perp
 
     def do_test(self,step_test=600,schedule=1.0,posi_ctrl=None,seqmode=True):
@@ -3131,17 +3137,25 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.allname=["h2c","c2o"]
 
     def get_data(self, dataset, batch=None, rstartv=None):
-        return self.get_data_sup(dataset, batch=batch, rstartv=rstartv)
+        if self.version == "gsvib_coop_special":
+            if batch is None:
+                batch = self.pt.batch
+            data_shape = [[self.pt.window, batch, self.pt.lsize_in[0]],[self.pt.window, batch, self.pt.lsize_in[1]]]
+            return MyDataFun.get_data_sup_coop_special(dataset, data_shape, self.pt.pt_emb, self.pt, rstartv=None, shift=False)
+        else:
+            return self.get_data_sup(dataset, batch=batch, rstartv=rstartv)
 
     def lossf(self, outputl, outlab, model=None, cstep=None):
         if self.version == "vib":
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
-        elif self.version == "gsvib":
+        elif self.version == "gsvib" or self.version == "gsvib_coop_special":
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
-        else:
+        elif self.version == "default":
             return MyLossFun.KNWLoss(outputl, outlab)
+        else:
+            raise Exception("Unsupported version.")
 
     def lossf_eval(self, outputl, outlab, model=None, cstep=None):
         # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
@@ -3202,7 +3216,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         return x, outlab, None
 
     def eval_mem(self, x, label, output, rnn):
-        return self.custom_eval_mem_sup(x, label, output, rnn)
+        # return self.custom_eval_mem_sup(x, label, output, rnn)
+        return self.custom_eval_mem_sup_special(x, label, output, rnn)
 
     def custom_eval_mem_sup(self, x, label, output, rnn):
         """
@@ -3232,6 +3247,34 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         try:
             self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
             self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+        except:
+            pass
+
+    def custom_eval_mem_sup_special(self, x, label, output, rnn):
+        """
+        Archiving date
+        :param output:
+        :param hidden:
+        :return:
+        """
+        if self.test_print_interface:
+            print("Eval mem interface: custom_eval_mem_sup")
+            return True
+
+
+        if self.pt.evalmem is None:
+            self.pt.evalmem = [[] for ii in range(7)]  # x,label,context
+
+
+        # self.pt.evalmem[0].append(x.cpu().data.numpy())
+        # self.pt.evalmem[1].append(label.cpu().data.numpy())
+        self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
+        self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
+        ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
+        self.pt.evalmem[4].append(ent.cpu().data.numpy())
+        try:
+            # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
+            self.pt.evalmem[6].append(x[1].cpu().data.numpy())
         except:
             pass
 
@@ -3401,6 +3444,64 @@ class MyDataFun(object):
             x = x.to(ptrain_pt.device)
 
         return x, outlab, None
+
+    @staticmethod
+    def get_data_sup_coop_special(dataset_dict, data_shapel, pt_embl, ptrain_pt, rstartv=None, shift=False):
+        """
+        A Special data getter for supervised cooperation mode
+        :param dataset_dict:
+        :param data_shapel: shape like [window, batch, lsize_in] arranged as [word_shape, pos_shape]
+        :param pt_embl: embedding list [w2v pt_emb, onehot pt_emb_pos]
+        :param ptrain_pt: pytrain interface
+        :param rstartv: random start
+        :param shift: data shift
+        :return: [word,pos], word
+        """
+        assert len(data_shapel[0]) == 3
+        assert len(data_shapel[1]) == 3
+
+        window, batch, lsize_in_word = data_shapel[0]
+        window, batch, lsize_in_pos = data_shapel[1]
+
+        assert ptrain_pt.digit_input
+        assert ptrain_pt.supervise_mode
+
+        labelset = dataset_dict["label"] # POS
+        dataset = dataset_dict["dataset"] # Word
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+        yl = np.zeros((batch, window))
+
+        for iib in range(batch):
+            if shift:
+                yl[iib, :] = dataset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
+            else:
+                yl[iib, :] = dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(window, batch, lsize_in_word)
+        for iib in range(batch):
+            ptdata = dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec1 = pt_embl[0](torch.LongTensor(ptdata))
+            vec1m[:, iib, :] = vec1
+        x_wrd = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        vec2m = torch.zeros(window, batch, lsize_in_pos)
+        for iib in range(batch):
+            ptdata = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec2 = pt_embl[1](torch.LongTensor(ptdata))
+            vec2m[:, iib, :] = vec2
+        x_pos = Variable(vec2m, requires_grad=True).type(torch.FloatTensor)
+
+        if ptrain_pt.gpuavail:
+            outlab = outlab.to(ptrain_pt.device)
+            x_wrd = x_wrd.to(ptrain_pt.device)
+            x_pos = x_pos.to(ptrain_pt.device)
+
+        return [x_wrd,x_pos], outlab, None
 
     @staticmethod
     def get_data_continous(dataset, data_shape, pt_emb, ptrain_pt, rstartv=None, shift=False):

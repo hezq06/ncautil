@@ -55,18 +55,19 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
     def para(self,para):
         pass
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+    def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None, coop_context_set=None):
 
-        logit_coop, hn_coop = self.cooprer(input, hidden1[1], logit_mode=True, schedule=1.0)
-        logit_train, hn_train = self.trainer(input, hidden1[0], logit_mode=True, schedule=schedule)
+        logit_train, hn_train = self.trainer(inputl[0], hidden1[0], logit_mode=True, schedule=schedule)
+        logit_coop, hn_coop = self.cooprer(inputl[1], hidden1[1], logit_mode=True, schedule=1.0,
+                                           context_set=coop_context_set)
         self.loss_intf = self.trainer.loss_intf
         # print(self.loss_intf)
         self.context=self.trainer.context
         self.gssample=self.trainer.gssample
         # self.ctheta = self.trainer.ctheta
         # self.cmu = self.trainer.cmu
-        self.context_coop = self.cooprer.context
-        self.gssample_coop = self.cooprer.gssample
+        # self.context_coop = self.cooprer.context
+        # self.gssample_coop = self.cooprer.gssample
 
         # output=logit_coop[0]+logit_train[0]
         output = logit_coop + logit_train
@@ -79,16 +80,16 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         # return [output,logit_train[1]], [hn_train, hn_coop]
         return output, [hn_train, hn_coop]
 
-    def forward_comb(self,context_coop):
-        """
-        forward with substitue coop
-        :param context_coop:
-        :return:
-        """
-        logit_coop=self.cooprer.c2o(context_coop)
-        output = logit_coop + self.logit_train
-        output = self.softmax(output)
-        return output
+    # def forward_comb(self,context_coop):
+    #     """
+    #     forward with substitue coop
+    #     :param context_coop:
+    #     :return:
+    #     """
+    #     logit_coop=self.cooprer.c2o(context_coop)
+    #     output = logit_coop + self.logit_train
+    #     output = self.softmax(output)
+    #     return output
 
     def initHidden(self,batch):
         trainer_hd = None
@@ -706,6 +707,69 @@ class Gumbel_Softmax(torch.nn.Module):
         yi=torch.exp(betax)/torch.sum(torch.exp(betax),dim=-1,keepdim=True)
         return yi
 
+class FF_MLP(torch.nn.Module):
+    """
+    Feed forward multi-layer perceotron
+    """
+    def __init__(self, input_size, mlp_hidden, output_size, mlp_num_layers=2 ,para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.mlp_hidden=mlp_hidden
+        self.mlp_num_layers=mlp_num_layers
+
+        # self.coop_mode=False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        if self.mlp_num_layers>0:
+            self.i2h = torch.nn.Linear(input_size, mlp_hidden)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.LayerNorm(mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
+            self.h2o = torch.nn.Linear(mlp_hidden, output_size)
+        else:
+            self.i2o = torch.nn.Linear(input_size, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax()
+
+    def para(self,para):
+        pass
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        self.cuda_device=input.device
+
+        if self.mlp_num_layers > 0:
+            hidden=self.i2h(input)
+            for fmd in self.linear_layer_stack:
+                hidden = fmd(hidden)
+            output=self.h2o(hidden)
+        else:
+            output = self.i2o(input)
+
+        if not logit_mode:
+            output = self.softmax(output)
+
+        return output, None
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self, device, batch):
+        return None
+
 class BiGRU_NLP_GSVIB(torch.nn.Module):
     """
     PyTorch BiGRU for NLP with Gumbel Softmax variational information bottleneck
@@ -752,14 +816,19 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
     def para(self,para):
         self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
         self.freeze_mode = para.get("freeze_mode", False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
         """
         Forward
         :param input: [window batch l_size]
         :param hidden:
         :return:
         """
+        if schedule<1.0: # Multi-scanning trial
+            schedule=schedule*self.temp_scan_num
+            schedule=schedule-np.floor(schedule)
+
         if not self.freeze_mode:
             temperature = np.exp(-schedule * 5)
         else:
@@ -772,6 +841,8 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         context = self.h2c(hout)
         context = context.view(dw, batch, self.gs_head, self.context_size)
         context = self.softmax(context)
+        if context_set is not None:
+            context=context_set
         gssample = self.gsoftmax(context,temperature=temperature,cuda_device=self.cuda_device)
 
         p_prior=self.softmax(self.prior)

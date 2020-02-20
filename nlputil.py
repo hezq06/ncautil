@@ -256,8 +256,8 @@ class NLPutil(object):
                     skip.append(word)
             print("Except list: length " + str(len(skip)))
             print(skip)
-            # self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
-            self.w2v_dict["UNK"] = np.random.random(len(self.w2v_dict[self.id_to_word[10]]))
+            self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
+            # self.w2v_dict["UNK"] = np.random.random(len(self.w2v_dict[self.id_to_word[10]])) !!!!!! A BIG BUG !!! Source of unpredictable behavior when using model reload
         else:
             if len(self.id_to_word)>200:
                 raise Exception("Too much words for onehot representation.")

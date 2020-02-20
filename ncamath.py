@@ -484,7 +484,7 @@ def cal_pdistance(data):
     dist=np.sum(np.abs(data-orin))*np.sum(np.abs(data-orin))/2
     return dist
 
-def cal_entropy(data,log_flag=False,byte_flag=False, torch_flag=False,cuda_device="cuda:1"):
+def cal_entropy(data,log_flag=False,byte_flag=False, torch_flag=False, cuda_device="cuda:1"):
     """
     Cal entropy of a vector
     :param data:
