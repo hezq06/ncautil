@@ -818,9 +818,6 @@ class PyTrain_Lite(object):
         self.log = self.log + "Evaluation Perplexity: "+ str(perp) + "\n"
         self.log = self.log + "Time used in evaluation:"+ str(endt - startt) + "\n"
 
-        plt.hist(perpl,bins=30)
-        plt.show()
-
         return perp
 
     def do_test(self,step_test=600,schedule=1.0,posi_ctrl=None,seqmode=True):
@@ -3137,7 +3134,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.allname=["h2c","c2o"]
 
     def get_data(self, dataset, batch=None, rstartv=None):
-        if self.version == "gsvib_coop_special":
+        if self.version == "gsvib_coop_special" or self.version == "gsvib_attcoop":
             if batch is None:
                 batch = self.pt.batch
             data_shape = [[self.pt.window, batch, self.pt.lsize_in[0]],[self.pt.window, batch, self.pt.lsize_in[1]]]
@@ -3150,6 +3147,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
         elif self.version == "gsvib" or self.version == "gsvib_coop_special":
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
+        elif self.version == "gsvib_attcoop":
+            return MyLossFun.KNWLoss_GSVIB_ATTCOOP(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
         elif self.version == "default":
@@ -3253,6 +3252,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
     def custom_eval_mem_sup_special(self, x, label, output, rnn):
         """
         Archiving date
+        x:[x_wrd,x_pos], outlab
         :param output:
         :param hidden:
         :return:
@@ -3265,9 +3265,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         if self.pt.evalmem is None:
             self.pt.evalmem = [[] for ii in range(7)]  # x,label,context
 
-
-        # self.pt.evalmem[0].append(x.cpu().data.numpy())
-        # self.pt.evalmem[1].append(label.cpu().data.numpy())
+        self.pt.evalmem[0].append(x[1].cpu().data.numpy()) # pos label
+        self.pt.evalmem[1].append(label.cpu().data.numpy()) # wrd label
         self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
         self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
         ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
@@ -3684,6 +3683,43 @@ class MyLossFun(object):
         beta_scaling = 1.0
 
         return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor*ent_prior)
+
+    @staticmethod
+    def KNWLoss_GSVIB_ATTCOOP(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1):
+        """
+        Loss for variational information bottleneck, Gauss Expanded
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+        outputl = outputl.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # context,prior should be log probability
+        context, prior, gate_prob = model.context, model.prior, model.gate_prob
+        gs_head_num, gs_head_dim = model.gs_head_num, model.gs_head_dim
+        w, b, gs_head_num=gate_prob.shape
+
+        # prior [gs_head_num,gs_head_dim]
+        # gate_prob [win batch gs_head_num]
+
+        ent_prior = -torch.mean(gate_prob * torch.sum(torch.exp(prior) * prior, dim=-1))
+
+        prior = prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
+
+        flatkl = torch.mean(torch.sum(gate_prob.view(w, b, gs_head_num, 1) * torch.exp(context) * (context - prior), dim=-1))
+
+        # beta_scaling = 1.0-np.exp(-cstep * 5)
+        # if cstep < beta_warmup:
+        #     beta_scaling = cstep / beta_warmup
+        # else:
+        #     beta_scaling = 1.0
+        beta_scaling = 1.0
+
+        return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior)
 
     @staticmethod
     def KNWLoss_VIB_EVAL(outputl, outlab, model):

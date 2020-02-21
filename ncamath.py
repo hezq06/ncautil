@@ -634,9 +634,9 @@ def cal_muinfo(p,q,pq):
     ptq=p.reshape(-1,1)*q.reshape(1,-1)
     return cal_kldiv(pq,ptq)
 
-def cal_muinfo_raw(x,y,x_discrete,y_discrete,x_bins=None,y_bins=None):
+def cal_muinfo_raw(x,y,x_discrete=True,y_discrete=True,x_bins=None,y_bins=None):
     """
-    Calculation of mutual information between x,y from raw data
+    Calculation of mutual information between x,y from raw data (May have problem)!!!
     :param x: [Ndata of value]
     :param y: [Ndata of value]
     :param x_discrete: if x is discrete
@@ -689,11 +689,11 @@ def cal_muinfo_raw_ND_discrete(X,Z):
 
     XZnp = np.concatenate((Xnp,Znp),axis=1)
 
-    Hx=cal_entropy_raw_ND_discrete(Xnp)
+    Hx= cal_entropy_raw_ND_discrete(Xnp)
 
     Hz = cal_entropy_raw_ND_discrete(Znp)
 
-    Hxz=cal_entropy_raw_ND_discrete(XZnp)
+    Hxz = cal_entropy_raw_ND_discrete(XZnp)
 
     return Hx+Hz-Hxz
 

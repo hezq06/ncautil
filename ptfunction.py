@@ -293,14 +293,11 @@ class Gumbel_Sigmoid(torch.nn.Module):
     PyTorch GRU for Gumbel Sigmoid
     "Towards Binary-Valued Gates for Robust LSTM Training"
     """
-    def __init__(self,cuda_device="cuda:0"):
+    def __init__(self):
         super(self.__class__, self).__init__()
-
-        self.gpuavail = torch.cuda.is_available()
-        self.device = torch.device(cuda_device if self.gpuavail else "cpu")
         self.sigmoid = torch.nn.Sigmoid()
 
-    def forward(self, input, temperature=1.0):
+    def forward(self, input, temperature=1.0, cuda_device="cuda:0"):
         """
         Forward
         :param input:
@@ -309,8 +306,7 @@ class Gumbel_Sigmoid(torch.nn.Module):
         """
 
         U = torch.rand(input.shape)
-        if self.gpuavail:
-            U = U.to(self.device)
+        U = U.to(cuda_device)
 
         G=self.sigmoid((input+torch.log(U)-torch.log(1-U))/temperature)
 

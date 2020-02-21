@@ -813,10 +813,13 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax()
 
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
     def para(self,para):
         self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
         self.freeze_mode = para.get("freeze_mode", False)
         self.temp_scan_num = para.get("temp_scan_num", 1)
+        self.dropout_rate = para.get("dropout_rate", 0.2)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
         """
@@ -843,7 +846,8 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         context = self.softmax(context)
         if context_set is not None:
             context=context_set
-        gssample = self.gsoftmax(context,temperature=temperature,cuda_device=self.cuda_device)
+
+        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
 
         p_prior=self.softmax(self.prior)
         self.context = context
@@ -855,6 +859,7 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
 
         if self.mlp_num_layers > 0:
             hidden_c=self.c2h(gssample)
+            hidden_c=self.dropout(hidden_c)
             for fmd in self.linear_layer_stack:
                 hidden_c = fmd(hidden_c)
             output=self.h2o(hidden_c)
@@ -872,6 +877,127 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
     def initHidden_cuda(self, device, batch):
         return Variable(torch.zeros(self.num_layers*2, batch, self.hidden_size), requires_grad=True).to(device)
 
+
+class BiGRU_NLP_GSVIB_ATTCOOP(torch.nn.Module):
+    """
+    PyTorch BiGRU for NLP with Gumbel Softmax variational information bottleneck
+    with some label as attentional cooperator
+    require a pre_trained ff network
+    """
+    def __init__(self, input_size, hidden_size, gs_head_num, mlp_hidden, output_size, ff_model, gs_head_dim=2, num_layers=1 ,para=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.gs_head_num=gs_head_num
+        self.gs_head_dim=gs_head_dim
+
+        self.mlp_hidden=mlp_hidden
+        self.num_layers=num_layers
+
+        self.ff_model=ff_model
+
+        # self.coop_mode=False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
+        self.h2c = torch.nn.Linear(hidden_size * 2, gs_head_dim*gs_head_num)
+        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num,gs_head_dim)) , requires_grad=True)
+        self.prior_att = None
+
+        if self.mlp_num_layers>0:
+            self.c2h = torch.nn.Linear(gs_head_dim*gs_head_num, mlp_hidden)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.LayerNorm(mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
+            self.h2o = torch.nn.Linear(mlp_hidden, output_size)
+        else:
+            self.c2o = torch.nn.Linear(gs_head_dim*gs_head_num, output_size)
+
+        self.attn = torch.nn.Linear(ff_model.input_size, gs_head_num) # Attention from pos tag to representation, key to control hierachy/combinatory
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax()
+        self.gsigmoid = Gumbel_Sigmoid()
+
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+    def para(self,para):
+        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
+        self.freeze_mode = para.get("freeze_mode", False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
+        self.dropout_rate = para.get("dropout_rate", 0.2)
+
+    def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
+        """
+        Forward
+        :param input: [input_wrd,input_pos]    [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        if schedule<1.0: # Multi-scanning trial
+            schedule=schedule*self.temp_scan_num
+            schedule=schedule-np.floor(schedule)
+
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        self.cuda_device=inputl[0].device
+        hout, hn = self.gru(inputl[0],hidden1)
+        dw, batch, l_size = inputl[0].shape
+
+        context = self.h2c(hout)
+        context = context.view(dw, batch, self.gs_head_num, self.gs_head_dim)
+        context = self.softmax(context)
+
+        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+
+        # Sigmoid attention from POS
+        attention = self.attn(inputl[1])
+        attention = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
+
+        # print(gssample.shape,attention.shape)
+        gssample=gssample*attention.view(dw, batch, self.gs_head_num, 1)
+
+        p_prior=self.softmax(self.prior)
+        gate_prob=self.sigmoid(attention)
+        self.context = context
+        self.p_prior=p_prior
+        self.gate_prob=gate_prob
+        self.gssample = gssample
+
+        gssample = gssample.view(dw, batch, self.gs_head_num*self.gs_head_dim)
+
+        if self.mlp_num_layers > 0:
+            hidden_c=self.c2h(gssample)
+            hidden_c=self.dropout(hidden_c)
+            for fmd in self.linear_layer_stack:
+                hidden_c = fmd(hidden_c)
+            output=self.h2o(hidden_c)
+        else:
+            output = self.c2o(gssample)
+
+        logit_coop, _ = self.ff_model(inputl[1], None, logit_mode=True, schedule=1.0)
+        output = logit_coop + output
+
+        if not logit_mode:
+            output = self.softmax(output)
+
+        return output, hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.num_layers*2, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch):
+        return Variable(torch.zeros(self.num_layers*2, batch, self.hidden_size), requires_grad=True).to(device)
 
 class BiTRF_NLP(torch.nn.Module):
     """
