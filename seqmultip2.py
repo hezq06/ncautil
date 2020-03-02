@@ -925,6 +925,7 @@ class BiGRU_NLP_GSVIB_ATTCOOP(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax()
         self.gsigmoid = Gumbel_Sigmoid()
+        self.myhsig = myhsig
 
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
@@ -956,23 +957,27 @@ class BiGRU_NLP_GSVIB_ATTCOOP(torch.nn.Module):
 
         context = self.h2c(hout)
         context = context.view(dw, batch, self.gs_head_num, self.gs_head_dim)
-        context = self.softmax(context)
+        # context = self.softmax(context)
 
-        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+        # p_prior = self.softmax(self.prior).expand(dw, batch, self.gs_head_num, self.gs_head_dim)
+        p_prior = self.prior.expand(dw, batch, self.gs_head_num, self.gs_head_dim)
 
         # Sigmoid attention from POS
         attention = self.attn(inputl[1])
-        attention = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
+        attention_sig = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
+        # attention_sig = self.sigmoid(attention/temperature)
+        # attention_sig = self.myhsig(attention,temperature=noise_temp,cuda_device=self.cuda_device)
 
-        # print(gssample.shape,attention.shape)
-        gssample=gssample*attention.view(dw, batch, self.gs_head_num, 1)
+        context = context*attention_sig.view(dw, batch, self.gs_head_num, 1)+p_prior*(1-attention_sig.view(dw, batch, self.gs_head_num, 1))
+        context = self.softmax(context)
+        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
 
-        p_prior=self.softmax(self.prior)
-        gate_prob=self.sigmoid(attention)
+        # attention_prob=self.sigmoid(attention)
         self.context = context
-        self.p_prior=p_prior
-        self.gate_prob=gate_prob
+        self.p_prior=self.softmax(p_prior)
+        self.attention_prob=attention_sig
         self.gssample = gssample
+        self.attention_sample=attention_sig
 
         gssample = gssample.view(dw, batch, self.gs_head_num*self.gs_head_dim)
 

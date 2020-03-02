@@ -73,17 +73,22 @@ class NLPutil(object):
         self.nVcab=None
         self.lsize = None
 
+        # Wiki parameter
+        self.file_idx=0 # Current file index
+        self.tot_filenum = 1 # total available file (for wiki data full)
+        self.wiki_text_path = "/storage/hezq17/wikitext/wki_text_process"
+
         # self.synmat=SyntaxMat()
 
-    def get_data(self,corpus,type=0,data=None):
+    def get_data(self,corpus,file_idx=0,data=None):
         """
         Get corpus data
         :param corpus: "brown","ptb"
-        :param type: 0
+        :param file_idx: file idx
         :return:
         """
         print("Getting corpus data...")
-        if corpus=="brown" and type==0:
+        if corpus=="brown":
             tmpcorp=brown.words(categories=brown.categories())
             self.corpus = []
             for item in tmpcorp:
@@ -113,6 +118,15 @@ class NLPutil(object):
             for item in tmpcorp:
                 self.corpus.append(item.lower())
             self.sub_corpus = self.corpus
+        elif corpus=="wiki_full":
+            self.file_idx=file_idx
+            self.tot_filenum=134
+            file = os.path.join(self.wiki_text_path, "wiki_"+str(file_idx))
+            f = open(file)
+            raw = f.read()
+            self.corpus = word_tokenize(raw)
+            self.corpus = [w.lower() for w in self.corpus]
+            self.sub_corpus = self.corpus[:self.sub_size]
         else:
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/'+str(corpus))
             f = open(file)
@@ -566,7 +580,7 @@ class SQuADutil(object):
         except:
             print("Stanford parser not working!!!")
         # path = '/Users/zhengqihe/HezMain/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models'
-        path = "/data03/home/hezq17/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models"
+        path = "/home/hezq17/MySourceCode/stanfordparser/stanford-postagger-full-2017-06-09/models"
         os.environ['STANFORD_MODELS'] = path
         model = 'english-caseless-left3words-distsim.tagger'
         # model="english-bidirectional-distsim.tagger"
@@ -1005,6 +1019,67 @@ class FallBack(object):
 
     def save(self, title):
         save_data(self.LF2PR_dict, title)
+
+class WikiTextProcess(object):
+    """
+    Advanced NLP data processing object
+    """
+    def __init__(self,path_to_raw_data,path_to_workspace):
+        """
+        A NLP Data processing class should link to a NLPutil object when initialization
+        :param NLPutilC:
+        """
+        self.path_to_raw_data=path_to_raw_data
+        self.path_to_workspace=path_to_workspace
+
+    def file_iterator(self):
+        for ii in range(2):
+            print("File wiki_"+str(ii))
+            file_r=open(os.path.join(self.path_to_raw_data,"wiki_"+str(ii)),"r")
+            file_w=open(os.path.join(self.path_to_workspace,"wiki_"+str(ii)),"w+")
+            self.line_iterator(file_r,file_w)
+            file_r.close()
+            file_w.close()
+
+    def line_iterator(self,file_r,file_w):
+        lines=file_r.readlines()
+        for line in lines:
+            line=self.remove_url(line)
+            line = self.addspace(line)
+            line = self.remove_empty_line(line)
+            file_w.write(line)
+
+    def remove_url(self,line):
+        if line.startswith("<") and line.endswith(">\n"):
+            return ""
+        else:
+            return line
+
+    def remove_empty_line(self,line):
+        if line=="\n":
+            return ""
+        else:
+            return line
+
+    def addspace(self,line):
+        line=line.replace("-"," - ")
+        line=line.replace(", ", " , ")
+        line=line.replace(". ", " . ")
+        line = line.replace(".\n", " .\n")
+        line = line.replace("–", " - ")
+        line = line.replace("—", " - ")
+        line = line.replace(" (", " ( ")
+        line = line.replace(") ", " ) ")
+        line = line.replace("\" ", " \" ")
+        line = line.replace(" \"", " \" ")
+        line = line.replace(": ", " : ")
+        line = line.replace(":\n", " :\n")
+        line = line.replace("! ", " ! ")
+        line = line.replace("? ", " ? ")
+        line = line.replace("; ", " ; ")
+        line = line.replace("\'s ", " \'s ")
+        return line
+
 
 
 

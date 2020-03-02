@@ -3266,16 +3266,13 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             self.pt.evalmem = [[] for ii in range(7)]  # x,label,context
 
         self.pt.evalmem[0].append(x[1].cpu().data.numpy()) # pos label
-        self.pt.evalmem[1].append(label.cpu().data.numpy()) # wrd label
+        self.pt.evalmem[1].append(label.cpu().permute(1,0).data.numpy()) # wrd label
         self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
         self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
         ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
         self.pt.evalmem[4].append(ent.cpu().data.numpy())
-        try:
-            # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
-            self.pt.evalmem[6].append(x[1].cpu().data.numpy())
-        except:
-            pass
+        self.pt.evalmem[5].append(rnn.attention_prob.cpu().data.numpy())
+        self.pt.evalmem[6].append(rnn.attention_sample.cpu().data.numpy())
 
 class PyTrain_Interface_advsup(PyTrain_Interface_Default):
     """
@@ -3699,18 +3696,26 @@ class MyLossFun(object):
         loss1 = lossc(outputl, outlab)
 
         # context,prior should be log probability
-        context, prior, gate_prob = model.context, model.prior, model.gate_prob
+        context, p_prior, attention_prob = model.context, model.p_prior, model.attention_prob
+        # context [w,b,gs_head_num,gs_head_dim]
+        # p_prior [w,b,gs_head_num,gs_head_dim] expanded from [gs_head_num,gs_head_dim]
+        # attention_prob [w, b, gs_head_num]
         gs_head_num, gs_head_dim = model.gs_head_num, model.gs_head_dim
-        w, b, gs_head_num=gate_prob.shape
+        w, b, gs_head_num=attention_prob.shape
 
         # prior [gs_head_num,gs_head_dim]
         # gate_prob [win batch gs_head_num]
 
-        ent_prior = -torch.mean(gate_prob * torch.sum(torch.exp(prior) * prior, dim=-1))
+        # prior = p_prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
+        ent_prior = -torch.mean(torch.sum(torch.exp(p_prior) * p_prior, dim=-1))
+        # ent_prior = -torch.mean(attention_prob * torch.sum(torch.exp(p_prior) * p_prior, dim=-1))
 
-        prior = prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
+        # attention_prob entropy
+        # ent_attention_prob= -torch.mean(attention_prob*torch.log(attention_prob)+(1-attention_prob)*torch.log((1-attention_prob)))
 
-        flatkl = torch.mean(torch.sum(gate_prob.view(w, b, gs_head_num, 1) * torch.exp(context) * (context - prior), dim=-1))
+
+        # flatkl = torch.mean(torch.sum(torch.exp(context) * (context - p_prior), dim=-1))
+        flatkl = torch.mean(torch.sum(attention_prob.view(w, b, gs_head_num, 1) * torch.exp(context) * (context - p_prior), dim=-1))
 
         # beta_scaling = 1.0-np.exp(-cstep * 5)
         # if cstep < beta_warmup:
@@ -3718,7 +3723,6 @@ class MyLossFun(object):
         # else:
         #     beta_scaling = 1.0
         beta_scaling = 1.0
-
         return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior)
 
     @staticmethod

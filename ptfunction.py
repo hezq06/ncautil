@@ -131,10 +131,12 @@ class MyHardSig(torch.autograd.Function): # A straight through estimation of sig
         ctx.save_for_backward(input)
 
         output = torch.zeros(input.shape)
-        zeros = torch.zeros(input.shape)
+        noise = 2*torch.rand(input.shape)-1
+        zeros = torch.zeros(input.shape) + gl_temperature*noise
         if gpuavail:
             output = output.to(device)
             zeros = zeros.to(device)
+
         output[input > zeros] = 1.0
 
         return output
@@ -152,9 +154,11 @@ class MyHardSig(torch.autograd.Function): # A straight through estimation of sig
 
         return grad_output
 
-def myhsig(input, cuda_device="cuda:0"):
+def myhsig(input, temperature=0.0, cuda_device="cuda:0"):
     global gl_cuda_device
+    global gl_temperature
     gl_cuda_device=cuda_device
+    gl_temperature=temperature
     return MyHardSig.apply(input)
 
 class MyHardSample(torch.autograd.Function): # A straight through estimation of sign
@@ -296,6 +300,7 @@ class Gumbel_Sigmoid(torch.nn.Module):
     def __init__(self):
         super(self.__class__, self).__init__()
         self.sigmoid = torch.nn.Sigmoid()
+        self.annealing = True
 
     def forward(self, input, temperature=1.0, cuda_device="cuda:0"):
         """
@@ -307,8 +312,10 @@ class Gumbel_Sigmoid(torch.nn.Module):
 
         U = torch.rand(input.shape)
         U = U.to(cuda_device)
-
-        G=self.sigmoid((input+torch.log(U)-torch.log(1-U))/temperature)
+        if not self.annealing:
+            G=self.sigmoid((input+torch.log(U)-torch.log(1-U))/temperature)
+        else:
+            G = self.sigmoid((input / temperature + torch.log(U) - torch.log(1 - U)) / temperature)
 
         return G
 
