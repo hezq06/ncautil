@@ -320,6 +320,106 @@ class BiGRU_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, para=None):
+        super(self.__class__, self).__init__()
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_layers = num_layers
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
+
+        if self.mlp_num_layers>0:
+            self.h2h = torch.nn.Linear(2*hidden_size, self.mlp_hidden)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
+            self.h2o = torch.nn.Linear(self.mlp_hidden, output_size)
+        else:
+            self.h2o = torch.nn.Linear(2*hidden_size, output_size)
+
+        if self.weight_dropout>0:
+            print("Be careful, only GPU works for now.")
+            # self.h2o = WeightDrop(self.h2o, ['weight'], dropout=weight_dropout)
+            self.gru = WeightDrop(self.gru, ['weight_hh_l0'], dropout=self.weight_dropout)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+        self.input_mask = None
+
+    def para(self,para):
+        self.weight_dropout = para.get("weight_dropout", 0.0)
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.mlp_hidden = int(para.get("mlp_hidden", 20))
+        self.mlp_num_layers = int(para.get("mlp_num_layers", 1))
+        self.dropout_rate = para.get("dropout_rate", 0.2)
+        self.input_mask_mode = para.get("input_mask_mode", False)
+
+        self.mask_rate = para.get("mask_rate", 0.15)
+        self.self_unmask_rate = para.get("self_unmask_rate", 0.1)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        # temperature = np.exp(-schedule * 5)
+        if len(input.shape)==2:
+            input=input.view(1,input.shape[0],input.shape[1])
+        self.cuda_device = input.device
+
+        if self.input_mask_mode and self.training:
+            rnd = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self.input_mask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self.input_mask[rnd > self.mask_rate] = 1
+            # Self unmask sampling
+            rnd2 = torch.rand((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self_unmask = torch.zeros((input.shape[0], input.shape[1]), device=self.cuda_device)
+            self_unmask[rnd2 < self.self_unmask_rate] = 1
+            comb_mask = self.input_mask + self_unmask
+            comb_mask[comb_mask > 0.999] = 1
+            input = input * comb_mask.view(input.shape[0], input.shape[1], 1).expand_as(input)
+
+        hout, hn = self.gru(input,hidden1)
+        hout = self.dropout(hout)
+
+        if self.mlp_num_layers > 0:
+            hout = self.h2h(hout)
+            hout =self.relu(hout)
+            for fmd in self.linear_layer_stack:
+                hout = fmd(hout)
+
+        output = self.h2o(hout)
+        output = self.softmax(output)
+
+        if add_logit is not None:
+            output=output+add_logit
+        if not logit_mode:
+            output=self.softmax(output)
+
+        return output,hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(2*self.num_layers, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(2*self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
+class BiGRU_NLP_DIS(torch.nn.Module):
+    """
+    PyTorch GRU for NLP with discrete layer
+    """
     def __init__(self, input_size, hidden_size, context_size, output_size, para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size

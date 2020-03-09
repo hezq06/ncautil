@@ -820,7 +820,7 @@ class PyTrain_Lite(object):
 
         return perp
 
-    def do_test(self,step_test=600,schedule=1.0,posi_ctrl=None,seqmode=True):
+    def do_test(self,step_test=600,schedule=1.0,data_pt="data_valid",posi_ctrl=None,seqmode=True):
         """
         Calculate correct rate
         :param step_test:
@@ -838,7 +838,7 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
-            x, label, _ = self.get_data(self.dataset["data_eval"])
+            x, label, _ = self.get_data(self.dataset[data_pt])
             output, hidden = self.rnn(x, hidden, schedule=schedule)
             if seqmode:
                 output = output.permute(1, 2, 0)
@@ -870,6 +870,56 @@ class PyTrain_Lite(object):
         self.log = self.log + "Time used in test:" + str(endt - startt) + "\n"
 
         return crate
+
+    def do_inference(self,batch=None,data_pt="data_train",print_step=None):
+        """
+        Use mode and run inference, default to allordermode
+        :return: [(data,label),(data,label),...]
+        """
+        if self.dist_data_parallel:
+            pt_rnn = self.rnn.module
+        elif self.data_parallel is None:
+            pt_rnn = self.rnn
+        else:
+            pt_rnn = self.rnn.module
+
+        if batch is None:
+            batch=self.batch
+
+        dataset_length=len(self.dataset[data_pt]["dataset"])
+        step_inf=int(dataset_length/batch/self.window)
+        print("All ordermode step inference:",step_inf)
+        print("Data length:",dataset_length)
+
+        res_infer_mat=[]
+        for iis in range(step_inf):
+            if iis%100==0:
+                print("Step: ",iis)
+            if print_step is not None:
+                if iis%print_step==0:
+                    print("Evaluation step ",iis)
+            if self.gpuavail:
+                hidden = pt_rnn.initHidden_cuda(self.device, batch)
+            else:
+                hidden = pt_rnn.initHidden(batch)
+            rstartv = iis * batch * self.window + np.linspace(0, batch - 1, batch) * self.window
+            x, label, _ = self.get_data(self.dataset[data_pt], rstartv=rstartv, batch=batch)
+
+            output, hidden = pt_rnn(x, hidden, schedule=1.0)
+            output=output.detach().cpu().numpy()
+
+            for iib in range(batch):
+                ptdata = self.dataset[data_pt]["dataset"][int(rstartv[iib]):int(rstartv[iib]) + self.window]
+                outputl=np.argmax(output[:,iib,:],axis=-1)
+                res_infer_mat.append(list(zip(ptdata, outputl)))
+
+        res_infer_mat_f = []
+        for iteml in res_infer_mat:
+            for item in iteml:
+                res_infer_mat_f.append(item)
+
+        return res_infer_mat_f
+
 
     def example_data_collection(self,*args,**kwargs):
         raise Exception("NotImplementedException")
@@ -2265,8 +2315,6 @@ class PyTrain_Interface_attn(PyTrain_Interface_Default):
             # print("eval_mem failed")
             pass
 
-
-
 class PyTrain_Interface_tdff(PyTrain_Interface_Default):
     """
     A pytrain interface object to plug into PyTrain_Custom
@@ -2574,7 +2622,6 @@ class PyTrain_Interface_tdff(PyTrain_Interface_Default):
             self.data_col_mem["datalist"][2] = torch.squeeze(output)
             self.data_col_mem["datalist"][3] = torch.squeeze(self.pt.rnn.hdt).transpose(1,0)
             # self.data_col_mem["datalist"][5] = self.rnn.hdt[1].view(-1,1)
-
 
 class PyTrain_Interface_backwardreverse(PyTrain_Interface_Default):
     """
@@ -3151,6 +3198,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             return MyLossFun.KNWLoss_GSVIB_ATTCOOP(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
+        elif self.version == "with_mask":
+            return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep)
         elif self.version == "default":
             return MyLossFun.KNWLoss(outputl, outlab)
         else:
@@ -3682,7 +3731,7 @@ class MyLossFun(object):
         return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor*ent_prior)
 
     @staticmethod
-    def KNWLoss_GSVIB_ATTCOOP(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1):
+    def KNWLoss_GSVIB_ATTCOOP(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1,scale_factor2=0.0):
         """
         Loss for variational information bottleneck, Gauss Expanded
         :param outputl:
@@ -3717,13 +3766,15 @@ class MyLossFun(object):
         # flatkl = torch.mean(torch.sum(torch.exp(context) * (context - p_prior), dim=-1))
         flatkl = torch.mean(torch.sum(attention_prob.view(w, b, gs_head_num, 1) * torch.exp(context) * (context - p_prior), dim=-1))
 
+        att_gate = torch.mean(attention_prob)
+
         # beta_scaling = 1.0-np.exp(-cstep * 5)
         # if cstep < beta_warmup:
         #     beta_scaling = cstep / beta_warmup
         # else:
         #     beta_scaling = 1.0
         beta_scaling = 1.0
-        return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior)
+        return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior + scale_factor2 * att_gate)
 
     @staticmethod
     def KNWLoss_VIB_EVAL(outputl, outlab, model):
@@ -3758,7 +3809,7 @@ class MyLossFun(object):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss(reduce=False)
         loss1 = lossc(outputl, outlab)
-        loss=torch.sum(loss1*(1-model.input_mask))/torch.sum(1-model.input_mask)
+        loss=torch.sum(loss1*(1-model.input_mask.permute(1,0)))/torch.sum(1-model.input_mask.permute(1,0))
         # loss = torch.sum(loss1 * model.input_mask) / torch.sum(model.input_mask) # should be perfect information
         return loss
 

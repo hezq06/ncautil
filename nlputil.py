@@ -338,7 +338,7 @@ class NLPutil(object):
         # self.plot_txtmat(txtmat.T)
         return txtmat
 
-    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None,title=None,save=None,origin='lower'):
+    def plot_txtmat(self,data,start=0,length=1000,text=None,texty=None,title=None,save=None,origin='lower',xlabel=None, ylabel=None):
         data=np.array(data)
         assert len(data.shape) == 2
         fig,ax=plt.subplots()
@@ -364,6 +364,10 @@ class NLPutil(object):
                 labels[ii] = str(texty[ii + int(start)])
             ax.set_yticklabels(labels, rotation=0)
         plt.colorbar(fig)
+        if xlabel is not None:
+            plt.xlabel(xlabel)
+        if ylabel is not None:
+            plt.ylabel(ylabel)
         if type(title) != type(None):
             plt.title(title)
         if type(save)!=type(None):
@@ -1080,10 +1084,67 @@ class WikiTextProcess(object):
         line = line.replace("\'s ", " \'s ")
         return line
 
+class StanfordSentimentUtil(object):
+    """
+    Advanced NLP data processing object
+    """
+    def __init__(self,path_to_raw_data="/home/hezq17/MySourceCode/data/SentimentTreeBank/stanfordSentimentTreebank"):
+        """
+        A NLP Data processing class should link to a NLPutil object when initialization
+        :param NLPutilC:
+        """
+        self.path_to_raw_data=path_to_raw_data
 
+    def dataset_extract(self):
+        """
+        Extract the data into (word, senti_class) form
+        senti_class is [--,-,0,+,++] 5 classes
+        :return:
+        """
 
+        ## Getting dictionary.txt data and sentiment_labels.txt data
+        dict_file=os.path.join(self.path_to_raw_data,"dictionary.txt")
+        dict_phrases=dict([])
+        with open(dict_file,"r") as dict_f:
+            lines=dict_f.readlines()
+            for line in lines:
+                line_splt=line.split("|")
+                line_splt[1]=line_splt[1].replace("\n","")
+                assert len(line_splt)==2
+                dict_phrases[line_splt[0]]=line_splt[1]
 
+        senti_l_file=os.path.join(self.path_to_raw_data,"sentiment_labels.txt")
+        dict_sentilab = dict([])
+        with open(senti_l_file,"r") as senti_l_f:
+            lines=senti_l_f.readlines()
+            for line in lines:
+                line_splt=line.split("|")
+                line_splt[1] = line_splt[1].replace("\n", "")
+                assert len(line_splt)==2
+                dict_sentilab[line_splt[0]]=line_splt[1]
 
+        ## Combine the two dictionaries
+        dict_phrases2senti = dict([])
+        for key,value in dict_phrases.items():
+            dict_phrases2senti[key]=dict_sentilab[value]
+
+        ## Get data sentences and add tag
+
+        data_text = os.path.join(self.path_to_raw_data, "datasetSentences.txt")
+        text_sentiment_l=[]
+        with open(data_text, "r") as text_f:
+            lines = text_f.readlines()
+            for line in lines:
+                line_splt = line.split("\t")
+                assert len(line_splt)==2
+                line_splt[1] = line_splt[1].replace("\n", "")
+                wrd_splt=line_splt[1].split(" ")
+                for wrd in wrd_splt:
+                    senti_point=dict_phrases2senti.get(wrd,0.5)
+                    senti_point=int(4.9*float(senti_point))
+                    text_sentiment_l.append((wrd,senti_point))
+
+        return text_sentiment_l
 
 
 
