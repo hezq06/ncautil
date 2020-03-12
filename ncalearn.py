@@ -649,6 +649,8 @@ class PyTrain_Lite(object):
             if optimizer_label == "adam":
                 print("Using adam optimizer")
                 self.optimizer = torch.optim.Adam(self.rnn.parameters(), lr=lr, weight_decay=0.0)
+            elif optimizer_label == "adamw":
+                self.optimizer = torch.optim.AdamW(self.rnn.parameters(), lr=lr, weight_decay=0.01)
             else:
                 print("Using SGD optimizer")
                 self.optimizer = torch.optim.SGD(self.rnn.parameters(), lr=lr)
@@ -3264,8 +3266,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         return x, outlab, None
 
     def eval_mem(self, x, label, output, rnn):
-        # return self.custom_eval_mem_sup(x, label, output, rnn)
-        return self.custom_eval_mem_sup_special(x, label, output, rnn)
+        return self.custom_eval_mem_sup(x, label, output, rnn)
+        # return self.custom_eval_mem_sup_special(x, label, output, rnn)
 
     def custom_eval_mem_sup(self, x, label, output, rnn):
         """

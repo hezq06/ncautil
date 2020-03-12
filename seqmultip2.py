@@ -57,17 +57,20 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
 
     def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None, coop_context_set=None):
 
-        logit_train, hn_train = self.trainer(inputl[0], hidden1[0], logit_mode=True, schedule=schedule)
-        logit_coop, hn_coop = self.cooprer(inputl[1], hidden1[1], logit_mode=True, schedule=1.0,
+        logit_train, hn_train = self.trainer(inputl, hidden1[0], logit_mode=True, schedule=schedule)
+        logit_coop, hn_coop = self.cooprer(inputl, hidden1[1], logit_mode=True, schedule=1.0,
                                            context_set=coop_context_set)
+        # logit_train, hn_train = self.trainer(inputl[0], hidden1[0], logit_mode=True, schedule=schedule)
+        # logit_coop, hn_coop = self.cooprer(inputl[1], hidden1[1], logit_mode=True, schedule=1.0,
+        #                                    context_set=coop_context_set)
         self.loss_intf = self.trainer.loss_intf
         # print(self.loss_intf)
         self.context=self.trainer.context
         self.gssample=self.trainer.gssample
         # self.ctheta = self.trainer.ctheta
         # self.cmu = self.trainer.cmu
-        # self.context_coop = self.cooprer.context
-        # self.gssample_coop = self.cooprer.gssample
+        self.context_coop = self.cooprer.context
+        self.gssample_coop = self.cooprer.gssample
 
         # output=logit_coop[0]+logit_train[0]
         output = logit_coop + logit_train
