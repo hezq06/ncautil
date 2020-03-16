@@ -21,6 +21,98 @@ from ncautil.ptfunction import *
 
 from awd_lstm_lm.weight_drop import WeightDrop
 
+class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
+    """
+    BiGRU_NLP_GSVIB equivalent for step 2 of interpretation task
+    """
+
+    def __init__(self, level1_coop, hidden_sizel, context_sizel, gs_headl, mlp_hiddenl, output_size, num_layers=1 ,para=None):
+        """
+
+        :param trainer: trainer can be None
+        :param cooprer: cooprer is not trained
+        :param para:
+        """
+        super(self.__class__, self).__init__()
+
+        self.hidden_sizel = hidden_sizel
+        self.context_sizel = context_sizel
+        self.mlp_hiddenl = mlp_hiddenl
+
+        self.level1_coop = level1_coop
+        for param in self.level1_coop.parameters():
+            param.requires_grad = False
+        self.level1_coop.cooprer.coop_mode=True
+        self.level1_coop.trainer.coop_mode = True
+        self.level1_coop.coop_mode = True
+
+        self.output_size=output_size
+        self.num_layers=num_layers
+
+        lsize_in_1=self.level1_coop.cooprer.context_size*self.level1_coop.cooprer.gs_head
+        hidden_dim_1=hidden_sizel[0]
+        context_dim_1=context_sizel[0]
+        gs_head_1=gs_headl[0]
+        mlp_hidden_1=mlp_hiddenl[0]
+        self.level2_gsvib_1=BiGRU_NLP_GSVIB(lsize_in_1,hidden_dim_1,context_dim_1,gs_head_1,mlp_hidden_1,
+                        self.output_size,num_layers=self.num_layers,para=para)
+
+        lsize_in_2 = self.level1_coop.trainer.context_size*self.level1_coop.trainer.gs_head
+        hidden_dim_2 = hidden_sizel[1]
+        context_dim_2 = context_sizel[1]
+        gs_head_2 = gs_headl[1]
+        mlp_hidden_2 = mlp_hiddenl[1]
+        self.level2_gsvib_2 = BiGRU_NLP_GSVIB(lsize_in_2, hidden_dim_2, context_dim_2, gs_head_2, mlp_hidden_2,
+                                              self.output_size, num_layers=self.num_layers, para=para)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+
+    def para(self,para):
+        self.freeze_mode=para.get("freeze_mode",False)
+
+    def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None, coop_context_set=None):
+
+        # if not self.freeze_mode:
+        #     temperature = np.exp(-schedule * 5)
+        # else:
+        #     temperature = np.exp(-5)
+
+        self.cuda_device = inputl.device
+
+        # hidden1 [level1_coop hidden, BiGRU1 hidden, BiGRU2 hidden]
+        logit_level1, hn_level1 = self.level1_coop(inputl, hidden1[0], logit_mode=True, schedule=1.0)
+        # gasample_lv1_t = self.level1_coop.cooprer.gssample # level1 task oriented
+        # gasample_lv1_s = self.level1_coop.trainer.gssample # level1 task-independent self-prediction
+        gasample_lv1_t,gasample_lv1_s = logit_level1
+
+        # wd, batch, gs_head, con_dim = gasample_lv1_t.shape
+
+        logit_level2_1, hn_level2_1 = self.level2_gsvib_1(gasample_lv1_t,hidden1[1],logit_mode=True,schedule=schedule)
+
+        logit_level2_2, hn_level2_2 = self.level2_gsvib_2(gasample_lv1_s, hidden1[2], logit_mode=True, schedule=schedule)
+
+        self.context = torch.cat((self.level2_gsvib_1.context,self.level2_gsvib_1.context),dim=-1)
+        self.p_prior = torch.cat((self.level2_gsvib_1.p_prior,self.level2_gsvib_1.p_prior),dim=-1)
+        self.gssample = torch.cat((self.level2_gsvib_1.gssample,self.level2_gsvib_1.gssample),dim=-1)
+        self.loss_intf = [self.context, self.p_prior]
+
+        output = logit_level2_1 + logit_level2_2
+
+        if add_logit is not None:
+            output = output + add_logit
+        if not logit_mode:
+            output = self.softmax(output)
+
+        return output,[hn_level1,hn_level2_1,hn_level2_2]
+
+    def initHidden(self,batch):
+        return [self.level1_coop.initHidden(batch),self.level2_gsvib_1.initHidden(batch),self.level2_gsvib_2.initHidden(batch)]
+
+    def initHidden_cuda(self,device, batch):
+        return [self.level1_coop.initHidden_cuda(device, batch),
+                self.level2_gsvib_1.initHidden_cuda(device, batch),
+                self.level2_gsvib_2.initHidden_cuda(device, batch)]
+
 class ABS_NLP_COOP_LOGIT(torch.nn.Module):
     """
     An abstrac cooperation container for logit cooperation
@@ -47,19 +139,43 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
             para = dict([])
         self.para(para)
 
+        if self.cooprer_attn_mode:
+            self.cooprer_attn= torch.nn.Linear(self.cooprer.context_attn_size, self.trainer.gs_head) # Attention from pos tag to representation, key to control hierachy/combinatory
+
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.sigmoid = torch.nn.Sigmoid()
+        self.gsigmoid = Gumbel_Sigmoid()
 
         self.logit_train=None
 
     def para(self,para):
-        pass
+        self.cooprer_attn_mode=para.get("cooprer_attn_mode",False)
+        self.freeze_mode=para.get("freeze_mode",False)
+        self.coop_mode=para.get("coop_mode",False)
 
     def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None, coop_context_set=None):
 
-        logit_train, hn_train = self.trainer(inputl, hidden1[0], logit_mode=True, schedule=schedule)
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        self.cuda_device = inputl.device
+
         logit_coop, hn_coop = self.cooprer(inputl, hidden1[1], logit_mode=True, schedule=1.0,
                                            context_set=coop_context_set)
+        if self.cooprer_attn_mode:
+            dw,dbatch,gs_head,context_size=self.cooprer.gssample.shape
+            attention = self.cooprer_attn(self.cooprer.gssample.view(dw,dbatch,gs_head*context_size))
+            attention_sig = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
+        else:
+            attention_sig = None
+        logit_train, hn_train = self.trainer(inputl, hidden1[0], logit_mode=True, schedule=schedule,
+                                             attention_sig=attention_sig)
+
+        if self.coop_mode:
+            return [logit_coop,logit_train], None # Coop is label, train is self
+
         # logit_train, hn_train = self.trainer(inputl[0], hidden1[0], logit_mode=True, schedule=schedule)
         # logit_coop, hn_coop = self.cooprer(inputl[1], hidden1[1], logit_mode=True, schedule=1.0,
         #                                    context_set=coop_context_set)
@@ -882,10 +998,12 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.output_size = output_size
-        self.context_size=context_size
+        self.context_size = context_size
         self.gs_head=gs_head
         self.mlp_hidden=mlp_hidden
         self.num_layers=num_layers
+
+        self.context_attn_size = self.gs_head*self.context_size
 
         # self.coop_mode=False
 
@@ -923,8 +1041,9 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         self.freeze_mode = para.get("freeze_mode", False)
         self.temp_scan_num = para.get("temp_scan_num", 1)
         self.dropout_rate = para.get("dropout_rate", 0.2)
+        self.coop_mode = para.get("coop_mode", False)
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None, attention_sig=None):
         """
         Forward
         :param input: [window batch l_size]
@@ -946,19 +1065,30 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
 
         context = self.h2c(hout)
         context = context.view(dw, batch, self.gs_head, self.context_size)
+
+        if attention_sig is not None:
+            p_prior_exp = self.prior.expand(dw, batch, self.gs_head, self.context_size)
+            # Sigmoid attention from POS
+            context = context * attention_sig.view(dw, batch, self.gs_head, 1) + p_prior_exp * (
+                        1 - attention_sig.view(dw, batch, self.gs_head, 1))
+            context = self.softmax(context)
+
         context = self.softmax(context)
         if context_set is not None:
             context=context_set
 
         gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
 
-        p_prior=self.softmax(self.prior)
+        p_prior = self.softmax(self.prior)
         self.context = context
         self.p_prior=p_prior
         self.gssample = gssample
         self.loss_intf = [self.context, p_prior]
 
         gssample = gssample.view(dw, batch, self.gs_head*self.context_size)
+
+        if self.coop_mode:
+            return gssample, None
 
         if self.mlp_num_layers > 0:
             hidden_c=self.c2h(gssample)
