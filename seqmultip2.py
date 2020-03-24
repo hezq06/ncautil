@@ -23,10 +23,10 @@ from awd_lstm_lm.weight_drop import WeightDrop
 
 class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
     """
-    BiGRU_NLP_GSVIB equivalent for step 2 of interpretation task
+    BiGRU_NLP_GSVIB equivalent for step 2 of interpretation task !!!!!! Not working with DistributedDataParallel
     """
 
-    def __init__(self, level1_coop, hidden_sizel, context_sizel, gs_headl, mlp_hiddenl, output_size, num_layers=1 ,para=None):
+    def __init__(self, level1_coop, lsize_in, hidden_sizel, context_sizel, gs_headl, mlp_hiddenl, output_size, num_layers=1 ,para=None):
         """
 
         :param trainer: trainer can be None
@@ -35,6 +35,7 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         """
         super(self.__class__, self).__init__()
 
+        self.lsize_in=lsize_in
         self.hidden_sizel = hidden_sizel
         self.context_sizel = context_sizel
         self.mlp_hiddenl = mlp_hiddenl
@@ -49,23 +50,43 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         self.output_size=output_size
         self.num_layers=num_layers
 
-        lsize_in_1=self.level1_coop.cooprer.context_size*self.level1_coop.cooprer.gs_head
         hidden_dim_1=hidden_sizel[0]
         context_dim_1=context_sizel[0]
         gs_head_1=gs_headl[0]
         mlp_hidden_1=mlp_hiddenl[0]
-        self.level2_gsvib_1=BiGRU_NLP_GSVIB(lsize_in_1,hidden_dim_1,context_dim_1,gs_head_1,mlp_hidden_1,
-                        self.output_size,num_layers=self.num_layers,para=para)
+        lsize_in_1=level1_coop.cooprer.gs_head*level1_coop.cooprer.context_size
+        # self.level2_gsvib_1=BiGRU_NLP_GSVIB(lsize_in_1,hidden_dim_1,context_dim_1,gs_head_1,mlp_hidden_1,
+        #                 self.output_size,num_layers=self.num_layers,para=para)
 
-        lsize_in_2 = self.level1_coop.trainer.context_size*self.level1_coop.trainer.gs_head
+        # self.level2_gsvib_1 = BiGRU_NLP(lsize_in_1, hidden_dim_1, self.output_size, num_layers=self.num_layers, para=para)
+        # self.level2_gsvib_1 = FF_MLP(lsize_in_1,mlp_hidden_1,self.output_size,mlp_num_layers=self.num_layers,para=para)
+        self.level2_gsvib_1 = FF_MLP_GSVIB(lsize_in_1, mlp_hidden_1, context_dim_1, gs_head_1, self.output_size, mlp_num_layers=self.num_layers,
+                                     para=para)
+
         hidden_dim_2 = hidden_sizel[1]
         context_dim_2 = context_sizel[1]
         gs_head_2 = gs_headl[1]
         mlp_hidden_2 = mlp_hiddenl[1]
-        self.level2_gsvib_2 = BiGRU_NLP_GSVIB(lsize_in_2, hidden_dim_2, context_dim_2, gs_head_2, mlp_hidden_2,
-                                              self.output_size, num_layers=self.num_layers, para=para)
+        lsize_in_2 = level1_coop.trainer.gs_head * level1_coop.trainer.context_size
+        # self.level2_gsvib_2 = BiGRU_NLP_GSVIB(lsize_in_2, hidden_dim_2, context_dim_2, gs_head_2, mlp_hidden_2,
+        #                                       self.output_size, num_layers=self.num_layers, para=para)
+
+        # self.level2_gsvib_2 = BiGRU_NLP(lsize_in_2, hidden_dim_2, self.output_size, num_layers=self.num_layers,
+        #                                 para=para)
+        # self.level2_gsvib_2 = FF_MLP(lsize_in_2, mlp_hidden_2, self.output_size, mlp_num_layers=self.num_layers, para=para)
+        self.level2_gsvib_2 = FF_MLP_GSVIB(lsize_in_2, mlp_hidden_2, context_dim_2, gs_head_2, self.output_size,
+                                     mlp_num_layers=self.num_layers,
+                                     para=para)
+
+        ## Synergy Check
+        # lsize_in_3 = lsize_in_1+lsize_in_2
+        # self.level2_gsvib_3 = BiGRU_NLP_GSVIB(lsize_in_3, hidden_dim_2, context_dim_2, gs_head_2, mlp_hidden_2,
+        #                                       self.output_size, num_layers=self.num_layers, para=para)
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.layer_norm1 = torch.nn.LayerNorm(lsize_in_1)
+        self.layer_norm2 = torch.nn.LayerNorm(lsize_in_2)
+        # self.layer_norm3 = torch.nn.LayerNorm(lsize_in_3)
 
     def para(self,para):
         self.freeze_mode=para.get("freeze_mode",False)
@@ -77,41 +98,59 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         # else:
         #     temperature = np.exp(-5)
 
-        self.cuda_device = inputl.device
+        self.cuda_device = inputl[0].device
 
         # hidden1 [level1_coop hidden, BiGRU1 hidden, BiGRU2 hidden]
         logit_level1, hn_level1 = self.level1_coop(inputl, hidden1[0], logit_mode=True, schedule=1.0)
         # gasample_lv1_t = self.level1_coop.cooprer.gssample # level1 task oriented
         # gasample_lv1_s = self.level1_coop.trainer.gssample # level1 task-independent self-prediction
-        gasample_lv1_t,gasample_lv1_s = logit_level1
-
+        gasample_lv1_t, gasample_lv1_s = logit_level1
+        gasample_lv1_t = self.layer_norm1(gasample_lv1_t)
+        gasample_lv1_s = self.layer_norm2(gasample_lv1_s)
         # wd, batch, gs_head, con_dim = gasample_lv1_t.shape
+        # gasample_lv1_t = self.layer_norm0(gasample_lv1_t.view(wd, batch,-1))
+        # gasample_lv1_s = self.layer_norm1(gasample_lv1_s.view(wd, batch,-1))
 
-        logit_level2_1, hn_level2_1 = self.level2_gsvib_1(gasample_lv1_t,hidden1[1],logit_mode=True,schedule=schedule)
+        # gasample_lv1_t, gasample_lv1_s = inputl
+
+        logit_level2_1, hn_level2_1 = self.level2_gsvib_1(gasample_lv1_t, hidden1[1],logit_mode=True,schedule=schedule)
 
         logit_level2_2, hn_level2_2 = self.level2_gsvib_2(gasample_lv1_s, hidden1[2], logit_mode=True, schedule=schedule)
 
-        self.context = torch.cat((self.level2_gsvib_1.context,self.level2_gsvib_1.context),dim=-1)
-        self.p_prior = torch.cat((self.level2_gsvib_1.p_prior,self.level2_gsvib_1.p_prior),dim=-1)
-        self.gssample = torch.cat((self.level2_gsvib_1.gssample,self.level2_gsvib_1.gssample),dim=-1)
+        # gasample_lv1_a = torch.cat((gasample_lv1_t,gasample_lv1_s),dim=-1)
+        # gasample_lv1_a = self.layer_norm3(gasample_lv1_a)
+        # logit_level2_3, hn_level2_3 = self.level2_gsvib_3(gasample_lv1_a, hidden1[2], logit_mode=True, schedule=schedule)
+
+        self.context = torch.cat((self.level2_gsvib_1.context,self.level2_gsvib_2.context),dim=-1)
+        self.p_prior = torch.cat((self.level2_gsvib_1.p_prior,self.level2_gsvib_2.p_prior),dim=-1)
+        self.gssample = torch.cat((self.level2_gsvib_1.gssample,self.level2_gsvib_2.gssample),dim=-1)
         self.loss_intf = [self.context, self.p_prior]
 
         output = logit_level2_1 + logit_level2_2
+        # output = logit_level2_3
 
         if add_logit is not None:
             output = output + add_logit
         if not logit_mode:
             output = self.softmax(output)
 
-        return output,[hn_level1,hn_level2_1,hn_level2_2]
+        # return output,[hn_level2_1,hn_level2_2]
+
+        return output, [hn_level1, hn_level2_1, hn_level2_2]
+        # return output, [hn_level1, hn_level2_1, hn_level2_3]
 
     def initHidden(self,batch):
-        return [self.level1_coop.initHidden(batch),self.level2_gsvib_1.initHidden(batch),self.level2_gsvib_2.initHidden(batch)]
+        return [self.level1_coop.initHidden(batch),self.level2_gsvib_1.initHidden(batch), self.level2_gsvib_2.initHidden(batch)]
+        # return [self.level2_gsvib_1.initHidden(batch), self.level2_gsvib_2.initHidden(batch)]
+        # return self.level2_gsvib_1.initHidden(batch)
 
     def initHidden_cuda(self,device, batch):
         return [self.level1_coop.initHidden_cuda(device, batch),
-                self.level2_gsvib_1.initHidden_cuda(device, batch),
-                self.level2_gsvib_2.initHidden_cuda(device, batch)]
+            self.level2_gsvib_1.initHidden_cuda(device, batch),
+            self.level2_gsvib_2.initHidden_cuda(device, batch)]
+        # return [self.level2_gsvib_1.initHidden_cuda(device, batch),
+        #         self.level2_gsvib_2.initHidden_cuda(device, batch)]
+        # return self.level2_gsvib_1.initHidden_cuda(device, batch)
 
 class ABS_NLP_COOP_LOGIT(torch.nn.Module):
     """
@@ -474,6 +513,7 @@ class BiGRU_NLP(torch.nn.Module):
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
         self.input_mask = None
+        self.out_mask = None
 
     def para(self,para):
         self.weight_dropout = para.get("weight_dropout", 0.0)
@@ -958,8 +998,10 @@ class FF_MLP(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax()
 
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
     def para(self,para):
-        pass
+        self.dropout_rate = para.get("dropout_rate", 0.2)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
         """
@@ -973,10 +1015,135 @@ class FF_MLP(torch.nn.Module):
         if self.mlp_num_layers > 0:
             hidden=self.i2h(input)
             for fmd in self.linear_layer_stack:
+                hidden = self.dropout(hidden)
                 hidden = fmd(hidden)
             output=self.h2o(hidden)
         else:
             output = self.i2o(input)
+
+        if not logit_mode:
+            output = self.softmax(output)
+
+        return output, None
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self, device, batch):
+        return None
+
+class FF_MLP_GSVIB(torch.nn.Module):
+    """
+    Feed forward multi-layer perceotron
+    """
+    def __init__(self, input_size, mlp_hidden, context_size, gs_head, output_size, mlp_num_layers=[2,2] ,para=None):
+        super(self.__class__, self).__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.context_size = context_size
+        self.gs_head = gs_head
+        self.mlp_hidden=mlp_hidden
+        self.mlp_num_layers = mlp_num_layers[0]
+        self.mlp_num_layers_2 = mlp_num_layers[1]
+
+        # self.coop_mode=False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        if self.mlp_num_layers>0:
+            self.i2h = torch.nn.Linear(input_size, mlp_hidden)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.LayerNorm(mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
+            self.h2o = torch.nn.Linear(mlp_hidden, context_size*gs_head)
+        else:
+            self.i2o = torch.nn.Linear(input_size, context_size*gs_head)
+
+        self.prior = torch.nn.Parameter(torch.zeros((gs_head, context_size)), requires_grad=True)
+
+        if self.mlp_num_layers_2>0:
+            self.c2h_2 = torch.nn.Linear(context_size*gs_head, mlp_hidden)
+            self.linear_layer_stack_2 = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.LayerNorm(mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
+            self.h2o_2 = torch.nn.Linear(mlp_hidden, output_size)
+        else:
+            self.c2o_2 = torch.nn.Linear(context_size*gs_head, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax()
+
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+    def para(self,para):
+        self.dropout_rate = para.get("dropout_rate", 0.0)
+        self.freeze_mode = para.get("freeze_mode", False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None, attention_sig=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        self.cuda_device=input.device
+
+        if schedule < 1.0:  # Multi-scanning trial
+            schedule = schedule * self.temp_scan_num
+            schedule = schedule - np.floor(schedule)
+
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        if self.mlp_num_layers > 0:
+            hidden=self.i2h(input)
+            for fmd in self.linear_layer_stack:
+                # hidden = self.dropout(hidden)
+                hidden = fmd(hidden)
+            context=self.h2o(hidden)
+        else:
+            context = self.i2o(input)
+
+        dw, batch, l_size = input.shape
+        context = context.view(dw, batch, self.gs_head, self.context_size)
+
+        if attention_sig is not None:
+            p_prior_exp = self.prior.expand(dw, batch, self.gs_head, self.context_size)
+            # Sigmoid attention from POS
+            context = context * attention_sig.view(dw, batch, self.gs_head, 1) + p_prior_exp * (
+                    1 - attention_sig.view(dw, batch, self.gs_head, 1))
+            context = self.softmax(context)
+
+        context = self.softmax(context)
+        if context_set is not None:
+            context = context_set
+
+        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+
+        p_prior = self.softmax(self.prior)
+        self.context = context
+        self.p_prior = p_prior
+        self.gssample = gssample
+        self.loss_intf = [self.context, p_prior]
+
+        gssample = gssample.view(dw, batch, self.gs_head * self.context_size)
+
+        if self.mlp_num_layers_2 > 0:
+            hidden_c=self.c2h_2(gssample)
+            # hidden_c=self.dropout(hidden_c)
+            for fmd in self.linear_layer_stack_2:
+                hidden_c = fmd(hidden_c)
+            output=self.h2o_2(hidden_c)
+        else:
+            output = self.c2o_2(gssample)
 
         if not logit_mode:
             output = self.softmax(output)
@@ -1088,7 +1255,8 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         gssample = gssample.view(dw, batch, self.gs_head*self.context_size)
 
         if self.coop_mode:
-            return gssample, None
+            # return gssample, None
+            return context.view(dw, batch, self.gs_head*self.context_size), None
 
         if self.mlp_num_layers > 0:
             hidden_c=self.c2h(gssample)

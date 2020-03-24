@@ -32,9 +32,13 @@ from torchvision import datasets
 #     gru_gumbel = gru_gumbel.to(cuda_device)
 
 
-def save_data(data,file):
-    pickle.dump(data, open(file, "wb"))
-    print("Data saved to ", file)
+def save_data(data,file,large_data=False):
+    if not large_data:
+        pickle.dump(data, open(file, "wb"))
+        print("Data saved to ", file)
+    else:
+        pickle.dump(data, open(file, "wb"), protocol=4)
+        print("Large Protocal 4 Data saved to ", file)
 
 def load_data(file):
     data = pickle.load(open(file, "rb"))

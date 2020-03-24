@@ -10,6 +10,7 @@ from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import time, os, pickle
+import subprocess
 
 import torch
 import copy
@@ -29,7 +30,7 @@ from tqdm import tqdm
 import datetime
 
 from ncautil.ncamath import *
-from ncautil.datautil import save_model
+from ncautil.datautil import save_model,save_data,load_data
 
 def pltscatter(data,dim=(0,1),labels=None,title=None,xlabel=None,ylabel=None,color=None):
     assert data.shape[0]>data.shape[1]
@@ -558,7 +559,8 @@ class PyTrain_Lite(object):
 
         if self.dist_data_parallel:
             rnn.to(self.cuda_device)
-            self.rnn = torch.nn.parallel.DistributedDataParallel(rnn, device_ids=[self.cuda_device], output_device=self.cuda_device,dim=self.dist_data_parallel_dim)
+            self.rnn = torch.nn.parallel.DistributedDataParallel(rnn, device_ids=[self.cuda_device], output_device=self.cuda_device,dim=self.dist_data_parallel_dim,
+                                                                 find_unused_parameters=False)
         elif self.data_parallel is not None:
             self.rnn = torch.nn.DataParallel(rnn, device_ids=self.data_parallel,dim=self.data_parallel_dim)
         else:
@@ -682,7 +684,7 @@ class PyTrain_Lite(object):
                 else:
                     hidden = pt_rnn.initHidden(self.batch)
 
-                x, label, _ = self.get_data(self.dataset["data_train"])
+                x, label, loss_data = self.get_data(self.dataset["data_train"])
 
                 ii_tot = iis + ii_epoch * step_per_epoch
                 cstep=ii_tot / (epoch*step_per_epoch)
@@ -696,7 +698,7 @@ class PyTrain_Lite(object):
                 #             outputl = output.view(1, self.batch, self.lsize_out)
                 #         else:
                 #             outputl = torch.cat((outputl.view(-1, self.batch, self.lsize_out), output.view(1, self.batch, self.lsize_out)), dim=0)
-                self.loss = self.lossf(outputl, label, pt_rnn, ii_tot/(epoch*step_per_epoch))
+                self.loss = self.lossf(outputl, label, pt_rnn, ii_tot/(epoch*step_per_epoch), loss_data=loss_data)
                 self._profiler(ii_tot, self.loss)
                 self.optimizer.zero_grad()
                 self.loss.backward()
@@ -766,13 +768,13 @@ class PyTrain_Lite(object):
                 hidden = pt_rnn.initHidden(batch)
             if allordermode:
                 rstartv=iis*batch*self.window+np.linspace(0,batch-1,batch)*self.window
-                x, label, _ = self.get_data(self.dataset[data_pt],rstartv=rstartv,batch=batch)
+                x, label, loss_data = self.get_data(self.dataset[data_pt],rstartv=rstartv,batch=batch)
             else:
-                x, label, _ = self.get_data(self.dataset[data_pt],batch=batch)
+                x, label, loss_data = self.get_data(self.dataset[data_pt],batch=batch)
 
             output, hidden = pt_rnn(x, hidden, schedule=schedule)
             if posi_ctrl is None:
-                loss = self.lossf_eval(output, label, pt_rnn, None)
+                loss = self.lossf_eval(output, label, pt_rnn, None, loss_data=loss_data)
             else:
                 loss = self.lossf_eval(output[posi_ctrl,:,:].view(1,output.shape[1],output.shape[2]), label[:,posi_ctrl].view(label.shape[0],1), pt_rnn, None)
             if eval_mem_flag:
@@ -822,7 +824,7 @@ class PyTrain_Lite(object):
 
         return perp
 
-    def do_test(self,step_test=600,schedule=1.0,data_pt="data_valid",posi_ctrl=None,seqmode=True):
+    def do_test(self,step_test=600,schedule=1.0,data_pt="data_valid",posi_ctrl=None, mask_comp=False):
         """
         Calculate correct rate
         :param step_test:
@@ -840,22 +842,23 @@ class PyTrain_Lite(object):
                 hidden = self.rnn.initHidden_cuda(self.device, self.batch)
             else:
                 hidden = self.rnn.initHidden(self.batch)
-            x, label, _ = self.get_data(self.dataset[data_pt])
+            x, label, loss_data = self.get_data(self.dataset[data_pt])
             output, hidden = self.rnn(x, hidden, schedule=schedule)
-            if seqmode:
-                output = output.permute(1, 2, 0)
+            output = output.permute(1, 2, 0)
             _,predicted = torch.max(output,1)
-            if seqmode:
-                if posi_ctrl is None:
-                    total += label.size(0)*label.size(1)
-                    correct += (predicted == label).sum().item()
-                else:
-                    total += label.size(0)
-                    correct += (predicted[:,posi_ctrl] == label[:,posi_ctrl]).sum().item()
-
-            else:
+            if posi_ctrl is not None:
                 total += label.size(0)
+                correct += (predicted[:, posi_ctrl] == label[:, posi_ctrl]).sum().item()
+            elif mask_comp:
+                loss_data = loss_data.permute(1, 0)
+                total += torch.sum(1.0-loss_data.cpu())
+                crrect_mat= (predicted == label).cpu().float()
+                crrect_mat_masked=crrect_mat*(1.0-loss_data.cpu())
+                correct += crrect_mat_masked.sum().item()
+            else:
+                total += label.size(0) * label.size(1)
                 correct += (predicted == label).sum().item()
+
             correct_ratel.append(correct / total)
             # self.eval_mem(output)
         # print("Evaluation Perplexity: ", np.mean(np.array(perpl)))
@@ -1015,7 +1018,11 @@ class PyTrain_Lite(object):
                 plt.plot(x[:, 0], x[:, 1])
                 if self.loss_clip > 0:
                     # plt.ylim((-self.loss_clip, self.loss_clip))
-                    plt.ylim((0, self.loss_clip))
+                    if self.loss_exp_flag:
+                        low_b=1.0
+                    else:
+                        low_b=0.0
+                    plt.ylim((low_b, self.loss_clip))
                 if self.save_fig is not None:
                     filename=self.save_fig+str(self.cuda_device)+".png"
                     print(filename)
@@ -1308,11 +1315,11 @@ class PyTrain_Interface_Default(object):
     def get_data(self, batch=None, rstartv=None):
         return self.get_data_sent_sup(batch=batch, rstartv=rstartv)
 
-    def lossf(self, outputl, outlab, model=None, cstep=None):
-        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+    def lossf(self, outputl, outlab, model=None, cstep=None, loss_data=None):
+        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep, loss_data=loss_data)
 
-    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
-        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None, loss_data=None):
+        return self.KNWLoss(outputl, outlab, model=model, cstep=cstep, loss_data=loss_data)
 
 
     def eval_mem(self, x, label, output, rnn):
@@ -3183,31 +3190,43 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.allname=["h2c","c2o"]
 
     def get_data(self, dataset, batch=None, rstartv=None):
+        if batch is None:
+            batch = self.pt.batch
         if self.version == "gsvib_coop_special" or self.version == "gsvib_attcoop":
-            if batch is None:
-                batch = self.pt.batch
             data_shape = [[self.pt.window, batch, self.pt.lsize_in[0]],[self.pt.window, batch, self.pt.lsize_in[1]]]
             return MyDataFun.get_data_sup_coop_special(dataset, data_shape, self.pt.pt_emb, self.pt, rstartv=None, shift=False)
+        elif self.version == "gsvib_task2":
+            data_shape = [self.pt.window, batch, self.pt.lsize_in[0],self.pt.lsize_in[1]]
+            return MyDataFun.get_data_sup_task2(dataset, data_shape, self.pt, rstartv=None)
+            # return self.get_data_sup_task2(dataset, batch=batch, rstartv=rstartv)
+        elif self.version == "with_mask_data_loss":
+            data_shape = [self.pt.window, batch, self.pt.lsize_in]
+            return MyDataFun.get_data_sup_with_mask(dataset, data_shape, self.pt, rstartv=None)
+        elif self.version == "with_mask":
+            data_shape = [self.pt.window, batch, self.pt.lsize_in]
+            return MyDataFun.get_data_sup(dataset, data_shape, self.pt.pt_emb,self.pt, rstartv=None)
         else:
             return self.get_data_sup(dataset, batch=batch, rstartv=rstartv)
 
-    def lossf(self, outputl, outlab, model=None, cstep=None):
+    def lossf(self, outputl, outlab, model=None, cstep=None, loss_data=None):
         if self.version == "vib":
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
-        elif self.version == "gsvib" or self.version == "gsvib_coop_special":
+        elif self.version in ["gsvib" , "gsvib_coop_special" , "gsvib_task2"]:
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version == "gsvib_attcoop":
             return MyLossFun.KNWLoss_GSVIB_ATTCOOP(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
+        elif self.version == "with_mask_data_loss":
+            return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep, data_loss_mask=loss_data)
         elif self.version == "with_mask":
-            return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep)
+            return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep, data_loss_mask=None)
         elif self.version == "default":
             return MyLossFun.KNWLoss(outputl, outlab)
         else:
             raise Exception("Unsupported version.")
 
-    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None, loss_data=None):
         # return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         # return self.KNWLoss_GateReg_TDFF_KL(outputl, outlab, model=model, cstep=cstep)
         # if self.version in [0]:
@@ -3215,7 +3234,10 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # elif self.version==1:
         #     return self.KNWLoss(outputl, outlab, model=model, cstep=cstep)
         # return MyLossFun.KNWLoss(outputl, outlab)
-        return MyLossFun.KNWLoss_VIB_EVAL(outputl, outlab, model)
+        if self.version == "with_mask":
+            return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep, data_loss_mask=loss_data)
+        else:
+            return MyLossFun.KNWLoss_VIB_EVAL(outputl, outlab, model)
 
     def get_data_sup(self, dataset_dict, batch=None, rstartv=None, shift=False):
         """
@@ -3284,8 +3306,10 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         if self.pt.evalmem is None:
             self.pt.evalmem = [[] for ii in range(7)]  # x,label,context
 
-
-        self.pt.evalmem[0].append(x.cpu().data.numpy())
+        try:
+            self.pt.evalmem[0].append(x.cpu().data.numpy())
+        except:
+            pass
         self.pt.evalmem[1].append(label.cpu().data.numpy())
         self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
         # self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
@@ -3491,6 +3515,116 @@ class MyDataFun(object):
             x = x.to(ptrain_pt.device)
 
         return x, outlab, None
+
+    @staticmethod
+    def get_data_sup_with_mask(dataset_dict, data_shape , ptrain_pt, rstartv=None, shift=False, mask_t=100):
+        """
+        :param dataset_dict:
+        :param data_shape: shape like [window, batch, lsize_in]
+        :param pt_emb: embedding
+        :param ptrain_pt: pytrain interface
+        :param rstartv: random start
+        :param shift: data shift
+        ### mask_t , a trial of masking high frequency word
+        :return:
+        """
+        assert len(data_shape) == 3
+
+        window, batch, lsize_in = data_shape
+
+        assert ptrain_pt.digit_input
+        assert ptrain_pt.supervise_mode
+
+        labelset = dataset_dict["label"]
+        dataset = dataset_dict["dataset"]
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+
+        yl = np.zeros((batch, window))
+        for iib in range(batch):
+            if shift:
+                yl[iib, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
+            else:
+                yl[iib, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(window, batch, lsize_in)
+        data_loss_mask = torch.zeros((window, batch))
+        for iib in range(batch):
+            ptdata = dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec1 = ptrain_pt.pt_emb(torch.LongTensor(ptdata))
+            vec1m[:, iib, :] = vec1
+            data_loss_mask[torch.LongTensor(ptdata)<100,iib]=1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if ptrain_pt.gpuavail:
+            outlab = outlab.to(ptrain_pt.device)
+            x = x.to(ptrain_pt.device)
+            data_loss_mask = data_loss_mask.to(ptrain_pt.device)
+
+        return x, outlab, data_loss_mask
+
+    @staticmethod
+    def get_data_sup_task2(dataset_dict, data_shape, ptrain_pt, rstartv=None,shift=False):
+        """
+
+        :param dataset_dict:
+        :param data_shape: shape like [window, batch, lsize_in]
+        :param pt_emb: embedding
+        :param ptrain_pt: pytrain interface
+        :param rstartv: random start
+        :param shift: data shift
+        :return:
+        """
+        assert len(data_shape) == 4
+
+        window, batch, lsize_in_self, lsize_in_pos = data_shape
+
+        assert ptrain_pt.digit_input
+        assert ptrain_pt.supervise_mode
+
+        labelset = dataset_dict["label"]
+        dataset_dict = dataset_dict["dataset"]
+
+        dataset = dataset_dict["words"]
+        gssample_self = dataset_dict["gssample_self"]
+        gssample_pos = dataset_dict["gssample_pos"]
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(gssample_self) - window - 1))
+        yl = np.zeros((batch, window))
+
+        for iib in range(batch):
+            if shift:
+                yl[iib, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
+            else:
+                cplabelset=labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
+                yl[iib, :] = cplabelset
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(window, batch, lsize_in_self)
+        for iib in range(batch):
+            ptdata = gssample_self[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec1m[:, iib, :] = torch.FloatTensor(ptdata)
+        x_self = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        vec1m = torch.zeros(window, batch, lsize_in_pos)
+        for iib in range(batch):
+            ptdata = gssample_pos[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec1m[:, iib, :] = torch.FloatTensor(ptdata)
+        x_pos = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if ptrain_pt.gpuavail:
+            outlab = outlab.to(ptrain_pt.device)
+            x_self = x_self.to(ptrain_pt.device)
+            x_pos = x_pos.to(ptrain_pt.device)
+
+        return [x_self,x_pos], outlab, None
 
     @staticmethod
     def get_data_sup_coop_special(dataset_dict, data_shapel, pt_embl, ptrain_pt, rstartv=None, shift=False):
@@ -3799,7 +3933,7 @@ class MyLossFun(object):
         return loss1
 
     @staticmethod
-    def KNWLoss_withmask(outputl, outlab, model=None, cstep=None):
+    def KNWLoss_withmask(outputl, outlab, model=None, cstep=None, data_loss_mask=None):
         """
         transformer style masked loss
         :param outputl:
@@ -3811,7 +3945,13 @@ class MyLossFun(object):
         outputl=outputl.permute(1, 2, 0)
         lossc=torch.nn.CrossEntropyLoss(reduce=False)
         loss1 = lossc(outputl, outlab)
-        loss=torch.sum(loss1*(1-model.input_mask.permute(1,0)))/torch.sum(1-model.input_mask.permute(1,0))
+        if data_loss_mask is not None:
+            # comb_mask = model.input_mask * data_loss_mask
+            comb_mask = model.input_mask + data_loss_mask
+            comb_mask[comb_mask > 0.999] = 1
+        else:
+            comb_mask = model.input_mask
+        loss=torch.sum(loss1*(1-comb_mask.permute(1,0)))/torch.sum(1-comb_mask.permute(1,0))
         # loss = torch.sum(loss1 * model.input_mask) / torch.sum(model.input_mask) # should be perfect information
         return loss
 
@@ -3880,13 +4020,14 @@ def dist_cleanup():
 #
 #     cleanup()
 
-def run_training_worker(rank, world_size, dataset, lsize, rnn, interface_para, batch, window, para, run_para, model_name):
+def run_training_worker(rank, world_size, datafile, lsize, rnn, interface_para, batch, window, para, run_para, model_name):
 
     num_epoch, learning_rate, step_per_epoch, print_step, seed = run_para
     dist_setup(rank, world_size, seed)
 
     para["cuda_device"] = rank
     para["dist_data_parallel"] = True
+    dataset = load_data(datafile)
     pt1 = PyTrain_Custom(dataset, lsize, rnn, interface_para, batch=batch, window=window, para=para)
     pt1.run_training(epoch = num_epoch, lr = learning_rate,step_per_epoch = step_per_epoch, print_step = print_step)
     log_name="log"+str(rank)+".txt"
@@ -3904,7 +4045,15 @@ def run_training_worker(rank, world_size, dataset, lsize, rnn, interface_para, b
 
 def dist_run_training(device_ids, dataset, lsize, rnn, interface_para, batch=20, window=30, para=None,run_para=[30,1e-3,2000,500,12345],model_name="bigru.model"):
     world_size=len(device_ids)
+    datafile="dataset_temp"
+    try:
+        f = open(datafile)
+        f.close()
+    except IOError:
+        save_data(dataset, datafile, large_data=True)
+
     mp.spawn(run_training_worker,
-             args=(world_size,dataset, lsize, rnn, interface_para, batch, window, para,run_para,model_name),
+             args=(world_size, datafile, lsize, rnn, interface_para, batch, window, para,run_para,model_name),
              nprocs=world_size,
              join=True)
+    # subprocess.run(["rm", datafile])
