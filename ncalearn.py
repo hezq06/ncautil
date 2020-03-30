@@ -560,7 +560,7 @@ class PyTrain_Lite(object):
         if self.dist_data_parallel:
             rnn.to(self.cuda_device)
             self.rnn = torch.nn.parallel.DistributedDataParallel(rnn, device_ids=[self.cuda_device], output_device=self.cuda_device,dim=self.dist_data_parallel_dim,
-                                                                 find_unused_parameters=False)
+                                                                 find_unused_parameters=True)
         elif self.data_parallel is not None:
             self.rnn = torch.nn.DataParallel(rnn, device_ids=self.data_parallel,dim=self.data_parallel_dim)
         else:
@@ -3318,11 +3318,16 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
         ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
         self.pt.evalmem[4].append(ent.cpu().data.numpy())
-        try:
-            self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
-            self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
-        except:
-            pass
+
+        self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
+        self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
+        # try:
+        #     # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
+        #     # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+        #     self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
+        #     self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
+        # except:
+        #     pass
 
     def custom_eval_mem_sup_special(self, x, label, output, rnn):
         """
@@ -4032,7 +4037,7 @@ def run_training_worker(rank, world_size, datafile, lsize, rnn, interface_para, 
     pt1.run_training(epoch = num_epoch, lr = learning_rate,step_per_epoch = step_per_epoch, print_step = print_step)
     log_name="log"+str(rank)+".txt"
     f = open(log_name, "a")
-    f.write("Log for this run\n")
+    f.write("\n\nLog for this run\n")
     f.write(pt1.log)
     f.close()
 
