@@ -59,20 +59,22 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         gs_head_1=gs_headl[0]
         mlp_hidden_1=mlp_hiddenl[0]
         lsize_in_1=level1_coop.cooprer.gs_head*level1_coop.cooprer.context_size # 1 cooprer POS
+        mlpout_hd_1 = context_dim_1 * gs_head_1
         # self.level2_gsvib_1=BiGRU_NLP_GSVIB(lsize_in_1,hidden_dim_1,context_dim_1,gs_head_1,mlp_hidden_1,
         #                 self.output_size,num_layers=self.num_layers,para=para)
 
         # self.level2_gsvib_1 = BiGRU_NLP(lsize_in_1, hidden_dim_1, self.output_size, num_layers=self.num_layers, para=para)
-        # self.level2_gsvib_1 = FF_MLP(lsize_in_1,mlp_hidden_1,mlp_hidden_1,mlp_num_layers=3,para=para)
+        self.level2_gsvib_1 = FF_MLP(lsize_in_1,mlp_hidden_1,mlpout_hd_1,mlp_num_layers=3,para=para)
         para["coop_mode"] = True
-        self.level2_gsvib_1 = FF_MLP_GSVIB(lsize_in_1, mlp_hidden_1, context_dim_1, gs_head_1, self.output_size, mlp_num_layers=self.num_layers,
-                                     para=para)
+        # self.level2_gsvib_1 = FF_MLP_GSVIB(lsize_in_1, mlp_hidden_1, context_dim_1, gs_head_1, self.output_size, mlp_num_layers=self.num_layers,
+        #                              para=para)
 
         hidden_dim_2 = hidden_sizel[1]
         context_dim_2 = context_sizel[1]
         gs_head_2 = gs_headl[1]
         mlp_hidden_2 = mlp_hiddenl[1]
         lsize_in_2 = level1_coop.trainer.gs_head * level1_coop.trainer.context_size # 2 trainer Semantics
+        mlpout_hd_2 = context_dim_2 * gs_head_2
         # self.level2_gsvib_2 = BiGRU_NLP_GSVIB(lsize_in_2, hidden_dim_2, context_dim_2, gs_head_2, mlp_hidden_2,
         #                                       self.output_size, num_layers=self.num_layers, para=para)
 
@@ -83,9 +85,7 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
                                      mlp_num_layers=self.num_layers,
                                      para=para)
 
-        mlpout_hd_1=context_dim_1*gs_head_1
-        mlpout_hd_2=context_dim_2*gs_head_2
-        self.mlp_out = FF_MLP(mlpout_hd_1+mlpout_hd_2, mlp_hidden_1+mlp_hidden_2, self.output_size, mlp_num_layers=3, para=para)
+        self.mlp_out = FF_MLP(mlpout_hd_1+mlpout_hd_2, mlp_hidden_1+mlp_hidden_2, self.output_size, mlp_num_layers=4, para=para)
 
         self.level2_gsvib_3 = None
         ## Synergy Check
@@ -97,7 +97,7 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.layer_norm1 = torch.nn.LayerNorm(lsize_in_1)
         self.layer_norm2 = torch.nn.LayerNorm(lsize_in_2)
-        # self.layer_norm3 = torch.nn.LayerNorm(lsize_in_3)
+        self.layer_norm3 = torch.nn.LayerNorm(mlpout_hd_1+mlpout_hd_2)
 
     def para(self,para):
         self.freeze_mode=para.get("freeze_mode",False)
@@ -135,9 +135,12 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         # # gasample_lv1_a = self.layer_norm3(gasample_lv1_a)
         # # logit_level2_3, hn_level2_3 = self.level2_gsvib_3(gasample_lv1_a, hidden1[2], logit_mode=True, schedule=schedule)
         else:
-            self.context = torch.cat((self.level2_gsvib_1.context,self.level2_gsvib_2.context),dim=-2)
-            self.p_prior = torch.cat((self.level2_gsvib_1.p_prior,self.level2_gsvib_2.p_prior),dim=-2)
-            self.gssample = torch.cat((self.level2_gsvib_1.gssample,self.level2_gsvib_2.gssample),dim=-2)
+            # self.context = torch.cat((self.level2_gsvib_1.context,self.level2_gsvib_2.context),dim=-2)
+            # self.p_prior = torch.cat((self.level2_gsvib_1.p_prior,self.level2_gsvib_2.p_prior),dim=-2)
+            # self.gssample = torch.cat((self.level2_gsvib_1.gssample,self.level2_gsvib_2.gssample),dim=-2)
+            self.context = self.level2_gsvib_2.context
+            self.p_prior = self.level2_gsvib_2.p_prior
+            self.gssample = self.level2_gsvib_2.gssample
             self.loss_intf = [self.context, self.p_prior]
 
         # if not self.semantic_only_mode:
@@ -148,6 +151,7 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         #     output = logit_level2_2
 
         output = torch.cat((logit_level2_1,logit_level2_2),dim=-1)
+        output = self.layer_norm3(output)
         output, _ = self.mlp_out(output,None,logit_mode=True, schedule=schedule)
 
         if add_logit is not None:
@@ -1022,7 +1026,7 @@ class FF_MLP(torch.nn.Module):
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
     def para(self,para):
-        self.dropout_rate = para.get("dropout_rate", 0.2)
+        self.dropout_rate = para.get("dropout_rate", 0.0)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
         """

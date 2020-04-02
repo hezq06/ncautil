@@ -560,7 +560,7 @@ class PyTrain_Lite(object):
         if self.dist_data_parallel:
             rnn.to(self.cuda_device)
             self.rnn = torch.nn.parallel.DistributedDataParallel(rnn, device_ids=[self.cuda_device], output_device=self.cuda_device,dim=self.dist_data_parallel_dim,
-                                                                 find_unused_parameters=True)
+                                                                 find_unused_parameters=False)
         elif self.data_parallel is not None:
             self.rnn = torch.nn.DataParallel(rnn, device_ids=self.data_parallel,dim=self.data_parallel_dim)
         else:
