@@ -21,6 +21,121 @@ from ncautil.ptfunction import *
 
 from awd_lstm_lm.weight_drop import WeightDrop
 
+class LEVEL2_ATT_InfoFolk(torch.nn.Module):
+    """
+     step 2 of interpretation task with a attention based information folking machenism
+    """
+
+    def __init__(self, level1_coop, lsize_in, output_size, mlp_layersl, mlp_hidden ,para=None):
+        """
+
+        :param trainer: trainer can be None
+        :param cooprer: cooprer is not trained
+        :param para:
+        """
+        super(self.__class__, self).__init__()
+
+        self.lsize_in = lsize_in
+        self.output_size = output_size
+        self.mlp_layersl = mlp_layersl
+        self.mlp_hidden = mlp_hidden
+
+        self.level1_coop = level1_coop
+        for param in self.level1_coop.parameters():
+            param.requires_grad = False
+        self.level1_coop.cooprer.coop_mode=True
+        self.level1_coop.trainer.coop_mode = True
+        self.level1_coop.coop_mode = True
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        gs_head_num = level1_coop.cooprer.gs_head + level1_coop.trainer.gs_head
+        self.gs_head_num=gs_head_num
+        self.gs_head_dim=level1_coop.cooprer.context_size
+
+        self.att_infofolk = FF_MLP(lsize_in,mlp_hidden,gs_head_num,mlp_num_layers=self.mlp_layersl[0],para=para)
+        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num, level1_coop.cooprer.context_size)), requires_grad=True)
+
+        assert level1_coop.cooprer.context_size == level1_coop.trainer.context_size
+        mlpout_in = gs_head_num * level1_coop.cooprer.context_size
+        self.mlp_out = FF_MLP(mlpout_in, mlp_hidden, self.output_size, mlp_num_layers=self.mlp_layersl[1], para=para)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.layer_norm = torch.nn.LayerNorm(self.gs_head_num*self.gs_head_dim)
+        self.sigmoid = torch.nn.Sigmoid()
+        self.gsoftmax = Gumbel_Softmax()
+        self.gsigmoid = Gumbel_Sigmoid()
+
+    def para(self,para):
+        self.freeze_mode=para.get("freeze_mode",False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
+
+    def forward(self, input, hidden, add_logit=None, logit_mode=False, schedule=None, context_set=None):
+
+        if schedule<1.0: # Multi-scanning trial
+            schedule=schedule*self.temp_scan_num
+            schedule=schedule-np.floor(schedule)
+
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        self.cuda_device = input.device
+
+        # hidden1 [level1_coop hidden, BiGRU1 hidden, BiGRU2 hidden]
+        logit_level1, hn_level1 = self.level1_coop(input, hidden, logit_mode=True, schedule=1.0)
+        context_lv1_t, context_lv1_s = logit_level1 # pos, sem, level 1 should return context
+        context_lv1 = torch.cat((context_lv1_t, context_lv1_s),dim=-2)
+
+        # attention = self.att_infofolk(input)
+        # attention_gsig = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
+        # attention_prob = self.sigmoid(attention)
+        #
+        # dw, batch, tot_gshead = attention_gsig.shape
+        # p_prior = self.prior.expand(dw, batch, self.tot_gshead, self.gs_head_dim)
+        # pcontext = self.softmax(p_prior)
+        # pgssample = self.gsoftmax(pcontext, temperature=temperature, cuda_device=self.cuda_device)
+        #
+        # gasample = gasample_lv1 * attention_gsig.view(dw, batch, self.tot_gshead, 1) + pgssample * (
+        #             1 - attention_gsig.view(dw, batch, self.tot_gshead, 1))
+
+        # Sigmoid attention from POS
+        attention, _ = self.att_infofolk(input,None,logit_mode=True)
+        attention_sig = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
+        attention_prob = self.sigmoid(attention)
+
+        dw, batch, tot_gshead = attention_sig.shape
+        p_prior = self.prior.expand(dw, batch, self.gs_head_num, self.gs_head_dim)
+        context = context_lv1 * attention_sig.view(dw, batch, self.gs_head_num, 1) + p_prior * (
+                    1 - attention_sig.view(dw, batch, self.gs_head_num, 1))
+        context = self.softmax(context)
+        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+
+        self.context = context
+        self.p_prior = self.softmax(self.prior)
+        self.gssample = gssample
+        self.attention_prob = attention_prob
+        self.loss_intf = [self.context, self.p_prior, self.attention_prob]
+
+        output = self.layer_norm(gssample.view(dw, batch, -1))
+        output, _ = self.mlp_out(output, None, logit_mode=True, schedule=schedule)
+
+        if add_logit is not None:
+            output = output + add_logit
+        if not logit_mode:
+            output = self.softmax(output)
+
+        return output, hn_level1
+
+    def initHidden(self,batch):
+        return self.level1_coop.initHidden(batch)
+
+    def initHidden_cuda(self,device, batch):
+        return self.level1_coop.initHidden_cuda(device, batch)
+
 class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
     """
     BiGRU_NLP_GSVIB equivalent for step 2 of interpretation task
@@ -1028,7 +1143,7 @@ class FF_MLP(torch.nn.Module):
     def para(self,para):
         self.dropout_rate = para.get("dropout_rate", 0.0)
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None):
+    def forward(self, input, hidden1, add_logit=None, logit_mode=True, schedule=None, context_set=None):
         """
         Forward
         :param input: [window batch l_size]
@@ -1286,8 +1401,9 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         gssample = gssample.view(dw, batch, self.gs_head*self.context_size)
 
         if self.coop_mode:
-            return gssample, None
+            # return gssample, None
             # return torch.exp(context.view(dw, batch, self.gs_head*self.context_size)), None
+            return context.view(dw, batch, self.gs_head, self.context_size), None
 
         if self.mlp_num_layers > 0:
             hidden_c=self.c2h(gssample)

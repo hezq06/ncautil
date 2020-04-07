@@ -727,7 +727,7 @@ class PyTrain_Lite(object):
     def eval_mem(self, x, label, output, rnn):
         pass
 
-    def do_eval(self,step_eval=600,schedule=1.0,batch=None,posi_ctrl=None,allordermode=False,eval_mem_flag=False,data_pt="data_valid",print_step=None):
+    def do_eval(self,step_eval=600,schedule=1.0,batch=None,posi_ctrl=None,allordermode=False,eval_mem_flag=False,data_pt="data_valid",print_step=None,rstartv_l=None):
         """
 
         :param step_eval:
@@ -769,6 +769,10 @@ class PyTrain_Lite(object):
             if allordermode:
                 rstartv=iis*batch*self.window+np.linspace(0,batch-1,batch)*self.window
                 x, label, loss_data = self.get_data(self.dataset[data_pt],rstartv=rstartv,batch=batch)
+            elif rstartv_l is not None:
+                assert len(rstartv_l)==step_eval
+                rstartv=rstartv_l[iis]
+                x, label, loss_data = self.get_data(self.dataset[data_pt], rstartv=rstartv, batch=batch)
             else:
                 x, label, loss_data = self.get_data(self.dataset[data_pt],batch=batch)
 
@@ -3215,6 +3219,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version == "gsvib_attcoop":
             return MyLossFun.KNWLoss_GSVIB_ATTCOOP(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
+        elif self.version == "att_infofolk":
+            return MyLossFun.KNWLoss_infofork(outputl, outlab, self.pt.reg_lamda, model, scale_factor=self.pt.scale_factor[0], scale_factor2=self.pt.scale_factor[1])
         elif self.version== "ereg":
             return MyLossFun.KNWLoss_EnergyReg(outputl, outlab, self.pt.reg_lamda, model, balance_para=10)
         elif self.version == "with_mask_data_loss":
@@ -3304,7 +3310,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
 
         if self.pt.evalmem is None:
-            self.pt.evalmem = [[] for ii in range(7)]  # x,label,context
+            self.pt.evalmem = [[] for ii in range(6)]  # x,label,context
 
         try:
             self.pt.evalmem[0].append(x.cpu().data.numpy())
@@ -3318,16 +3324,16 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
         ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
         self.pt.evalmem[4].append(ent.cpu().data.numpy())
-
-        self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
-        self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
-        # try:
-        #     # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
-        #     # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
-        #     self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
-        #     self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
-        # except:
-        #     pass
+        # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
+        # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
+        try:
+            # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
+            # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
+            # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
+            self.pt.evalmem[5].append(rnn.attention_prob.cpu().data.numpy())
+        except:
+            pass
 
     def custom_eval_mem_sup_special(self, x, label, output, rnn):
         """
@@ -3916,6 +3922,57 @@ class MyLossFun(object):
         #     beta_scaling = 1.0
         beta_scaling = 1.0
         return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior + scale_factor2 * att_gate)
+
+    @staticmethod
+    def KNWLoss_infofork(outputl, outlab, reg_lamda, model, scale_factor=0.1, scale_factor2=0.1):
+        """
+        Loss for variational information bottleneck, Gauss Expanded
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+        outputl = outputl.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # context,prior should be log probability
+        context, p_prior, attention_prob = model.context, model.p_prior, model.attention_prob
+        # context [w,b,gs_head_num,gs_head_dim]
+        # p_prior [w,b,gs_head_num,gs_head_dim] expanded from [gs_head_num,gs_head_dim]
+        # attention_prob [w, b, gs_head_num]
+        gs_head_num, gs_head_dim = model.gs_head_num, model.gs_head_dim
+        w, b, gs_head_num = attention_prob.shape
+
+        # prior [gs_head_num,gs_head_dim]
+        # gate_prob [win batch gs_head_num]
+
+        # prior = p_prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
+        ent_prior = -torch.mean(torch.sum(torch.exp(p_prior) * p_prior, dim=-1))
+        # ent_prior = -torch.mean(attention_prob * torch.sum(torch.exp(p_prior) * p_prior, dim=-1))
+
+        # attention_prob entropy
+        # ent_attention_prob= -torch.mean(attention_prob*torch.log(attention_prob)+(1-attention_prob)*torch.log((1-attention_prob)))
+
+        # flatkl = torch.mean(torch.sum(torch.exp(context) * (context - p_prior), dim=-1))
+
+        p_prior = p_prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
+
+        flatkl = torch.mean( torch.sum(torch.exp(context) * (context - p_prior), dim=-1))
+
+        att_gate = torch.mean(attention_prob)
+
+        # beta_scaling = 1.0-np.exp(-cstep * 5)
+        # if cstep < beta_warmup:
+        #     beta_scaling = cstep / beta_warmup
+        # else:
+        #     beta_scaling = 1.0
+        beta_scaling = 1.0
+
+        loss_res = loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior + scale_factor2 * att_gate)
+
+        return loss_res
 
     @staticmethod
     def KNWLoss_VIB_EVAL(outputl, outlab, model):
