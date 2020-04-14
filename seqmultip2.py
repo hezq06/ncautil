@@ -51,15 +51,15 @@ class LEVEL2_ATT_InfoFolk(torch.nn.Module):
             para = dict([])
         self.para(para)
 
-        gs_head_num = level1_coop.cooprer.gs_head + level1_coop.trainer.gs_head
-        self.gs_head_num=gs_head_num
+        self.gs_head_num = level1_coop.cooprer.gs_head + level1_coop.trainer.gs_head
         self.gs_head_dim=level1_coop.cooprer.context_size
 
-        self.att_infofolk = FF_MLP(lsize_in,mlp_hidden,gs_head_num,mlp_num_layers=self.mlp_layersl[0],para=para)
-        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num, level1_coop.cooprer.context_size)), requires_grad=True)
+        # Trial of self attention
+        self.att_infofolk = FF_MLP(lsize_in, mlp_hidden, self.gs_head_num, mlp_num_layers=self.mlp_layersl[0],para=para)
+         # self.prior = torch.nn.Parameter(torch.zeros((gs_head_num, level1_coop.cooprer.context_size)), requires_grad=True)
 
         assert level1_coop.cooprer.context_size == level1_coop.trainer.context_size
-        mlpout_in = gs_head_num * level1_coop.cooprer.context_size
+        mlpout_in = self.gs_head_num * level1_coop.cooprer.context_size
         self.mlp_out = FF_MLP(mlpout_in, mlp_hidden, self.output_size, mlp_num_layers=self.mlp_layersl[1], para=para)
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
@@ -67,6 +67,9 @@ class LEVEL2_ATT_InfoFolk(torch.nn.Module):
         self.sigmoid = torch.nn.Sigmoid()
         self.gsoftmax = Gumbel_Softmax()
         self.gsigmoid = Gumbel_Sigmoid()
+
+        self.prior_lv1 = torch.cat((self.level1_coop.cooprer.prior,self.level1_coop.trainer.prior),dim=-2)
+        self.p_prior_lv1 = self.softmax(self.prior_lv1)
 
     def para(self,para):
         self.freeze_mode=para.get("freeze_mode",False)
@@ -88,39 +91,41 @@ class LEVEL2_ATT_InfoFolk(torch.nn.Module):
         # hidden1 [level1_coop hidden, BiGRU1 hidden, BiGRU2 hidden]
         logit_level1, hn_level1 = self.level1_coop(input, hidden, logit_mode=True, schedule=1.0)
         context_lv1_t, context_lv1_s = logit_level1 # pos, sem, level 1 should return context
-        context_lv1 = torch.cat((context_lv1_t, context_lv1_s),dim=-2)
+        context_lv1 = torch.cat((context_lv1_t, context_lv1_s), dim=-2)
 
-        # attention = self.att_infofolk(input)
-        # attention_gsig = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
-        # attention_prob = self.sigmoid(attention)
-        #
-        # dw, batch, tot_gshead = attention_gsig.shape
-        # p_prior = self.prior.expand(dw, batch, self.tot_gshead, self.gs_head_dim)
-        # pcontext = self.softmax(p_prior)
-        # pgssample = self.gsoftmax(pcontext, temperature=temperature, cuda_device=self.cuda_device)
-        #
-        # gasample = gasample_lv1 * attention_gsig.view(dw, batch, self.tot_gshead, 1) + pgssample * (
-        #             1 - attention_gsig.view(dw, batch, self.tot_gshead, 1))
-
-        # Sigmoid attention from POS
-        attention, _ = self.att_infofolk(input,None,logit_mode=True)
-        attention_sig = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
+        attention , _ = self.att_infofolk(input,None)
+        attention_gsig = self.gsigmoid(attention, temperature=temperature, cuda_device=self.cuda_device)
         attention_prob = self.sigmoid(attention)
 
-        dw, batch, tot_gshead = attention_sig.shape
-        p_prior = self.prior.expand(dw, batch, self.gs_head_num, self.gs_head_dim)
-        context = context_lv1 * attention_sig.view(dw, batch, self.gs_head_num, 1) + p_prior * (
-                    1 - attention_sig.view(dw, batch, self.gs_head_num, 1))
-        context = self.softmax(context)
-        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+        dw, batch, gs_head_num = attention_gsig.shape
+        p_prior = self.p_prior_lv1.expand(dw, batch, self.gs_head_num, self.gs_head_dim).to(self.cuda_device)
 
-        self.context = context
-        self.p_prior = self.softmax(self.prior)
-        self.gssample = gssample
+        att_context = context_lv1 * attention_gsig.view(dw, batch, self.gs_head_num, 1)
+        att_context = att_context + p_prior * ( 1 - attention_gsig.view(dw, batch, self.gs_head_num, 1))
+
+        pgssample = self.gsoftmax(att_context, temperature=temperature, cuda_device=self.cuda_device)
+
+        # Sigmoid attention from POS
+        # dw, batch, gs_head, gs_dim  = gssample_lv1_t.shape
+        # attention_t, _ = self.att_infofolk(gssample_lv1_t.view(dw,batch,-1),None,logit_mode=True)
+        # attention_sig_t = self.gsigmoid(attention_t, temperature=temperature, cuda_device=self.cuda_device)
+        # attention_prob_t = self.sigmoid(attention_t)
+
+        # p_prior = self.softmax(self.prior.expand(dw, batch, self.gs_head_num, self.gs_head_dim))
+        # context = context_lv1 * attention_sig.view(dw, batch, self.gs_head_num, 1) + p_prior * (
+        #             1 - attention_sig.view(dw, batch, self.gs_head_num, 1))
+        # gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+
+        # gssample_lv1_t = gssample_lv1_t * attention_sig_t.view(dw, batch, -1, 1)
+
+
+        self.context = att_context
+        self.gssample = pgssample
         self.attention_prob = attention_prob
-        self.loss_intf = [self.context, self.p_prior, self.attention_prob]
+        self.attention_sig = attention_gsig
+        self.loss_intf = [self.attention_prob]
 
-        output = self.layer_norm(gssample.view(dw, batch, -1))
+        output = self.layer_norm(pgssample.view(dw, batch, -1))
         output, _ = self.mlp_out(output, None, logit_mode=True, schedule=schedule)
 
         if add_logit is not None:
@@ -173,14 +178,15 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         context_dim_1=context_sizel[0]
         gs_head_1=gs_headl[0]
         mlp_hidden_1=mlp_hiddenl[0]
-        lsize_in_1=level1_coop.cooprer.gs_head*level1_coop.cooprer.context_size # 1 cooprer POS
+        lsize_in_1=level1_coop.cooprer.gs_head_num*level1_coop.cooprer.gs_head_dim # 1 cooprer POS
         mlpout_hd_1 = context_dim_1 * gs_head_1
-        # self.level2_gsvib_1=BiGRU_NLP_GSVIB(lsize_in_1,hidden_dim_1,context_dim_1,gs_head_1,mlp_hidden_1,
-        #                 self.output_size,num_layers=self.num_layers,para=para)
+        # input_size, hidden_size, gs_head_dim, gs_head_num, output_size, num_layers=1 ,para=None
+        self.level2_gsvib_1=BiGRU_NLP_GSVIB(lsize_in_1,hidden_dim_1,context_dim_1,gs_head_1,
+                        mlpout_hd_1,num_layers=self.num_layers, para=para)
 
-        # self.level2_gsvib_1 = BiGRU_NLP(lsize_in_1, hidden_dim_1, self.output_size, num_layers=self.num_layers, para=para)
-        self.level2_gsvib_1 = FF_MLP(lsize_in_1,mlp_hidden_1,mlpout_hd_1,mlp_num_layers=3,para=para)
-        para["coop_mode"] = True
+        # self.level2_gsvib_1 = BiGRU_NLP(lsize_in_1, hidden_dim_1, mlpout_hd_1, num_layers=self.num_layers, para=para)
+        # self.level2_gsvib_1 = FF_MLP(lsize_in_1,mlp_hidden_1,mlpout_hd_1,mlp_num_layers=3,para=para)
+        # para["coop_mode"] = True
         # self.level2_gsvib_1 = FF_MLP_GSVIB(lsize_in_1, mlp_hidden_1, context_dim_1, gs_head_1, self.output_size, mlp_num_layers=self.num_layers,
         #                              para=para)
 
@@ -188,17 +194,17 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         context_dim_2 = context_sizel[1]
         gs_head_2 = gs_headl[1]
         mlp_hidden_2 = mlp_hiddenl[1]
-        lsize_in_2 = level1_coop.trainer.gs_head * level1_coop.trainer.context_size # 2 trainer Semantics
+        lsize_in_2 = level1_coop.trainer.gs_head_num * level1_coop.trainer.gs_head_dim # 2 trainer Semantics
         mlpout_hd_2 = context_dim_2 * gs_head_2
-        # self.level2_gsvib_2 = BiGRU_NLP_GSVIB(lsize_in_2, hidden_dim_2, context_dim_2, gs_head_2, mlp_hidden_2,
-        #                                       self.output_size, num_layers=self.num_layers, para=para)
+        self.level2_gsvib_2 = BiGRU_NLP_GSVIB(lsize_in_2, hidden_dim_2, context_dim_2, gs_head_2,
+                                              mlpout_hd_2, num_layers=self.num_layers, para=para)
 
-        # self.level2_gsvib_2 = BiGRU_NLP(lsize_in_2, hidden_dim_2, self.output_size, num_layers=self.num_layers,
+        # self.level2_gsvib_2 = BiGRU_NLP(lsize_in_2, hidden_dim_2, mlpout_hd_2, num_layers=self.num_layers,
         #                                 para=para)
         # self.level2_gsvib_2 = FF_MLP(lsize_in_2, mlp_hidden_2, mlp_hidden_2, mlp_num_layers=3, para=para)
-        self.level2_gsvib_2 = FF_MLP_GSVIB(lsize_in_2, mlp_hidden_2, context_dim_2, gs_head_2, self.output_size,
-                                     mlp_num_layers=self.num_layers,
-                                     para=para)
+        # self.level2_gsvib_2 = FF_MLP_GSVIB(lsize_in_2, mlp_hidden_2, context_dim_2, gs_head_2, self.output_size,
+        #                              mlp_num_layers=self.num_layers,
+        #                              para=para)
 
         self.mlp_out = FF_MLP(mlpout_hd_1+mlpout_hd_2, mlp_hidden_1+mlp_hidden_2, self.output_size, mlp_num_layers=4, para=para)
 
@@ -237,26 +243,26 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
 
         logit_level2_2, hn_level2_2 = self.level2_gsvib_2(gasample_lv1_s, hidden1[2], logit_mode=True, schedule=schedule)
 
-        if self.level2_gsvib_3 is not None:
-            # assert self.semantic_only_mode
-            gasample_lv1=torch.cat((gasample_lv1_t,gasample_lv1_s),dim=-1)
-            logit_level2_3, hn_level2_3 = self.level2_gsvib_3(gasample_lv1, None, logit_mode=True, schedule=schedule)
-            # self.context = torch.cat((self.level2_gsvib_1.context, self.level2_gsvib_2.context, self.level2_gsvib_3.context), dim=-2)
-            # self.p_prior = torch.cat((self.level2_gsvib_1.p_prior, self.level2_gsvib_2.p_prior, self.level2_gsvib_3.p_prior), dim=-2)
-            # self.gssample = torch.cat((self.level2_gsvib_1.gssample, self.level2_gsvib_2.gssample, self.level2_gsvib_3.gssample), dim=-2)
-            # self.loss_intf = [self.context, self.p_prior]
-        #
-        # # gasample_lv1_a = torch.cat((gasample_lv1_t,gasample_lv1_s),dim=-1)
-        # # gasample_lv1_a = self.layer_norm3(gasample_lv1_a)
-        # # logit_level2_3, hn_level2_3 = self.level2_gsvib_3(gasample_lv1_a, hidden1[2], logit_mode=True, schedule=schedule)
-        else:
-            # self.context = torch.cat((self.level2_gsvib_1.context,self.level2_gsvib_2.context),dim=-2)
-            # self.p_prior = torch.cat((self.level2_gsvib_1.p_prior,self.level2_gsvib_2.p_prior),dim=-2)
-            # self.gssample = torch.cat((self.level2_gsvib_1.gssample,self.level2_gsvib_2.gssample),dim=-2)
-            self.context = self.level2_gsvib_2.context
-            self.p_prior = self.level2_gsvib_2.p_prior
-            self.gssample = self.level2_gsvib_2.gssample
-            self.loss_intf = [self.context, self.p_prior]
+        # if self.level2_gsvib_3 is not None:
+        #     # assert self.semantic_only_mode
+        #     gasample_lv1=torch.cat((gasample_lv1_t,gasample_lv1_s),dim=-1)
+        #     logit_level2_3, hn_level2_3 = self.level2_gsvib_3(gasample_lv1, None, logit_mode=True, schedule=schedule)
+        #     # self.context = torch.cat((self.level2_gsvib_1.context, self.level2_gsvib_2.context, self.level2_gsvib_3.context), dim=-2)
+        #     # self.p_prior = torch.cat((self.level2_gsvib_1.p_prior, self.level2_gsvib_2.p_prior, self.level2_gsvib_3.p_prior), dim=-2)
+        #     # self.gssample = torch.cat((self.level2_gsvib_1.gssample, self.level2_gsvib_2.gssample, self.level2_gsvib_3.gssample), dim=-2)
+        #     # self.loss_intf = [self.context, self.p_prior]
+        # #
+        # # # gasample_lv1_a = torch.cat((gasample_lv1_t,gasample_lv1_s),dim=-1)
+        # # # gasample_lv1_a = self.layer_norm3(gasample_lv1_a)
+        # # # logit_level2_3, hn_level2_3 = self.level2_gsvib_3(gasample_lv1_a, hidden1[2], logit_mode=True, schedule=schedule)
+        # else:
+        #     # self.context = torch.cat((self.level2_gsvib_1.context,self.level2_gsvib_2.context),dim=-2)
+        #     # self.p_prior = torch.cat((self.level2_gsvib_1.p_prior,self.level2_gsvib_2.p_prior),dim=-2)
+        #     # self.gssample = torch.cat((self.level2_gsvib_1.gssample,self.level2_gsvib_2.gssample),dim=-2)
+        #     self.context = self.level2_gsvib_2.context
+        #     self.p_prior = self.level2_gsvib_2.p_prior
+        #     self.gssample = self.level2_gsvib_2.gssample
+        #     self.loss_intf = [self.context, self.p_prior]
 
         # if not self.semantic_only_mode:
         #     output = logit_level2_1 + logit_level2_2
@@ -265,7 +271,13 @@ class LEVEL2_BiGRU_NLP_GSVIB(torch.nn.Module):
         # else:
         #     output = logit_level2_2
 
+        self.context = torch.cat((self.level2_gsvib_1.context, self.level2_gsvib_2.context), dim=-2)
+        self.p_prior = torch.cat((self.level2_gsvib_1.p_prior, self.level2_gsvib_2.p_prior), dim=-2)
+        self.gssample = torch.cat((self.level2_gsvib_1.gssample, self.level2_gsvib_2.gssample), dim=-2)
+        self.loss_intf = [self.context, self.p_prior]
+
         output = torch.cat((logit_level2_1,logit_level2_2),dim=-1)
+        # print(output.shape,logit_level2_1.shape,logit_level2_2.shape)
         output = self.layer_norm3(output)
         output, _ = self.mlp_out(output,None,logit_mode=True, schedule=schedule)
 
@@ -319,7 +331,7 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         self.para(para)
 
         if self.cooprer_attn_mode:
-            self.cooprer_attn= torch.nn.Linear(self.cooprer.context_attn_size, self.trainer.gs_head) # Attention from pos tag to representation, key to control hierachy/combinatory
+            self.cooprer_attn= torch.nn.Linear(self.cooprer.context_attn_size, self.trainer.gs_head_num) # Attention from pos tag to representation, key to control hierachy/combinatory
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.sigmoid = torch.nn.Sigmoid()
@@ -1305,16 +1317,16 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
     """
     PyTorch BiGRU for NLP with Gumbel Softmax variational information bottleneck
     """
-    def __init__(self, input_size, hidden_size, context_size, gs_head, output_size, num_layers=1 ,para=None):
+    def __init__(self, input_size, hidden_size, gs_head_dim, gs_head_num, output_size, num_layers=1 ,para=None):
         super(self.__class__, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
         self.output_size = output_size
-        self.context_size = context_size
-        self.gs_head=gs_head
+        self.gs_head_dim = gs_head_dim
+        self.gs_head_num = gs_head_num
         self.num_layers=num_layers
 
-        self.context_attn_size = self.gs_head*self.context_size
+        self.context_attn_size = self.gs_head_num*self.gs_head_dim
 
         # self.coop_mode=False
 
@@ -1327,18 +1339,18 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         #     assert self.self_include_flag
 
         self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
-        self.h2c = torch.nn.Linear(hidden_size * 2, context_size*gs_head)
-        self.prior = torch.nn.Parameter(torch.zeros((gs_head,context_size)) , requires_grad=True)
+        self.h2c = torch.nn.Linear(hidden_size * 2, gs_head_dim*gs_head_num)
+        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num,gs_head_dim)) , requires_grad=True)
 
         if not self.coop_mode:
             if self.mlp_num_layers>0:
-                self.c2h = torch.nn.Linear(context_size*gs_head, self.mlp_hidden)
+                self.c2h = torch.nn.Linear(gs_head_dim*gs_head_num, self.mlp_hidden)
                 self.linear_layer_stack = torch.nn.ModuleList([
                     torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
                     for _ in range(self.mlp_num_layers-1)])
                 self.h2o = torch.nn.Linear(self.mlp_hidden, output_size)
             else:
-                self.c2o = torch.nn.Linear(context_size*gs_head, output_size)
+                self.c2o = torch.nn.Linear(gs_head_dim*gs_head_num, output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -1377,13 +1389,13 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         dw, batch, l_size = input.shape
 
         context = self.h2c(hout)
-        context = context.view(dw, batch, self.gs_head, self.context_size)
+        context = context.view(dw, batch, self.gs_head_num, self.gs_head_dim)
 
         if attention_sig is not None:
-            p_prior_exp = self.prior.expand(dw, batch, self.gs_head, self.context_size)
+            p_prior_exp = self.prior.expand(dw, batch, self.gs_head_num, self.gs_head_dim)
             # Sigmoid attention from POS
-            context = context * attention_sig.view(dw, batch, self.gs_head, 1) + p_prior_exp * (
-                        1 - attention_sig.view(dw, batch, self.gs_head, 1))
+            context = context * attention_sig.view(dw, batch, self.gs_head_num, 1) + p_prior_exp * (
+                        1 - attention_sig.view(dw, batch, self.gs_head_num, 1))
             context = self.softmax(context)
 
         context = self.softmax(context)
@@ -1398,12 +1410,12 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         self.gssample = gssample
         self.loss_intf = [self.context, p_prior]
 
-        gssample = gssample.view(dw, batch, self.gs_head*self.context_size)
-
         if self.coop_mode:
-            # return gssample, None
-            # return torch.exp(context.view(dw, batch, self.gs_head*self.context_size)), None
-            return context.view(dw, batch, self.gs_head, self.context_size), None
+            return gssample.view(dw, batch, self.gs_head_num*self.gs_head_dim), None
+            # return torch.exp(context.view(dw, batch, self.gs_head_num*self.gs_head_dim)), None
+            # return context.view(dw, batch, self.gs_head_num, self.gs_head_dim), None
+
+        gssample = gssample.view(dw, batch, self.gs_head_num * self.gs_head_dim)
 
         if self.mlp_num_layers > 0:
             hidden_c=self.c2h(gssample)
@@ -2018,8 +2030,6 @@ class W2V_SkipGram(torch.nn.Module):
             sgvnsmat=sgvnsmat+1e-9*(self.sigmoid(vnsmat) == 0).type(torch.FloatTensor).to(self.cuda_device)
         loss_r=torch.log(sgvnsmat)
         output=torch.mean(loss_l)+torch.mean(loss_r)
-
-
         return -output,None
 
     def initHidden(self,batch):

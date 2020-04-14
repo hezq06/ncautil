@@ -3331,7 +3331,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
-            self.pt.evalmem[5].append(rnn.attention_prob.cpu().data.numpy())
+            self.pt.evalmem[5].append(rnn.attention_sig.cpu().data.numpy())
         except:
             pass
 
@@ -3938,7 +3938,8 @@ class MyLossFun(object):
         loss1 = lossc(outputl, outlab)
 
         # context,prior should be log probability
-        context, p_prior, attention_prob = model.context, model.p_prior, model.attention_prob
+        # context, p_prior, attention_prob = model.context, model.p_prior, model.attention_prob
+        context, attention_prob = model.context, model.attention_prob
         # context [w,b,gs_head_num,gs_head_dim]
         # p_prior [w,b,gs_head_num,gs_head_dim] expanded from [gs_head_num,gs_head_dim]
         # attention_prob [w, b, gs_head_num]
@@ -3949,7 +3950,7 @@ class MyLossFun(object):
         # gate_prob [win batch gs_head_num]
 
         # prior = p_prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
-        ent_prior = -torch.mean(torch.sum(torch.exp(p_prior) * p_prior, dim=-1))
+        # ent_prior = -torch.mean(torch.sum(torch.exp(p_prior) * p_prior, dim=-1))
         # ent_prior = -torch.mean(attention_prob * torch.sum(torch.exp(p_prior) * p_prior, dim=-1))
 
         # attention_prob entropy
@@ -3957,9 +3958,9 @@ class MyLossFun(object):
 
         # flatkl = torch.mean(torch.sum(torch.exp(context) * (context - p_prior), dim=-1))
 
-        p_prior = p_prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
+        # p_prior = p_prior.view(1, 1, gs_head_num, gs_head_dim).expand_as(context)
 
-        flatkl = torch.mean( torch.sum(torch.exp(context) * (context - p_prior), dim=-1))
+        # flatkl = torch.mean( torch.sum(torch.exp(context) * (context - p_prior), dim=-1))
 
         att_gate = torch.mean(attention_prob)
 
@@ -3970,7 +3971,9 @@ class MyLossFun(object):
         #     beta_scaling = 1.0
         beta_scaling = 1.0
 
-        loss_res = loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior + scale_factor2 * att_gate)
+        # loss_res = loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior + scale_factor2 * att_gate)
+
+        loss_res = loss1 +  reg_lamda *  att_gate
 
         return loss_res
 
