@@ -13,22 +13,18 @@ import collections
 import numpy as np
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 from matplotlib import cm
 from collections import OrderedDict
 import nltk
 nltk.internals.config_java(options='-Xmx2048m')
 import pickle
 from nltk.corpus import brown,treebank
-from nltk.tokenize import word_tokenize
 from nltk.parse import stanford
-import time, copy
 import gensim
 from ncautil.w2vutil import W2vUtil
 from ncautil.datautil import *
 from nltk.tag import StanfordPOSTagger
 from nltk.tokenize import word_tokenize
-from scipy.optimize import minimize
 
 import torch
 from torch.autograd import Variable
@@ -126,6 +122,12 @@ class NLPutil(object):
             raw = f.read()
             self.corpus = word_tokenize(raw)
             self.corpus = [w.lower() for w in self.corpus]
+            self.sub_corpus = self.corpus[:self.sub_size]
+        elif corpus=="imdb":
+            imdb = IMDbSentimentUtil()
+            imdb.get_corpus()
+            self.corpus = imdb.corpus_train
+            self.corpus_test = imdb.corpus_test
             self.sub_corpus = self.corpus[:self.sub_size]
         else:
             file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/'+str(corpus))
@@ -1094,6 +1096,8 @@ class StanfordSentimentUtil(object):
         :param NLPutilC:
         """
         self.path_to_raw_data=path_to_raw_data
+        self.dict_phrases2senti=dict([])
+        self.dict_phrases2senti_discrete = dict([])
 
     def dataset_extract(self):
         """
@@ -1124,9 +1128,11 @@ class StanfordSentimentUtil(object):
                 dict_sentilab[line_splt[0]]=line_splt[1]
 
         ## Combine the two dictionaries
-        dict_phrases2senti = dict([])
         for key,value in dict_phrases.items():
-            dict_phrases2senti[key]=dict_sentilab[value]
+            self.dict_phrases2senti[key]=dict_sentilab[value]
+
+        for item in self.dict_phrases2senti.items():
+            self.dict_phrases2senti_discrete[item[0]] = int(4.9*float(item[1]))
 
         ## Get data sentences and add tag
 
@@ -1140,13 +1146,104 @@ class StanfordSentimentUtil(object):
                 line_splt[1] = line_splt[1].replace("\n", "")
                 wrd_splt=line_splt[1].split(" ")
                 for wrd in wrd_splt:
-                    senti_point=dict_phrases2senti.get(wrd,0.5)
+                    senti_point=self.dict_phrases2senti.get(wrd,0.5)
                     senti_point=int(4.9*float(senti_point))
                     text_sentiment_l.append((wrd,senti_point))
 
         return text_sentiment_l
 
+class IMDbSentimentUtil(object):
+    """
+    Object handling IMDb database
+    """
+    def __init__(self,path_to_raw_data="/home/hezq17/MySourceCode/data/aclImdb"):
+        """
+        A NLP Data processing class should link to a NLPutil object when initialization
+        :param NLPutilC:
+        """
+        self.path_to_raw_data=path_to_raw_data
+        self.senti_dict=None
+        self.corpus_train=None
+        self.corpus_test=None
 
+    def gen_wrd2senti_dict(self):
+        """
+        Generate word to sentiment rating from vocab and vocabEr
+        :return:
+        """
+        senti_vocab_file=os.path.join(self.path_to_raw_data,"imdb.vocab")
+        with open(senti_vocab_file,"r") as senti_v_f:
+            lines=senti_v_f.readlines()
+            vocab_l=[strg.replace("\n", "") for strg in lines]
+            print(len(vocab_l))
+
+        senti_rate_file = os.path.join(self.path_to_raw_data, "imdbEr.txt")
+        with open(senti_rate_file,"r") as senti_r_f:
+            lines=senti_r_f.readlines()
+            rate_l=[float(rate.replace("\n", "")) for rate in lines]
+            print(len(rate_l))
+
+        assert len(vocab_l) == len(rate_l)
+
+        self.senti_dict=dict([])
+        for ii,wrd in enumerate(vocab_l):
+            self.senti_dict[wrd] = rate_l[ii]
+
+        return vocab_l,rate_l
+
+    def get_corpus(self):
+        """
+        Getting train, test, unsupervised corpus
+        :return:
+        """
+        train_pos = os.path.join(self.path_to_raw_data,"train/pos/")
+        train_neg = os.path.join(self.path_to_raw_data, "train/neg/")
+        train_unsup = os.path.join(self.path_to_raw_data, "train/unsup/")
+        self.corpus_train = []
+        for pathit in [train_pos,train_neg,train_unsup]:
+            print(pathit)
+            for filename in tqdm_notebook(os.listdir(pathit)):
+                filename_f = os.path.join(pathit, filename)
+                with open(filename_f, "r") as file:
+                    lines = file.read()
+                    tokens = word_tokenize(lines)
+                    tokensl = [w.lower() for w in tokens]
+                    for wrd in tokensl:
+                        self.corpus_train .append(wrd)
+        print(len(self.corpus_train))
+
+        test_pos = os.path.join(self.path_to_raw_data, "test/pos/")
+        test_neg = os.path.join(self.path_to_raw_data, "test/neg/")
+
+        self.corpus_test = []
+        for pathit in [test_pos, test_neg]:
+            print(pathit)
+            for filename in tqdm_notebook(os.listdir(pathit)):
+                filename_f = os.path.join(pathit, filename)
+                with open(filename_f, "r") as file:
+                    lines = file.read()
+                    tokens = word_tokenize(lines)
+                    tokensl = [w.lower() for w in tokens]
+                    for wrd in tokensl:
+                        self.corpus_test.append(wrd)
+        print(len(self.corpus_test))
+
+    def corpus_clean(self):
+        clean_list=[",",".","/","<",">","br","!","?",":","...","(",")",";","-","\'","\"","--",'``',"\'\'"]
+
+        cleaned_train=[]
+        print("Cleaning Corpus Train ...")
+        for wrd in tqdm_notebook(self.corpus_train):
+            if wrd not in clean_list:
+                cleaned_train.append(wrd)
+        self.corpus_train = cleaned_train
+
+        cleaned_test = []
+        print("Cleaning Corpus Test ...")
+        for wrd in tqdm_notebook(self.corpus_test):
+            if wrd not in clean_list:
+                cleaned_test.append(wrd)
+        self.corpus_test = cleaned_test
 
 
 

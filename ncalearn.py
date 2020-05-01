@@ -1096,7 +1096,7 @@ class PyTrain_Custom(PyTrain_Lite):
         if interface_para["class"] == "PyTrain_Interface_continous":
             self.interface = PyTrain_Interface_continous(version=pfver)
         elif interface_para["class"] == "PyTrain_Interface_W2V":
-            self.interface = PyTrain_Interface_W2V(interface_para["prior"],interface_para["threshold"])
+            self.interface = PyTrain_Interface_W2V(interface_para.get("prior",None),interface_para.get("threshold",1e-5),version=pfver)
         elif interface_para["class"] == "PyTrain_Interface_sup":
             self.interface = PyTrain_Interface_sup(version=pfver)
         elif interface_para["class"] == "PyTrain_Interface_advsup":
@@ -3125,24 +3125,41 @@ class PyTrain_Interface_W2V(PyTrain_Interface_Default):
     def __init__(self,prior,threshold=1e-5,version=0):
         super(self.__class__, self).__init__()
         self.version = version
-        self.allname=["h2o"]
-        self.prior=prior
-        self.prior=self.prior/np.sum(self.prior)
-        self.threshold=threshold
-        self.dropmem=[]
+        if version=="skipgram":
+            self.prior=prior
+            self.prior=self.prior/np.sum(self.prior)
+            self.threshold=threshold
+            self.dropmem=[]
 
     def init_data(self,*args,**kwargs):
         return self.init_data_empty()
 
-    def get_data(self, batch=None, rstartv=None):
-        return self.get_data_w2v(batch=batch, rstartv=rstartv)
+    def get_data(self, dataset_dict, batch=None, rstartv=None):
+        if batch is None:
+            batch = self.pt.batch
+        if self.version=="skipgram":
+            return self.get_data_w2v(dataset_dict, batch=batch, rstartv=rstartv)
+        elif self.version=="softmax":
+            return self.get_data_w2v_sfm(dataset_dict, batch=batch, rstartv=rstartv)
+        elif self.version=="coop_softmax":
+            data_shape = [self.pt.window, batch, self.pt.lsize_in]
+            return MyDataFun.get_data_sup(dataset_dict, data_shape, self.pt.pt_emb, self.pt, rstartv=None)
 
-    def lossf(self, outputl, outlab, model=None, cstep=None):
-        return self.EmptyLoss(outputl, outlab, model=model, cstep=cstep)
+    def lossf(self, outputl, outlab, model=None, cstep=None, loss_data=None):
+        if self.version == "skipgram":
+            return self.EmptyLoss(outputl, outlab, model=model, cstep=cstep)
+        elif self.version == "softmax":
+            return MyLossFun.KNWLoss(outputl, outlab)
+        elif self.version == "coop_softmax":
+            return self.KNWLoss_coop(outputl)
 
-
-    def lossf_eval(self, outputl, outlab, model=None, cstep=None):
-        return self.EmptyLoss(outputl, outlab, model=model, cstep=cstep)
+    def lossf_eval(self, outputl, outlab, model=None, cstep=None, loss_data=None):
+        if self.version == "skipgram":
+            return self.EmptyLoss(outputl, outlab, model=model, cstep=cstep)
+        elif self.version == "softmax":
+            return MyLossFun.KNWLoss(outputl, outlab)
+        elif self.version == "coop_softmax":
+            return self.KNWLoss_coop(outputl)
 
     def eval_mem(self, x, label, output, rnn):
         # return self.eval_mem_Full_eval(x, label, output, rnn)
@@ -3152,37 +3169,80 @@ class PyTrain_Interface_W2V(PyTrain_Interface_Default):
         loss=outputl
         return loss
 
+    def KNWLoss_coop(self, outputl):
+        lossc = torch.nn.CrossEntropyLoss()
+        outputl0 = outputl[0][0].permute(1, 2, 0)
+        outlab0 = outputl[0][1] # batch, window_size
+        loss0 = lossc(outputl0, outlab0)
+        outputl1 = outputl[1][0].permute(1, 2, 0)
+        outlab1 = outputl[1][1]  # batch, window_size
+        loss1 = lossc(outputl1, outlab1)
+        return loss0+loss1
+
     def init_data_empty(self,limit=1e9):
         pass
 
-    def get_data_w2v(self, batch=None, rstartv=None):
+    def get_data_w2v(self, dataset_dict, batch=None, rstartv=None, freq_reg=False):
+
+        dataset = dataset_dict["dataset"]
 
         if batch is None:
             batch=self.pt.batch
 
         # Generating output label
         if rstartv is None:
-            rstartv = np.floor(np.random.rand(batch) * (len(self.pt.dataset) - self.pt.window - 1))
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - self.pt.window - 1))
         xl = np.zeros((self.pt.window,batch))
         for iib in range(batch):
-            dropped=0
-            for iiw in range(self.pt.window):
-                if int(rstartv[iib])+iiw+dropped>=len(self.pt.dataset):
-                    dropped=dropped-self.pt.window
-                item=self.pt.dataset[int(rstartv[iib])+iiw+dropped]
-                pdrop=1-np.sqrt(self.threshold/self.prior[item])
-                if np.random.rand()>pdrop:
-                    xl[iiw,iib]=item
-                else:
-                    dropped=dropped+1
-            self.dropmem.append(dropped)
-            # xl[:,iib] = self.pt.dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+            if freq_reg:
+                dropped=0
+                for iiw in range(self.pt.window):
+                    if int(rstartv[iib])+iiw+dropped>=len(dataset):
+                        dropped=dropped-self.pt.window
+                    item=dataset[int(rstartv[iib])+iiw+dropped]
+                    pdrop=1-np.sqrt(self.threshold/self.prior[item])
+                    if np.random.rand()>pdrop:
+                        xl[iiw,iib]=item
+                    else:
+                        dropped=dropped+1
+                self.dropmem.append(dropped)
+            else:
+                xl[:, iib] = dataset[int(rstartv[iib]):int(rstartv[iib]) + self.pt.window]
+
         xl=torch.from_numpy(xl).type(torch.LongTensor)
 
         if self.pt.gpuavail:
             xl = xl.to(self.pt.device)
 
         return xl, None, None
+
+    def get_data_w2v_sfm(self, dataset_dict, batch=None, rstartv=None):
+
+        dataset = dataset_dict["dataset"]
+        window_size=self.pt.rnn.window_size
+        window_size_ext = self.pt.window
+
+        if batch is None:
+            batch=self.pt.batch
+
+        # Generating output label
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window_size_ext - 1))
+        xl = np.zeros((window_size_ext,batch))
+        for iib in range(batch):
+            xl[:, iib] = dataset[int(rstartv[iib]):int(rstartv[iib]) + window_size_ext]
+
+        xl=torch.from_numpy(xl).type(torch.LongTensor)
+
+        outlab = torch.zeros((window_size_ext-window_size+1,batch)).type(torch.LongTensor)
+        outlab[:,:] = xl[int((window_size+1)/2)-1:window_size_ext-int((window_size+1)/2)+1,:]
+        outlab=outlab.permute(1,0)
+
+        if self.pt.gpuavail:
+            xl = xl.to(self.pt.device)
+            outlab = outlab.to(self.pt.device)
+
+        return xl, outlab, None
 
 class PyTrain_Interface_sup(PyTrain_Interface_Default):
     """
@@ -3214,7 +3274,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
     def lossf(self, outputl, outlab, model=None, cstep=None, loss_data=None):
         if self.version == "vib":
-            return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep,self.pt.beta_warmup)
+            return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version in ["gsvib" , "gsvib_coop_special" , "gsvib_task2"]:
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version == "gsvib_attcoop":
@@ -3243,7 +3303,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         if self.version == "with_mask":
             return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep, data_loss_mask=loss_data)
         else:
-            return MyLossFun.KNWLoss_VIB_EVAL(outputl, outlab, model)
+            # return MyLossFun.KNWLoss_VIB_EVAL(outputl, outlab, model)
+            return MyLossFun.KNWLoss(outputl, outlab)
 
     def get_data_sup(self, dataset_dict, batch=None, rstartv=None, shift=False):
         """
@@ -3310,7 +3371,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
 
 
         if self.pt.evalmem is None:
-            self.pt.evalmem = [[] for ii in range(6)]  # x,label,context
+            self.pt.evalmem = [[] for ii in range(7)]  # x,label,context
 
         try:
             self.pt.evalmem[0].append(x.cpu().data.numpy())
@@ -3318,20 +3379,22 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             pass
         self.pt.evalmem[1].append(label.cpu().data.numpy())
         self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
-        # self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
-        # self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
+        self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
+        self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
         # self.pt.evalmem[5].append(output.cpu().data.numpy())
-        self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
+        # self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
         ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
-        self.pt.evalmem[4].append(ent.cpu().data.numpy())
+        # self.pt.evalmem[4].append(ent.cpu().data.numpy())
+        self.pt.evalmem[5].append(ent.cpu().data.numpy())
         # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
         # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
         try:
+            pass
             # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
-            self.pt.evalmem[5].append(rnn.attention_sig.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.attention_sig.cpu().data.numpy())
         except:
             pass
 
@@ -3805,7 +3868,7 @@ class MyLossFun(object):
     #     return loss1 + reg_lamda*gausskl
 
     @staticmethod
-    def KNWLoss_VIB(outputl, outlab, reg_lamda, model, cstep, beta_warmup):
+    def KNWLoss_VIB(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1):
         """
         Loss for variational information bottleneck, Gauss Expanded
         :param outputl:
@@ -3833,8 +3896,16 @@ class MyLossFun(object):
 
         # self.loss_intf = [self.ctheta, self.cmu]
         ctheta, cmu = model.loss_intf
+        dw, batch, l_size = ctheta.shape
+        # prior = prior.view(1,1,-1).expand(dw, batch, l_size)
+
+        # ent_prior = torch.mean(torch.log(prior*np.sqrt(2*np.pi*np.e)))
+        # ent_prior = torch.mean(prior * np.sqrt(2 * np.pi * np.e))
 
         gausskl = 0.5 * torch.mean(torch.sum(ctheta ** 2 + cmu ** 2 - torch.log(ctheta ** 2) - 1, dim=-1))
+        assert gausskl>0
+
+        # gausskl = 0.5 * torch.mean(torch.sum(ctheta ** 2 / prior**2 + cmu ** 2 / prior**2 - torch.log(ctheta ** 2 / prior**2) - 1, dim=-1))
 
         # beta_scaling = 1.0-np.exp(-cstep * 5)
         if cstep<beta_warmup:
@@ -3842,6 +3913,7 @@ class MyLossFun(object):
         else:
             beta_scaling = 1.0
 
+        # return loss1 + beta_scaling * reg_lamda * (gausskl + scale_factor*ent_prior)
         return loss1 + beta_scaling * reg_lamda * gausskl
 
     @staticmethod

@@ -14,25 +14,22 @@ import threading
 
 class ScanUtil(object):
 
-    def __init__(self,para_scan,python_main):
+    def __init__(self,para_scan,python_main,thread_id=None):
         self.para_scan=para_scan
         self.python_main=python_main
         self.pwd=os.getcwd()
+        self.thread_id=thread_id
 
-    def run(self,run_cont=False):
+    def run(self):
         """
         run
-        :param run_cont: if continued running is needed
         :return:
         """
         for ii in range(len(self.para_scan)):
-            dirname = "Workspace" + str(self.para_scan[ii])
+            # dirname = "Workspace" + str(self.para_scan[ii])
+            dirname = "Workspace" + str(self.thread_id)
             directory = os.path.join(self.pwd,dirname)
-            if not run_cont:
-                try:
-                    subprocess.call(['rm', '-r', directory])
-                except:
-                    pass
+            if not os.path.exists(directory):
                 subprocess.call(['mkdir', directory])
             f = open(os.path.join(directory, "para.txt"), "a")
             f.write("Parameter for this run")
@@ -44,7 +41,7 @@ class ScanUtil(object):
             # subprocess.call(['rm', os.path.join(directory, self.python_main)])
 
 class ParallelUtil(object):
-    def __init__(self,para_scan_l,python_main,run_cont=False):
+    def __init__(self,para_scan_l,python_main):
         """
         Parallel computing util
         :param para_scan_l: a list of para_scan [[para1_w1,para2_w1],[[para1_w2,para2_w2]],...]
@@ -53,14 +50,12 @@ class ParallelUtil(object):
         self.num=len(para_scan_l)
         self.para_scan_l=para_scan_l
         self.python_main=python_main
-        self.run_cont=run_cont
 
     def worker(self,ii):
-        sutil=ScanUtil(self.para_scan_l[ii],self.python_main)
-        sutil.run(run_cont=self.run_cont)
+        sutil=ScanUtil(self.para_scan_l[ii],self.python_main, thread_id=ii)
+        sutil.run()
 
-    def run(self,run_cont=False):
-        self.run_cont=run_cont
+    def run(self):
         threads = []
         print("Start "+str(self.num)+" thread.")
         for ii in range(self.num):

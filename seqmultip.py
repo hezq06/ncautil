@@ -327,7 +327,8 @@ class WeightMask(torch.nn.Module):
         self.weights = weights
         self.masks = masks
         self._setup()
-        self.hooker = BackHook(lambda: self._backward())
+        # self.hooker = BackHook(lambda: self._backward())
+        self.hooker = BackHook(self._backward)
 
     def _setup(self):
         for name_w in self.weights:

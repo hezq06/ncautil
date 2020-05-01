@@ -28,6 +28,21 @@ class W2vUtil(object):
         self.last_w2vtab = None
         self.last_tsne = None
 
+    def build_w2vtab(self,w2v_skg,Nvocab,nlp):
+        """
+
+        :param w2v_skg: W2V_SkipGram object
+        :param Nvocab: Number of vocabulary
+        :param nlp: NLPutil object
+        :return:
+        """
+        w2v_skg = w2v_skg.cpu()
+        w2vtab = dict([])
+        for ii in range(Nvocab):
+            wrd = nlp.id_to_word[ii]
+            vec = w2v_skg.w2v(torch.tensor(ii)).detach().numpy()
+            w2vtab[wrd] = vec
+
     def flwritew2v(self,w2vtab,ofile="w2vtab.pickle"):
         """
         Write word to vector data to file
@@ -51,14 +66,14 @@ class W2vUtil(object):
         self.last_w2vtab=w2vtab
         return w2vtab
 
-    def pltsne(self,w2vtab,numpt=500,start=0):
+    def pltsne(self,w2vtab,numpt=500,start=0, perplexity=20, n_iter=5000):
         """
         Plot 2D w2v graph with tsne
         Referencing part of code from: Basic word2vec example tensorflow
         :param numpt: number of points
         :return: null
         """
-        tsnetrainer = TSNE(perplexity=20, n_components=2, init='pca', n_iter=5000, method='exact')
+        tsnetrainer = TSNE(perplexity=perplexity, n_components=2, init='pca', n_iter=n_iter, method='exact')
         ebmpick=np.array(list(w2vtab.values()))[start : start+numpt,:]
         print(ebmpick.shape)
         last_tsne = tsnetrainer.fit_transform(ebmpick)
