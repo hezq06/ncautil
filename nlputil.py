@@ -76,7 +76,7 @@ class NLPutil(object):
 
         # self.synmat=SyntaxMat()
 
-    def get_data(self,corpus,file_idx=0,data=None):
+    def get_data(self,corpus,file_idx=0,data=None,format="txt"):
         """
         Get corpus data
         :param corpus: "brown","ptb"
@@ -126,16 +126,21 @@ class NLPutil(object):
         elif corpus=="imdb":
             imdb = IMDbSentimentUtil()
             imdb.get_corpus()
+            imdb.corpus_clean()
             self.corpus = imdb.corpus_train
             self.corpus_test = imdb.corpus_test
             self.sub_corpus = self.corpus[:self.sub_size]
         else:
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/'+str(corpus))
-            f = open(file)
-            raw = f.read()
-            self.corpus = word_tokenize(raw)
-            self.corpus = [w.lower() for w in self.corpus]
-            self.sub_corpus = self.corpus[:self.sub_size]
+            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/' + str(corpus))
+            if format=="txt":
+                f = open(file)
+                raw = f.read()
+                self.corpus = word_tokenize(raw)
+                self.corpus = [w.lower() for w in self.corpus]
+                self.sub_corpus = self.corpus[:self.sub_size]
+            elif format=="pickle":
+                self.corpus = load_data(file)
+                self.sub_corpus = self.corpus[:self.sub_size]
         print("Length of corpus: "+str(len(self.corpus)))
         print("Vocabulary of corpus: " + str(len(set(self.corpus))))
 
@@ -949,7 +954,13 @@ class SQuADutil(object):
 
         return posls
 
-    def pos_tagger_fast(self,sent): # 90% accuracy for PTB
+    def pos_tagger_fast(self,sent,tag_lenghth = 100000): # 90% accuracy for PTB
+        """
+
+        :param sent: list of words
+        :param tag_lenghth: if sent very long, seperate to tag_lenghth and tag would speed up
+        :return:
+        """
         if type(sent)==type("string"):
             sent=word_tokenize(sent)
             sent = [w.lower() for w in sent]
@@ -961,8 +972,15 @@ class SQuADutil(object):
             #                              path_to_jar=path + '/../stanford-postagger.jar')
             # return pos
         # pos=ini_pos()
-        res=self.pos.tag(sent)
-        return res
+
+        pos_tot_l = []
+        N_split = int(np.ceil(len(sent) / tag_lenghth))
+        for ii in tqdm_notebook(range(N_split)):
+            sent_seg = sent[ii * tag_lenghth:(ii + 1) * tag_lenghth]
+            pos_sent = self.pos.tag(sent_seg)
+            for item in pos_sent:
+                pos_tot_l.append(item)
+        return pos_tot_l
 
 
 class FallBack(object):
@@ -1229,7 +1247,8 @@ class IMDbSentimentUtil(object):
         print(len(self.corpus_test))
 
     def corpus_clean(self):
-        clean_list=[",",".","/","<",">","br","!","?",":","...","(",")",";","-","\'","\"","--",'``',"\'\'"]
+        # clean_list=[",",".","/","<",">","br","!","?",":","...","(",")",";","-","\'","\"","--",'``',"\'\'"]
+        clean_list = [ "/", "<", ">", "br"]
 
         cleaned_train=[]
         print("Cleaning Corpus Train ...")

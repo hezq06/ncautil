@@ -22,6 +22,216 @@ from ncautil.ptfunction import *
 from awd_lstm_lm.weight_drop import WeightDrop
 from ncautil.seqmultip import WeightMask
 
+class ABS_NLP_SEQ(torch.nn.Module):
+    """
+    An abstract cooperation container for seqential model
+    """
+
+    def __init__(self, seq1_coop, seq2_train, para=None):
+        """
+
+        :param trainer: trainer can be None
+        :param cooprer: cooprer is not trained
+        :param para:
+        """
+        super(self.__class__, self).__init__()
+
+        self.seq1_coop = seq1_coop
+        self.seq2_train = seq2_train
+
+        for param in self.seq1_coop.parameters():
+            param.requires_grad = False
+        self.seq1_coop.coop_mode = True
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        # self.softmax = torch.nn.LogSoftmax(dim=-1)
+        # self.sigmoid = torch.nn.Sigmoid()
+        # self.gsigmoid = Gumbel_Sigmoid()
+
+    def para(self,para):
+        self.coop_mode=para.get("coop_mode",False)
+
+    def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None):
+
+        # if not self.freeze_mode:
+        #     temperature = np.exp(-schedule * 5)
+        # else:
+        #     temperature = np.exp(-5)
+
+        self.cuda_device = inputl.device
+
+        out_seq1, hn_seq1 = self.seq1_coop(inputl, hidden1[0], logit_mode=True, schedule=1.0)
+
+        if self.coop_mode:
+            self.seq2_train.coop_mode = True
+        # print(out_seq1,hn_seq1)
+        out_seq2, hn_seq2 = self.seq2_train(out_seq1, hidden1[1], logit_mode=True, schedule=schedule)
+
+        self.loss_intf = self.seq2_train.loss_intf
+
+        # self.context=self.seq2_train.context
+        # self.gssample=self.seq2_train.gssample
+
+        return out_seq2, [hn_seq1, hn_seq2]
+
+    def initHidden(self,batch):
+        return [self.seq1_coop.initHidden(batch),self.seq2_train.initHidden(batch)]
+
+    def initHidden_cuda(self,device, batch):
+        return [self.seq1_coop.initHidden_cuda(device, batch), self.seq2_train.initHidden_cuda(device, batch)]
+
+class Hierachical_BiGRU_NLP_GSVIB(torch.nn.Module):
+    """
+    PyTorch BiGRU_GSVIB for NLP with Gumbel Softmax variational information bottleneck
+    Hierachical Inductive Bias
+    gs_dim is 2
+    """
+    def __init__(self, coop_bigru_nlp, maskmat, input_size, hidden_size, gs_head_num, gs_head_dim, output_size, num_layers=1
+                 ,para=None, coop_bigru_nlp2 = None):
+        super(self.__class__, self).__init__()
+        self.coop_bigru_nlp = coop_bigru_nlp
+        for param in self.coop_bigru_nlp.parameters():
+            param.requires_grad = False
+        self.coop_bigru_nlp2 = coop_bigru_nlp2
+        if self.coop_bigru_nlp2 is not None:
+            for param in self.coop_bigru_nlp2.parameters():
+                param.requires_grad = False
+
+        self.maskmat = torch.from_numpy(maskmat).type(torch.FloatTensor)
+        self.hidden_size = hidden_size
+        self.input_size = input_size
+        self.output_size = output_size
+        self.gs_head_num = gs_head_num
+        self.gs_head_dim = gs_head_dim
+        self.num_layers = num_layers
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.gru = torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
+        self.h2c = torch.nn.Linear(hidden_size * 2, gs_head_num*gs_head_dim)
+        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num,gs_head_dim)) , requires_grad=True)
+        if coop_bigru_nlp2 is not None:
+            self.maskmat_t2 = torch.nn.Parameter(torch.zeros((gs_head_num,5)), requires_grad=True)
+
+        if self.mlp_num_layers>0:
+            self.c2h = torch.nn.Linear(gs_head_num*gs_head_dim, self.mlp_hidden)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
+            self.h2o = torch.nn.Linear(self.mlp_hidden, output_size)
+        else:
+            self.c2o = torch.nn.Linear(gs_head_num*gs_head_dim, output_size)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.zsoftmax = torch.nn.LogSoftmax(dim=0)
+        self.gsoftmax = Gumbel_Softmax()
+        self.layer_norm = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
+
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+        if torch.cuda.is_available():
+            self.maskmat=self.maskmat.to(self.cuda_device)
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
+        self.mlp_hidden = int(para.get("mlp_hidden", 80))
+        self.freeze_mode = para.get("freeze_mode", False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
+        self.dropout_rate = para.get("dropout_rate", 0.2)
+        self.coop_mode = para.get("coop_mode", False)
+
+    def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None, attention_sig=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        if schedule<1.0: # Multi-scanning trial
+            schedule=schedule*self.temp_scan_num
+            schedule=schedule-np.floor(schedule)
+
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        self.cuda_device=input.device
+        dw, batch, l_size = input.shape
+
+        hout, hn = self.gru(input,hidden1[0])
+        context = self.h2c(hout)
+        context = context.view(dw, batch, self.gs_head_num, self.gs_head_dim)
+        context = self.softmax(context)
+        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+
+        sfm_coop, hn_coop = self.coop_bigru_nlp(input, hidden1[1],schedule=1.0)
+        coop_sample = self.gsoftmax(sfm_coop, temperature=temperature, cuda_device=self.cuda_device)
+        gs_mask = coop_sample.matmul(self.maskmat)
+        if self.coop_bigru_nlp2 is not None:
+            sfm_coop1, hn_coop1 = self.coop_bigru_nlp2(input, hidden1[2], schedule=1.0)
+            coop_sample1 = self.gsoftmax(sfm_coop1, temperature=temperature, cuda_device=self.cuda_device)
+            maskmat_t2 = self.softmax(self.maskmat_t2)
+            maskmat_t2 = self.gsoftmax(maskmat_t2, temperature=np.exp(-5), cuda_device=self.cuda_device)
+            gs_mask1 = coop_sample1.matmul(maskmat_t2.transpose(1,0))
+            gs_mask = gs_mask * gs_mask1
+
+        gssample = gssample * gs_mask.view(dw, batch, self.gs_head_num, 1)
+
+        p_prior = self.softmax(self.prior)
+        self.context = context
+        self.p_prior=p_prior
+        self.gssample = gssample
+        self.gs_mask = gs_mask
+        self.loss_intf = [self.context, p_prior]
+
+        gssample = gssample.view(dw, batch, self.gs_head_num*self.gs_head_dim)
+        gssample=self.layer_norm(gssample) ## Very important
+
+        if self.coop_mode:
+            return gssample, [hn , hn_coop]
+
+        if self.mlp_num_layers > 0:
+            hidden_c=self.c2h(gssample)
+            hidden_c=self.dropout(hidden_c)
+            for fmd in self.linear_layer_stack:
+                hidden_c = fmd(hidden_c)
+            output=self.h2o(hidden_c)
+        else:
+            output = self.c2o(gssample)
+
+        if not logit_mode:
+            output = self.softmax(output)
+
+        return output, [hn , hn_coop]
+
+    def initHidden(self,batch):
+        if self.coop_bigru_nlp2 is None:
+            return [Variable(torch.zeros(self.num_layers*2, batch,self.hidden_size), requires_grad=True),
+                    self.coop_bigru_nlp.initHidden(batch)]
+        else:
+            return [Variable(torch.zeros(self.num_layers * 2, batch, self.hidden_size), requires_grad=True),
+                    self.coop_bigru_nlp.initHidden(batch),
+                    self.coop_bigru_nlp2.initHidden(batch)]
+
+    def initHidden_cuda(self, device, batch):
+        if self.coop_bigru_nlp2 is None:
+            return [Variable(torch.zeros(self.num_layers*2, batch, self.hidden_size), requires_grad=True).to(device),
+                    self.coop_bigru_nlp.initHidden_cuda(device, batch)]
+        else:
+            return [Variable(torch.zeros(self.num_layers * 2, batch, self.hidden_size), requires_grad=True).to(device),
+                    self.coop_bigru_nlp.initHidden_cuda(device, batch),
+                    self.coop_bigru_nlp2.initHidden_cuda(device, batch)]
+
 class COOP_W2V_Softmax(torch.nn.Module):
     """
     PyTorch Simple Softmax W2V calculation
@@ -498,6 +708,7 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
 
         self.trainer = trainer
         self.cooprer = cooprer
+        self.l_size_tot = (self.trainer.gs_head_num + self.cooprer.gs_head_num) * self.trainer.gs_head_dim
 
         for param in self.cooprer.parameters():
             param.requires_grad = False
@@ -528,6 +739,7 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
             temperature = np.exp(-5)
 
         self.cuda_device = inputl.device
+        dw, batch, l_size = inputl.shape
 
         logit_coop, hn_coop = self.cooprer(inputl, hidden1[1], logit_mode=True, schedule=1.0,
                                            context_set=coop_context_set)
@@ -553,7 +765,10 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         self.gssample_coop = self.cooprer.gssample
 
         if self.coop_mode:
-            return [logit_coop,logit_train], None # Coop is label, train is self
+            # return [logit_coop,logit_train], None # Coop is label, train is self
+
+            gasample_lv1 = torch.cat((self.trainer.gssample, self.cooprer.gssample), dim=-2)
+            return gasample_lv1.view(dw,batch,self.l_size_tot), None  # Coop is label, train is self
 
         # output=logit_coop[0]+logit_train[0]
         output = logit_coop + logit_train
@@ -843,6 +1058,8 @@ class BiGRU_NLP(torch.nn.Module):
         self.input_mask = None
         self.out_mask = None
 
+        self.loss_intf=None
+
     def para(self,para):
         self.weight_dropout = para.get("weight_dropout", 0.0)
         self.cuda_device = para.get("cuda_device", "cuda:0")
@@ -862,8 +1079,8 @@ class BiGRU_NLP(torch.nn.Module):
         :return:
         """
         # temperature = np.exp(-schedule * 5)
-        if len(input.shape)==2:
-            input=input.view(1,input.shape[0],input.shape[1])
+        # if len(input.shape)==2:
+        #     input=input.view(1,input.shape[0],input.shape[1])
         self.cuda_device = input.device
 
         if self.input_mask_mode and self.training:
@@ -888,7 +1105,6 @@ class BiGRU_NLP(torch.nn.Module):
                 hout = fmd(hout)
 
         output = self.h2o(hout)
-        output = self.softmax(output)
 
         if add_logit is not None:
             output=output+add_logit
@@ -1273,8 +1489,9 @@ class Gumbel_Softmax(torch.nn.Module):
     PyTorch Gumbel softmax function
     Categorical Reprarameterization with Gumbel-Softmax
     """
-    def __init__(self):
+    def __init__(self,sample=1):
         super(self.__class__, self).__init__()
+        self.sample=sample
 
     def forward(self, inmat, temperature=1.0, cuda_device="cuda:0"):
         """
@@ -1285,7 +1502,12 @@ class Gumbel_Softmax(torch.nn.Module):
         """
         # input must be log probability
         # lpii = torch.log(input)
-
+        if self.sample>1:
+            ishape=list(inmat.shape)
+            vshape=list(inmat.shape)
+            ishape.insert(2, self.sample) # dw, batch, sample, ...
+            vshape.insert(2, self.sample)
+            inmat=torch.unsqueeze(inmat, 2).expand(ishape)
         ui = torch.rand(inmat.shape)
         ui = ui.to(cuda_device)
         gi = -torch.log(-torch.log(ui))
@@ -1471,12 +1693,12 @@ class FF_MLP_GSVIB(torch.nn.Module):
     """
     Feed forward multi-layer perceotron
     """
-    def __init__(self, input_size, mlp_hidden, context_size, gs_head, output_size, mlp_num_layers=[2,2] ,para=None):
+    def __init__(self, input_size, mlp_hidden, gs_head_dim, gs_head_num, output_size, mlp_num_layers=[2,2] ,para=None):
         super(self.__class__, self).__init__()
         self.input_size = input_size
         self.output_size = output_size
-        self.context_size = context_size
-        self.gs_head = gs_head
+        self.gs_head_dim = gs_head_dim
+        self.gs_head_num = gs_head_num
         self.mlp_hidden=mlp_hidden
         self.mlp_num_layers = mlp_num_layers[0]
         self.mlp_num_layers_2 = mlp_num_layers[1]
@@ -1492,21 +1714,21 @@ class FF_MLP_GSVIB(torch.nn.Module):
             self.linear_layer_stack = torch.nn.ModuleList([
                 torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.LayerNorm(mlp_hidden),torch.nn.ReLU())
                 for _ in range(self.mlp_num_layers-1)])
-            self.h2o = torch.nn.Linear(mlp_hidden, context_size*gs_head)
+            self.h2o = torch.nn.Linear(mlp_hidden, gs_head_dim*gs_head_num)
         else:
-            self.i2o = torch.nn.Linear(input_size, context_size*gs_head)
+            self.i2o = torch.nn.Linear(input_size, gs_head_dim*gs_head_num)
 
-        self.prior = torch.nn.Parameter(torch.zeros((gs_head, context_size)), requires_grad=True)
+        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num, gs_head_dim)), requires_grad=True)
 
         if not self.coop_mode:
             if self.mlp_num_layers_2>0:
-                self.c2h_2 = torch.nn.Linear(context_size*gs_head, mlp_hidden)
+                self.c2h_2 = torch.nn.Linear(gs_head_dim*gs_head_num, mlp_hidden)
                 self.linear_layer_stack_2 = torch.nn.ModuleList([
                     torch.nn.Sequential(torch.nn.Linear(mlp_hidden, mlp_hidden, bias=True), torch.nn.LayerNorm(mlp_hidden),torch.nn.ReLU())
                     for _ in range(self.mlp_num_layers-1)])
                 self.h2o_2 = torch.nn.Linear(mlp_hidden, output_size)
             else:
-                self.c2o_2 = torch.nn.Linear(context_size*gs_head, output_size)
+                self.c2o_2 = torch.nn.Linear(gs_head_dim*gs_head_num, output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -1550,13 +1772,13 @@ class FF_MLP_GSVIB(torch.nn.Module):
             context = self.i2o(input)
 
         dw, batch, l_size = input.shape
-        context = context.view(dw, batch, self.gs_head, self.context_size)
+        context = context.view(dw, batch, self.gs_head_num, self.gs_head_dim)
 
         if attention_sig is not None:
-            p_prior_exp = self.prior.expand(dw, batch, self.gs_head, self.context_size)
+            p_prior_exp = self.prior.expand(dw, batch, self.gs_head_num, self.gs_head_dim)
             # Sigmoid attention from POS
-            context = context * attention_sig.view(dw, batch, self.gs_head, 1) + p_prior_exp * (
-                    1 - attention_sig.view(dw, batch, self.gs_head, 1))
+            context = context * attention_sig.view(dw, batch, self.gs_head_num, 1) + p_prior_exp * (
+                    1 - attention_sig.view(dw, batch, self.gs_head_num, 1))
             context = self.softmax(context)
 
         context = self.softmax(context)
@@ -1571,7 +1793,7 @@ class FF_MLP_GSVIB(torch.nn.Module):
         self.gssample = gssample
         self.loss_intf = [self.context, p_prior]
 
-        gssample = gssample.view(dw, batch, self.gs_head * self.context_size)
+        gssample = gssample.view(dw, batch, self.gs_head_num * self.gs_head_dim)
 
         if self.coop_mode :
             return gssample, None
@@ -1600,16 +1822,28 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
     """
     PyTorch BiGRU for NLP with Gumbel Softmax variational information bottleneck
     """
-    def __init__(self, input_size, hidden_size, gs_head_dim, gs_head_num, output_size, num_layers=1 ,para=None):
+    def __init__(self, model_para ,para=None):
         super(self.__class__, self).__init__()
-        self.hidden_size = hidden_size
-        self.input_size = input_size
-        self.output_size = output_size
-        self.gs_head_dim = gs_head_dim
-        self.gs_head_num = gs_head_num
-        self.num_layers=num_layers
 
-        self.context_attn_size = self.gs_head_num*self.gs_head_dim
+        # model_para = {"input_size": lsize_in,
+        #               "output_size": vocab_out,
+        #               "gs_head_dim": 2,
+        #               "gs_head_num": 21,
+        #               "bigru_hidden_size": 30,
+        #               "mlp_num_layers": 0,
+        #               "mlp_hidden": 80,
+        #               "bigru_num_layers": 3}
+        self.model_para=model_para
+        self.hidden_size = model_para.get("hidden_size",30)
+        self.input_size = model_para.get("input_size",None)
+        self.output_size = model_para.get("output_size",None)
+        self.gs_head_dim = model_para.get("gs_head_dim",2)
+        self.gs_head_num = model_para.get("gs_head_num",21)
+        self.bigru_num_layers = model_para.get("bigru_num_layers",1)
+        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
+        self.mlp_hidden = int(para.get("mlp_hidden", 80))
+
+        self.context_attn_size = self.gs_head_num * self.gs_head_dim
 
         # self.coop_mode=False
 
@@ -1621,35 +1855,34 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         # if num_layers>1:
         #     assert self.self_include_flag
 
-        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
-        self.h2c = torch.nn.Linear(hidden_size * 2, gs_head_dim*gs_head_num)
-        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num,gs_head_dim)) , requires_grad=True)
+        self.gru=torch.nn.GRU(self.input_size,self.hidden_size,num_layers=self.bigru_num_layers,bidirectional=True)
+        self.h2c = torch.nn.Linear(self.hidden_size * 2, self.gs_head_dim*self.gs_head_num)
+        self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num,self.gs_head_dim)) , requires_grad=True)
 
         if not self.coop_mode:
             if self.mlp_num_layers>0:
-                self.c2h = torch.nn.Linear(gs_head_dim*gs_head_num, self.mlp_hidden)
+                self.c2h = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.mlp_hidden)
                 self.linear_layer_stack = torch.nn.ModuleList([
                     torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
                     for _ in range(self.mlp_num_layers-1)])
-                self.h2o = torch.nn.Linear(self.mlp_hidden, output_size)
+                self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size)
             else:
-                self.c2o = torch.nn.Linear(gs_head_dim*gs_head_num, output_size)
+                self.c2o = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.gsoftmax = Gumbel_Softmax()
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
 
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
     def para(self,para):
-        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
-        self.mlp_hidden = int(para.get("mlp_hidden", 160))
         self.freeze_mode = para.get("freeze_mode", False)
         self.temp_scan_num = para.get("temp_scan_num", 1)
         self.dropout_rate = para.get("dropout_rate", 0.2)
         self.coop_mode = para.get("coop_mode", False)
+        self.sample_size = para.get("sample_size", 1)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None, attention_sig=None):
         """
@@ -1679,7 +1912,7 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
             # Sigmoid attention from POS
             context = context * attention_sig.view(dw, batch, self.gs_head_num, 1) + p_prior_exp * (
                         1 - attention_sig.view(dw, batch, self.gs_head_num, 1))
-            context = self.softmax(context)
+            context = self.softmax(context)  ## Bug unfixed for historical reason
 
         context = self.softmax(context)
         if context_set is not None:
@@ -1694,11 +1927,11 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         self.loss_intf = [self.context, p_prior]
 
         if self.coop_mode:
-            return gssample.view(dw, batch, self.gs_head_num, self.gs_head_dim), None
+            return gssample.view(dw, batch, self.sample_size,self.gs_head_num*self.gs_head_dim), None
             # return torch.exp(context.view(dw, batch, self.gs_head_num*self.gs_head_dim)), None
             # return context.view(dw, batch, self.gs_head_num, self.gs_head_dim), None
 
-        gssample = gssample.view(dw, batch, self.gs_head_num * self.gs_head_dim)
+        gssample = gssample.view(dw, batch, self.sample_size, self.gs_head_num * self.gs_head_dim)
 
         if self.mlp_num_layers > 0:
             hidden_c=self.c2h(gssample)
@@ -1715,10 +1948,10 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         return output, hn
 
     def initHidden(self,batch):
-        return Variable(torch.zeros(self.num_layers*2, batch,self.hidden_size), requires_grad=True)
+        return Variable(torch.zeros(self.bigru_num_layers*2, batch,self.hidden_size), requires_grad=True)
 
     def initHidden_cuda(self, device, batch):
-        return Variable(torch.zeros(self.num_layers*2, batch, self.hidden_size), requires_grad=True).to(device)
+        return Variable(torch.zeros(self.bigru_num_layers*2, batch, self.hidden_size), requires_grad=True).to(device)
 
 
 class BiGRU_NLP_GSVIB_ATTCOOP(torch.nn.Module):

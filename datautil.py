@@ -45,9 +45,13 @@ def load_data(file):
     print("Data load from ", file)
     return data
 
-def save_model(model,file):
+def save_model(model,file,model_para=None):
     torch.save(model.state_dict(), file)
     print("Model saved to ", file)
+    if model_para is not None:
+        file_p=file+str(".para")
+        model_para["type"]=type(model)
+        save_data(model_para,file_p)
 
 def load_model(model,file,map_location=None):
     if map_location is None:
@@ -57,6 +61,32 @@ def load_model(model,file,map_location=None):
 
     print("Model load from ", file)
     return model
+
+def create_dataset_sup(train_data, train_label, valid_data, valid_label, test_data, test_label):
+
+    ### IMDb original data
+
+    # Training set
+    assert len(train_data) == len(train_label)
+    dataset_train_sup = dict([])
+    dataset_train_sup["dataset"] = train_data
+    dataset_train_sup["label"] = train_label
+
+    # Valid set
+    assert len(valid_data) == len(valid_label)
+    dataset_valid_sup = dict([])
+    dataset_valid_sup["dataset"] = valid_data
+    dataset_valid_sup["label"] = valid_label
+
+    # Test set
+    assert len(test_data) == len(test_label)
+    dataset_test_sup = dict([])
+    dataset_test_sup["dataset"] = test_data
+    dataset_test_sup["label"] = test_label
+
+    dataset_dict = {"data_train": dataset_train_sup, "data_valid": dataset_valid_sup, "data_test": dataset_test_sup}
+
+    return dataset_dict
 
 def get_id_with_sample_vec(param,vec):
     """

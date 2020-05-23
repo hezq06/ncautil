@@ -3277,6 +3277,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version in ["gsvib" , "gsvib_coop_special" , "gsvib_task2"]:
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
+        elif self.version == "sigvib": # advanced wersion of sigmoid gsvib, each neuron is either 0 or 1
+            return MyLossFun.KNWLoss_SIGVIB(outputl, outlab, self.pt.reg_lamda, model, self.pt.scale_factor)
         elif self.version == "gsvib_attcoop":
             return MyLossFun.KNWLoss_GSVIB_ATTCOOP(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version == "att_infofolk":
@@ -3377,24 +3379,30 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             self.pt.evalmem[0].append(x.cpu().data.numpy())
         except:
             pass
-        self.pt.evalmem[1].append(label.cpu().data.numpy())
+        self.pt.evalmem[1].append(label.permute(1,0).cpu().data.numpy())
         self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
-        self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
-        self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
+        # self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
+        # self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
         # self.pt.evalmem[5].append(output.cpu().data.numpy())
-        # self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
+        self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
+        # ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True, cuda_device=self.pt.cuda_device)
         ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
-        # self.pt.evalmem[4].append(ent.cpu().data.numpy())
-        self.pt.evalmem[5].append(ent.cpu().data.numpy())
+        self.pt.evalmem[4].append(ent.cpu().data.numpy())
+        # self.pt.evalmem[5].append(ent.cpu().data.numpy())
         # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
         # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
+        # self.pt.evalmem[5].append(rnn.gs_mask.cpu().data.numpy())
+        # self.pt.evalmem[2].append(rnn.seq1_coop.context.cpu().data.numpy())
+        # self.pt.evalmem[3].append(rnn.seq1_coop.gssample.cpu().data.numpy())
         try:
             pass
             # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
-            # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.seq1_coop.gssample.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.attention_sig.cpu().data.numpy())
+            self.pt.evalmem[5].append(rnn.seq1_coop.context_coop.cpu().data.numpy())
+            self.pt.evalmem[6].append(rnn.seq1_coop.gssample_coop.cpu().data.numpy())
         except:
             pass
 
@@ -3808,7 +3816,14 @@ class MyLossFun(object):
 
     @staticmethod
     def KNWLoss(outputl, outlab):
-        outputl=outputl.permute(1, 2, 0)
+        if len(outputl.shape) == 3:
+            # wd, batch, l_size
+            outputl = outputl.permute(1, 2, 0)
+        else:
+            # wd, batch, sample, l_size
+            wd, batch, sample, l_size = outputl.shape
+            outputl = outputl.permute(1, 3, 0, 2)
+            outlab = outlab.view(batch, wd, 1).expand(batch, wd, sample)
         lossc=torch.nn.CrossEntropyLoss()
         loss1 = lossc(outputl, outlab)
         return loss1
@@ -3926,8 +3941,16 @@ class MyLossFun(object):
         :param cstep:
         :return:
         """
-        outputl = outputl.permute(1, 2, 0)
+        if len(outputl.shape) == 3:
+            # wd, batch, l_size
+            outputl = outputl.permute(1, 2, 0)
+        else:
+            # wd, batch, sample, l_size
+            wd, batch, sample, l_size = outputl.shape
+            outputl = outputl.permute(1, 3, 0, 2)
+            outlab = outlab.view(batch,wd,1).expand(batch,wd,sample)
         lossc = torch.nn.CrossEntropyLoss()
+
         loss1 = lossc(outputl, outlab)
 
         # context,prior should be log probability
@@ -3994,6 +4017,42 @@ class MyLossFun(object):
         #     beta_scaling = 1.0
         beta_scaling = 1.0
         return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior + scale_factor2 * att_gate)
+
+    @staticmethod
+    def KNWLoss_SIGVIB(outputl, outlab, reg_lamda, model, scale_factor=0.1):
+        """
+        Loss for variational information bottleneck, 2 value neurons
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+        outputl = outputl.permute(1, 2, 0)
+        lossc = torch.nn.CrossEntropyLoss()
+        loss1 = lossc(outputl, outlab)
+
+        # context,prior should be log probability
+        context, prior = model.loss_intf
+        coopout_size,gs_head_num = prior.shape
+
+        eps = 1e-7
+        ent_prior = -torch.mean( prior*torch.log(prior + eps) + (1.0-prior)*torch.log(1.0 - prior + eps))
+
+        prior = prior.view(1, 1, coopout_size,gs_head_num).expand_as(context)
+
+        flatkl = torch.mean( context * (torch.log(context+ eps) - torch.log(prior+ eps)) +
+                            (1.0-context) * (torch.log(1.0-context+ eps) - torch.log(1.0-prior+ eps))
+                            )
+
+        if (prior != prior).any():
+            raise Exception("NaN Error in prior")
+        if (ent_prior != ent_prior).any():
+            raise Exception("NaN Error in ent_prior")
+        if (flatkl != flatkl).any():
+            raise Exception("NaN Error in flatkl")
+
+        return loss1 + reg_lamda * (flatkl + scale_factor * ent_prior)
 
     @staticmethod
     def KNWLoss_infofork(outputl, outlab, reg_lamda, model, scale_factor=0.1, scale_factor2=0.1):
@@ -4175,7 +4234,7 @@ def run_training_worker(rank, world_size, datafile, lsize, rnn, interface_para, 
 
     if rank==0:
         # save_model(rnn,"bigru_pos"+str(rank)+".model")
-        save_model(rnn, model_name)
+        save_model(rnn, model_name, model_para=rnn.model_para)
 
     dist_cleanup()
 
