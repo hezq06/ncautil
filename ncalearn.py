@@ -635,6 +635,7 @@ class PyTrain_Lite(object):
         self.dist_data_parallel = para.get("dist_data_parallel", False)  # distributed data parallel switch
         self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)  # distributed data parallel dimention
         self.scale_factor=para.get("scale_factor", 0.1)
+        self.output_cluster=para.get("output_cluster", None)
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
 
@@ -3269,13 +3270,17 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         elif self.version == "with_mask":
             data_shape = [self.pt.window, batch, self.pt.lsize_in]
             return MyDataFun.get_data_sup(dataset, data_shape, self.pt.pt_emb,self.pt, rstartv=None)
+        elif self.version in ["gsvib_hsoftmax2","hsoftmax2"]:
+            assert self.pt.output_cluster is not None
+            data_shape = [self.pt.window, batch, self.pt.lsize_in, self.pt.output_cluster]
+            return MyDataFun.get_data_sup_hsoftmax2(dataset, data_shape, self.pt.pt_emb, self.pt, rstartv=None, shift=False)
         else:
             return self.get_data_sup(dataset, batch=batch, rstartv=rstartv)
 
     def lossf(self, outputl, outlab, model=None, cstep=None, loss_data=None):
         if self.version == "vib":
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep, self.pt.beta_warmup, self.pt.scale_factor)
-        elif self.version in ["gsvib" , "gsvib_coop_special" , "gsvib_task2"]:
+        elif self.version in ["gsvib" , "gsvib_coop_special" , "gsvib_task2","gsvib_hsoftmax2"]:
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version == "sigvib": # advanced wersion of sigmoid gsvib, each neuron is either 0 or 1
             return MyLossFun.KNWLoss_SIGVIB(outputl, outlab, self.pt.reg_lamda, model, self.pt.scale_factor)
@@ -3289,6 +3294,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep, data_loss_mask=loss_data)
         elif self.version == "with_mask":
             return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep, data_loss_mask=None)
+        elif self.version == "hsoftmax2":
+            return MyLossFun.KNWLoss(outputl, outlab, model=model, hsoftmax_depth=2)
         elif self.version == "default":
             return MyLossFun.KNWLoss(outputl, outlab)
         else:
@@ -3304,6 +3311,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # return MyLossFun.KNWLoss(outputl, outlab)
         if self.version == "with_mask":
             return MyLossFun.KNWLoss_withmask(outputl, outlab, model=model, cstep=cstep, data_loss_mask=loss_data)
+        elif self.version in ["gsvib_hsoftmax2","hsoftmax2"]:
+            return MyLossFun.KNWLoss(outputl, outlab, model=model,hsoftmax_depth=2)
         else:
             # return MyLossFun.KNWLoss_VIB_EVAL(outputl, outlab, model)
             return MyLossFun.KNWLoss(outputl, outlab)
@@ -3330,7 +3339,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         labelset = dataset_dict["label"]
         dataset = dataset_dict["dataset"]
 
-        # Generating output label
+        # Generating output label # numpy random is necessary for distributed data parallel
         if rstartv is None:
             rstartv = np.floor(np.random.rand(batch) * (len(dataset) - self.pt.window - 1))
         yl = np.zeros((batch,self.pt.window))
@@ -3396,13 +3405,13 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # self.pt.evalmem[3].append(rnn.seq1_coop.gssample.cpu().data.numpy())
         try:
             pass
-            # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
-            # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+            self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
+            self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.seq1_coop.gssample.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.attention_sig.cpu().data.numpy())
-            self.pt.evalmem[5].append(rnn.seq1_coop.context_coop.cpu().data.numpy())
-            self.pt.evalmem[6].append(rnn.seq1_coop.gssample_coop.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.seq1_coop.context_coop.cpu().data.numpy())
+            # self.pt.evalmem[6].append(rnn.seq1_coop.gssample_coop.cpu().data.numpy())
         except:
             pass
 
@@ -3572,7 +3581,7 @@ class MyDataFun(object):
         labelset = dataset_dict["label"]
         dataset = dataset_dict["dataset"]
 
-        # Generating output label
+        # Generating output label # Generating output label # numpy random is necessary for distributed data parallel
         if rstartv is None:
             rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
         yl = np.zeros((batch,window))
@@ -3809,23 +3818,97 @@ class MyDataFun(object):
 
         return x, outlab, None
 
+    @staticmethod
+    def get_data_sup_hsoftmax2(dataset_dict, data_shape, pt_emb, ptrain_pt, rstartv=None, shift=False):
+        """
+        hsoftmax_depth is 2
+        :param dataset_dict:
+        :param data_shape: shape like [window, batch, lsize_in]
+        :param pt_emb: embedding
+        :param ptrain_pt: pytrain interface
+        :param rstartv: random start
+        :param shift: data shift
+        :return:
+        """
+        assert len(data_shape) == 4
 
+        window, batch, lsize_in, output_cluster = data_shape
+
+        assert ptrain_pt.digit_input
+        assert ptrain_pt.supervise_mode
+
+        labelset = dataset_dict["label"]
+        dataset = dataset_dict["dataset"]
+
+        # Generating output label # Generating output label # numpy random is necessary for distributed data parallel
+        if rstartv is None:
+            rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
+        yl = np.zeros((batch, window))
+
+        for iib in range(batch):
+            if shift:
+                yl[iib, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
+            else:
+                yl[iib, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
+        ylp1 = yl % output_cluster
+        ylp2 = np.floor(yl / output_cluster)
+        yla=np.array([ylp1,ylp2]).transpose(1,2,0)
+        outlab = torch.from_numpy(yla)
+        outlab = outlab.type(torch.LongTensor)
+
+        vec1m = torch.zeros(window, batch, lsize_in)
+        for iib in range(batch):
+            ptdata = dataset[int(rstartv[iib]):int(rstartv[iib]) + window]
+            vec1 = pt_emb(torch.LongTensor(ptdata))
+            vec1m[:, iib, :] = vec1
+        x = Variable(vec1m, requires_grad=True).type(torch.FloatTensor)
+
+        if ptrain_pt.gpuavail:
+            outlab = outlab.to(ptrain_pt.device)
+            x = x.to(ptrain_pt.device)
+
+        # return x, outlab, None
+        return [x,outlab[:,:,0]], outlab, None
 
 
 class MyLossFun(object):
 
     @staticmethod
-    def KNWLoss(outputl, outlab):
+    def KNWLoss(outputl, outlab, model=None ,hsoftmax_depth=1):
+        # if len(outputl.shape) == 3:
+        #     # wd, batch, l_size
+        #     outputl = outputl.permute(1, 2, 0)
+        # else:
+        #     # wd, batch, sample, l_size
+        #     wd, batch, sample, l_size = outputl.shape
+        #     outputl = outputl.permute(1, 3, 0, 2)
+        #     outlab = outlab.view(batch, wd, 1).expand(batch, wd, sample)
+        # lossc=torch.nn.CrossEntropyLoss()
+        # loss1 = lossc(outputl, outlab)
+        lossc = torch.nn.CrossEntropyLoss()
         if len(outputl.shape) == 3:
             # wd, batch, l_size
-            outputl = outputl.permute(1, 2, 0)
+            outputl = outputl.permute(1, 2, 0) # batch, l_size, wd
+            if hsoftmax_depth == 1:
+                loss1 = lossc(outputl, outlab)
+            elif hsoftmax_depth == 2:
+                loss1p1 = lossc(outputl[:, :model.output_cluster, :, :], outlab[:, :, :, 0])
+                loss1p2 = lossc(outputl[:, :, model.output_cluster:, :], outlab[:, :, :, 1])
+                loss1 = loss1p1 + loss1p2
         else:
             # wd, batch, sample, l_size
             wd, batch, sample, l_size = outputl.shape
-            outputl = outputl.permute(1, 3, 0, 2)
-            outlab = outlab.view(batch, wd, 1).expand(batch, wd, sample)
-        lossc=torch.nn.CrossEntropyLoss()
-        loss1 = lossc(outputl, outlab)
+            outputl = outputl.permute(1, 3, 0, 2) #batch,  l_size, wd, sample
+
+            if hsoftmax_depth == 1:
+                outlab = outlab.view(batch, wd, 1).expand(batch, wd, sample)
+                loss1 = lossc(outputl, outlab)
+            elif hsoftmax_depth == 2:
+                outlab = outlab.view(batch, wd, 1, 2).expand(batch, wd, sample, 2)
+                loss1p1 = lossc(outputl[:,:model.output_cluster,:,:], outlab[:,:,:,0])
+                loss1p2 = lossc(outputl[:,model.output_cluster:,:,:], outlab[:,:,:,1])
+                loss1 = loss1p1 + loss1p2
+
         return loss1
 
     @staticmethod
@@ -3941,17 +4024,29 @@ class MyLossFun(object):
         :param cstep:
         :return:
         """
+        lossc = torch.nn.CrossEntropyLoss()
         if len(outputl.shape) == 3:
             # wd, batch, l_size
-            outputl = outputl.permute(1, 2, 0)
+            outputl = outputl.permute(1, 2, 0)  # batch, l_size, wd
+            if model.hsoftmax_depth == 1:
+                loss1 = lossc(outputl, outlab)
+            elif model.hsoftmax_depth == 2:
+                loss1p1 = lossc(outputl[:, :, :, :model.output_size], outlab[:, :, :, 0])
+                loss1p2 = lossc(outputl[:, :, :, model.output_size:], outlab[:, :, :, 1])
+                loss1 = loss1p1 + loss1p2
         else:
             # wd, batch, sample, l_size
             wd, batch, sample, l_size = outputl.shape
-            outputl = outputl.permute(1, 3, 0, 2)
-            outlab = outlab.view(batch,wd,1).expand(batch,wd,sample)
-        lossc = torch.nn.CrossEntropyLoss()
+            outputl = outputl.permute(1, 3, 0, 2)  # batch,  l_size, wd, sample
 
-        loss1 = lossc(outputl, outlab)
+            if model.hsoftmax_depth == 1:
+                outlab = outlab.view(batch, wd, 1).expand(batch, wd, sample)
+                loss1 = lossc(outputl, outlab)
+            elif model.hsoftmax_depth == 2:
+                outlab = outlab.view(batch, wd, 1, 2).expand(batch, wd, sample, 2)
+                loss1p1 = lossc(outputl[:, :, :, :model.output_size], outlab[:, :, :, 0])
+                loss1p2 = lossc(outputl[:, :, :, model.output_size:], outlab[:, :, :, 1])
+                loss1 = loss1p1 + loss1p2
 
         # context,prior should be log probability
         context,prior = model.loss_intf
@@ -3971,6 +4066,53 @@ class MyLossFun(object):
         beta_scaling = 1.0
 
         return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor*ent_prior)
+
+    @staticmethod
+    def KNWLoss_GSVIB_HSOFTMAX2(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1):
+        """
+        Loss for variational information bottleneck, Gauss Expanded
+        :param outputl:
+        :param outlab:
+        :param model:
+        :param cstep:
+        :return:
+        """
+        lossc = torch.nn.CrossEntropyLoss()
+        if len(outputl.shape) == 3:
+            # wd, batch, l_size
+            outputl = outputl.permute(1, 2, 0)  # batch, l_size, wd
+            loss1p1 = lossc(outputl, outlab[:, :, 0])
+            loss1p2 = lossc(outputl, outlab[:, :, 1])
+            loss1 = loss1p1 + loss1p2
+        else:
+            # wd, batch, sample, l_size
+
+            wd, batch, sample, l_size = outputl.shape
+            outputl = outputl.permute(1, 3, 0, 2)  # batch,  l_size, wd, sample
+
+            outlab = outlab.view(batch, wd, 1, 2).expand(batch, wd, sample, 2)
+            loss1p1 = lossc(outputl, outlab[:, :, :, 0])
+            loss1p2 = lossc(outputl, outlab[:, :, :, 1])
+            loss1 = loss1p1 + loss1p2
+
+        # context,prior should be log probability
+        context, prior = model.loss_intf
+        gs_head, context_size = prior.shape
+
+        ent_prior = -torch.mean(torch.sum(torch.exp(prior) * prior, dim=-1))
+
+        prior = prior.view(1, 1, gs_head, context_size).expand_as(context)
+
+        flatkl = torch.mean(torch.sum(torch.exp(context) * (context - prior), dim=-1))
+
+        # beta_scaling = 1.0-np.exp(-cstep * 5)
+        # if cstep < beta_warmup:
+        #     beta_scaling = cstep / beta_warmup
+        # else:
+        #     beta_scaling = 1.0
+        beta_scaling = 1.0
+
+        return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor * ent_prior)
 
     @staticmethod
     def KNWLoss_GSVIB_ATTCOOP(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1,scale_factor2=0.0):
@@ -4234,7 +4376,7 @@ def run_training_worker(rank, world_size, datafile, lsize, rnn, interface_para, 
 
     if rank==0:
         # save_model(rnn,"bigru_pos"+str(rank)+".model")
-        save_model(rnn, model_name, model_para=rnn.model_para)
+        save_model(rnn, model_name)
 
     dist_cleanup()
 

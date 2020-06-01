@@ -11,7 +11,7 @@ import torch
 import math
 from torch.nn import functional as F
 import numpy as np
-from ncautil.ncalearn import plot_mat
+from ncautil.ncamath import one_hot
 
 
 gl_cuda_device="cuda:0"

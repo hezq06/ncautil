@@ -704,6 +704,9 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         """
         super(self.__class__, self).__init__()
 
+        self.model_para = {"trainer":trainer.model_para,"cooprer":cooprer.model_para}
+        self.misc_para = {"trainer":trainer.misc_para,"cooprer":cooprer.misc_para}
+
         self.coop_mode = False # For recursive cooreration
 
         self.trainer = trainer
@@ -730,6 +733,7 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         self.cooprer_attn_mode=para.get("cooprer_attn_mode",False)
         self.freeze_mode=para.get("freeze_mode",False)
         self.coop_mode=para.get("coop_mode",False)
+        self.hsoftmax_depth = para.get("hsoftmax_depth",1)
 
     def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None, coop_context_set=None):
 
@@ -1501,13 +1505,12 @@ class Gumbel_Softmax(torch.nn.Module):
         :return:
         """
         # input must be log probability
-        # lpii = torch.log(input)
-        if self.sample>1:
-            ishape=list(inmat.shape)
-            vshape=list(inmat.shape)
-            ishape.insert(2, self.sample) # dw, batch, sample, ...
-            vshape.insert(2, self.sample)
-            inmat=torch.unsqueeze(inmat, 2).expand(ishape)
+        # if self.sample>1:
+        ishape=list(inmat.shape)
+        vshape=list(inmat.shape)
+        ishape.insert(2, self.sample) # dw, batch, sample, ...
+        vshape.insert(2, self.sample)
+        inmat=torch.unsqueeze(inmat, 2).expand(ishape)
         ui = torch.rand(inmat.shape)
         ui = ui.to(cuda_device)
         gi = -torch.log(-torch.log(ui))
@@ -1833,15 +1836,8 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         #               "mlp_num_layers": 0,
         #               "mlp_hidden": 80,
         #               "bigru_num_layers": 3}
-        self.model_para=model_para
-        self.hidden_size = model_para.get("hidden_size",30)
-        self.input_size = model_para.get("input_size",None)
-        self.output_size = model_para.get("output_size",None)
-        self.gs_head_dim = model_para.get("gs_head_dim",2)
-        self.gs_head_num = model_para.get("gs_head_num",21)
-        self.bigru_num_layers = model_para.get("bigru_num_layers",1)
-        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
-        self.mlp_hidden = int(para.get("mlp_hidden", 80))
+
+        self.set_model_para(model_para)
 
         self.context_attn_size = self.gs_head_num * self.gs_head_dim
 
@@ -1850,6 +1846,7 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         if para is None:
             para = dict([])
         self.para(para)
+        self.misc_para=para
 
         # self include by default
         # if num_layers>1:
@@ -1865,9 +1862,9 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
                 self.linear_layer_stack = torch.nn.ModuleList([
                     torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
                     for _ in range(self.mlp_num_layers-1)])
-                self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size)
+                self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size*self.hsoftmax_depth)
             else:
-                self.c2o = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_size)
+                self.c2o = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_size*self.hsoftmax_depth)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -1877,12 +1874,28 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
 
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
+    def set_model_para(self,model_para):
+        self.model_para = model_para
+        self.hidden_size = model_para.get("hidden_size", 30)
+        self.input_size = model_para.get("input_size", None)
+        self.output_size = model_para.get("output_size", None)
+        self.gs_head_dim = model_para.get("gs_head_dim", 2)
+        self.gs_head_num = model_para.get("gs_head_num", 21)
+        self.bigru_num_layers = model_para.get("bigru_num_layers", 1)
+        self.mlp_num_layers = model_para.get("mlp_num_layers", 0)
+        self.mlp_hidden = model_para.get("mlp_hidden", 80)
+        self.hsoftmax_depth = model_para.get("hsoftmax_depth", 1)
+
     def para(self,para):
         self.freeze_mode = para.get("freeze_mode", False)
         self.temp_scan_num = para.get("temp_scan_num", 1)
         self.dropout_rate = para.get("dropout_rate", 0.2)
         self.coop_mode = para.get("coop_mode", False)
         self.sample_size = para.get("sample_size", 1)
+
+    def set_sample_size(self,sample_size):
+        self.sample_size=sample_size
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None, attention_sig=None):
         """
@@ -1942,8 +1955,206 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
         else:
             output = self.c2o(gssample)
 
-        if not logit_mode:
-            output = self.softmax(output)
+        # if not logit_mode: # CrossEntropy combines lsoftmax and nllloss
+        #     if self.hsoftmax_depth==1:
+        #         output = self.softmax(output)
+        #     elif self.hsoftmax_depth==2:
+        #         outputp0 = self.softmax(output[dw, batch, self.sample_size,:self.output_size])
+        #         outputp1 = self.softmax(output[dw, batch, self.sample_size, self.output_size:])
+        #         output = torch.cat((outputp0,outputp1),dim=-1)
+        #     else:
+        #         raise Exception("Hsoftmax_depth larger than 2, not implemented yet.")
+
+        return output, hn
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(self.bigru_num_layers*2, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self, device, batch):
+        return Variable(torch.zeros(self.bigru_num_layers*2, batch, self.hidden_size), requires_grad=True).to(device)
+
+class Linear_Multihead(torch.nn.Module):
+    """
+    A linear module with Multihead, designed to implement Hierachical Softmax
+    """
+    def __init__(self,input_size, output_size, head_num, bias=True):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.output_size=output_size
+        self.head_num=head_num
+        self.weight=torch.nn.Parameter(torch.Tensor(output_size, head_num, input_size), requires_grad=True)
+        # for ii in range(head_num):
+        #     torch.nn.init.kaiming_uniform_(self.weight[ii,:,:], a=math.sqrt(5))
+        torch.nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(self.weight)
+        if bias:
+            self.bias = torch.nn.Parameter(torch.Tensor(head_num, output_size), requires_grad=True)
+            bound = 1 / math.sqrt(fan_in)
+            torch.nn.init.uniform_(self.bias, -bound, bound)
+        else:
+            self.bias = None
+
+    def forward(self, input, cluster):
+        """
+
+        :param input: shape [wd, batch, smp,  input_size]
+        :param cluster: shape [wd, batch] digit is head_id
+        :return:
+        """
+        self.cuda_device=input.device
+        cluster_oh = one_hot(cluster, self.head_num,cuda_device=self.cuda_device) # [wd, batch, self.head_num]
+        weight_c = cluster_oh.unsqueeze(-3).matmul(self.weight) # [wd, output_size, batch, input_size]
+        weight_c=weight_c.transpose(-2,-3).transpose(-1,-2) # [wd, batch, input_size, output_size]
+        res = input.matmul(weight_c)
+        bias = cluster_oh.matmul(self.bias).unsqueeze(-2)
+        if self.bias is not None:
+            res = res + bias
+        return res
+        # output=torch.matmul(input.permute(1,0,2),weight_mask)+self.bias.view(1,-1)
+        # return output.permute(1,0,2)
+
+class BiGRU_NLP_GSVIB_HSOFTMAX2(torch.nn.Module):
+    """
+    PyTorch BiGRU for NLP with Gumbel Softmax variational information bottleneck
+    with Hierarchical Softmax level2
+    """
+    def __init__(self, model_para ,para=None):
+        super(self.__class__, self).__init__()
+
+        # model_para = {"input_size": lsize_in,
+        #               "output_size": 201,
+        #                "output_cluster": 150,
+        #               "gs_head_dim": 2,
+        #               "gs_head_num": 21,
+        #               "bigru_hidden_size": 30,
+        #               "mlp_num_layers": 0,
+        #               "mlp_hidden": 80,
+        #               "bigru_num_layers": 3,
+        #               "hsoftmax_depth": 2
+        #               }
+
+        self.model_para=model_para
+        self.hidden_size = model_para.get("hidden_size",30)
+        self.input_size = model_para.get("input_size",None)
+        self.output_size = model_para.get("output_size",None)
+        self.output_cluster = model_para.get("output_cluster", None)
+        self.gs_head_dim = model_para.get("gs_head_dim",2)
+        self.gs_head_num = model_para.get("gs_head_num",21)
+        self.bigru_num_layers = model_para.get("bigru_num_layers",1)
+        self.mlp_num_layers = model_para.get("mlp_num_layers", 0)
+        self.mlp_hidden = model_para.get("mlp_hidden", 80)
+        self.hsoftmax_depth = model_para.get("hsoftmax_depth", 2)
+
+        self.context_attn_size = self.gs_head_num * self.gs_head_dim
+
+        # self.coop_mode=False
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+        self.misc_para=para
+
+        self.gru=torch.nn.GRU(self.input_size,self.hidden_size,num_layers=self.bigru_num_layers,bidirectional=True)
+        self.h2c = torch.nn.Linear(self.hidden_size * 2, self.gs_head_dim*self.gs_head_num)
+        self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num,self.gs_head_dim)) , requires_grad=True)
+
+        if not self.coop_mode:
+            if self.mlp_num_layers>0:
+                self.c2h = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.mlp_hidden)
+                self.linear_layer_stack = torch.nn.ModuleList([
+                    torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
+                    for _ in range(self.mlp_num_layers-1)])
+                self.h2oc = torch.nn.Linear(self.mlp_hidden, self.output_cluster)
+                self.h2o = Linear_Multihead(self.mlp_hidden, self.output_size, self.output_cluster)
+            else:
+                self.c2oc = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_cluster)
+                self.c2o = Linear_Multihead(self.gs_head_dim*self.gs_head_num, self.output_size, self.output_cluster)
+
+        self.sigmoid = torch.nn.Sigmoid()
+        self.tanh = torch.nn.Tanh()
+        self.relu = torch.nn.ReLU()
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
+        self.layer_norm = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+    def para(self,para):
+        self.freeze_mode = para.get("freeze_mode", False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
+        self.dropout_rate = para.get("dropout_rate", 0.2)
+        self.coop_mode = para.get("coop_mode", False)
+        self.sample_size = para.get("sample_size", 1)
+
+    def set_sample_size(self,sample_size):
+        self.sample_size=sample_size
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
+
+    def forward(self, inputl, hidden1, schedule=None, context_set=None, attention_sig=None):
+        """
+        Forward
+        :param inputl: [window batch l_size], cluster
+        :param hidden:
+        :return:
+        """
+        if schedule<1.0: # Multi-scanning trial
+            schedule=schedule*self.temp_scan_num
+            schedule=schedule-np.floor(schedule)
+
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        input , cluster = inputl
+        cluster = cluster.transpose(1,0)
+        self.cuda_device=input.device
+        hout, hn = self.gru(input,hidden1)
+        dw, batch, l_size = input.shape
+
+        context = self.h2c(hout)
+        context = context.view(dw, batch, self.gs_head_num, self.gs_head_dim)
+
+        if attention_sig is not None:
+            p_prior_exp = self.prior.expand(dw, batch, self.gs_head_num, self.gs_head_dim)
+            # Sigmoid attention from POS
+            context = context * attention_sig.view(dw, batch, self.gs_head_num, 1) + p_prior_exp * (
+                        1 - attention_sig.view(dw, batch, self.gs_head_num, 1))
+            context = self.softmax(context)  ## Bug unfixed for historical reason
+
+        context = self.softmax(context)
+        if context_set is not None:
+            context=context_set
+
+        gssample = self.gsoftmax(context, temperature=temperature, cuda_device=self.cuda_device)
+
+        p_prior = self.softmax(self.prior)
+        self.context = context
+        self.p_prior=p_prior
+        self.gssample = gssample
+        self.loss_intf = [self.context, p_prior]
+
+        if self.coop_mode:
+            return gssample.view(dw, batch, self.sample_size,self.gs_head_num*self.gs_head_dim), None
+            # return torch.exp(context.view(dw, batch, self.gs_head_num*self.gs_head_dim)), None
+            # return context.view(dw, batch, self.gs_head_num, self.gs_head_dim), None
+
+        gssample = gssample.view(dw, batch, self.sample_size, self.gs_head_num * self.gs_head_dim)
+        gssample = self.layer_norm(gssample) # Very important
+
+        # gssample.register_hook(lambda grad: print("gssample", grad))
+
+        if self.mlp_num_layers > 0:
+            hidden_c=self.c2h(gssample)
+            hidden_c=self.dropout(hidden_c)
+            for fmd in self.linear_layer_stack:
+                hidden_c = fmd(hidden_c)
+            outputc=self.h2oc(hidden_c)
+            outputh = self.h2o(hidden_c,cluster)
+        else:
+            outputc = self.c2oc(gssample)
+            outputh = self.c2o(gssample, cluster)
+
+        output = torch.cat((outputc, outputh), dim=-1)
 
         return output, hn
 
