@@ -17,9 +17,10 @@ import scipy.linalg as la
 import torch
 from sklearn.manifold import TSNE
 from scipy.cluster.hierarchy import dendrogram
+from scipy.optimize import linear_sum_assignment
 from tqdm import tqdm
 
-def cluster(data,n_clusters,mode="kmeans"):
+def cluster(data,n_clusters,mode="kmeans",sample_weight=None, ii_iter=1000):
     """
     Do clustering
     :param data: data to be clustered
@@ -28,19 +29,39 @@ def cluster(data,n_clusters,mode="kmeans"):
     :return:
     """
     startt = time.time()
-    kmeans = KMeans(n_clusters=n_clusters, init="random").fit(data)
-    center=np.zeros((n_clusters,len(data[0])))
-    clscounter=np.zeros(n_clusters)
-    for iid in range(len(data)):
-        ncls=kmeans.labels_[iid]
-        center[ncls]=center[ncls]+data[iid]
-        clscounter[ncls]=clscounter[ncls]+1
-    for iic in range(n_clusters):
-        if clscounter[iic] != 0:
-            center[iic]=center[iic]/clscounter[iic]
+    if mode == "kmeans":
+        if np.std(data)>0:
+            kmeans = KMeans(n_clusters=n_clusters, init="random",max_iter=3000, tol=1e-5).fit(data,sample_weight=sample_weight)
+            center=np.zeros((n_clusters,len(data[0])))
+            clscounter=np.zeros(n_clusters)
+            for iid in range(len(data)):
+                ncls=kmeans.labels_[iid]
+                center[ncls]=center[ncls]+data[iid]
+                clscounter[ncls]=clscounter[ncls]+1
+            for iic in range(n_clusters):
+                if clscounter[iic] != 0:
+                    center[iic]=center[iic]/clscounter[iic]
+            res = (kmeans.labels_, center)
+        else:
+            rndlabels=np.floor(np.random.rand(len(data)) * n_clusters)
+            center=[data[0] for ii in range(n_clusters)]
+            res = (rndlabels, center)
+    elif mode == "b-kmeans": # Balanced k-means
+        N, dim = data.shape
+        cen = np.random.random((n_clusters,dim))
+        for ii_step in range(1):
+            print("A")
+            ## Calculate cost matrix
+            diffmat=data.reshape(N,1,dim)-cen.reshape(1,n_clusters,dim)# N,n_cluster,dim
+            print("B")
+            costmat=np.sum(diffmat*diffmat,axis=2)# N,n_cluster
+            nrep=np.ceil(N/n_clusters)
+            costmat=np.repeat(costmat, nrep, axis=1)
+            print("C")
+            rid, cid = linear_sum_assignment(costmat) ## Toooooo slow
     endt = time.time()
     print("Time used in training:", endt - startt)
-    return kmeans.labels_, center
+    return res
 
 def pca(data,D):
     """
@@ -1112,7 +1133,7 @@ class HierachicalCluster(object):
         plt.show()
 
     def cal_dist(self,X,Y,Z):
-        """Distance defined as predoctive mutual information"""
+        """Distance defined as predictive mutual information"""
         if len(X.shape) == 1:
             X = X.reshape(-1, 1)
         if len(Y.shape) == 1:

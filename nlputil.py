@@ -271,6 +271,8 @@ class NLPutil(object):
                     else:
                         vec = model[word]
                     self.w2v_dict[word] = vec
+                    if np.std(vec)==0:
+                        skip.append(word)
                 except:
                     vec = np.zeros(len(model[self.id_to_word[10]]))
                     self.w2v_dict[word] = vec

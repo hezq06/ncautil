@@ -712,6 +712,8 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         self.trainer = trainer
         self.cooprer = cooprer
         self.l_size_tot = (self.trainer.gs_head_num + self.cooprer.gs_head_num) * self.trainer.gs_head_dim
+        self.output_cluster=self.trainer.output_cluster
+        self.hsoftmax_depth = self.trainer.hsoftmax_depth
 
         for param in self.cooprer.parameters():
             param.requires_grad = False
@@ -733,17 +735,19 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         self.cooprer_attn_mode=para.get("cooprer_attn_mode",False)
         self.freeze_mode=para.get("freeze_mode",False)
         self.coop_mode=para.get("coop_mode",False)
-        self.hsoftmax_depth = para.get("hsoftmax_depth",1)
 
-    def forward(self, inputl, hidden1, add_logit=None, logit_mode=False, schedule=None, coop_context_set=None):
+    def forward(self, inputl, hidden1, add_logit=None, logit_mode=True, schedule=None, coop_context_set=None):
 
         if not self.freeze_mode:
             temperature = np.exp(-schedule * 5)
         else:
             temperature = np.exp(-5)
-
-        self.cuda_device = inputl.device
-        dw, batch, l_size = inputl.shape
+        try:
+            self.cuda_device = inputl.device
+            dw, batch, l_size = inputl.shape
+        except:
+            self.cuda_device = inputl[0].device
+            dw, batch, l_size = inputl[0].shape
 
         logit_coop, hn_coop = self.cooprer(inputl, hidden1[1], logit_mode=True, schedule=1.0,
                                            context_set=coop_context_set)
@@ -780,8 +784,7 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
 
         if add_logit is not None:
             output = output + add_logit
-        if not logit_mode:
-            output = self.softmax(output)
+
         # return [output,logit_train[1]], [hn_train, hn_coop]
         return output, [hn_train, hn_coop]
 
@@ -1493,9 +1496,10 @@ class Gumbel_Softmax(torch.nn.Module):
     PyTorch Gumbel softmax function
     Categorical Reprarameterization with Gumbel-Softmax
     """
-    def __init__(self,sample=1):
+    def __init__(self,sample=1,sample_mode=True):
         super(self.__class__, self).__init__()
         self.sample=sample
+        self.sample_mode=sample_mode
 
     def forward(self, inmat, temperature=1.0, cuda_device="cuda:0"):
         """
@@ -1505,12 +1509,12 @@ class Gumbel_Softmax(torch.nn.Module):
         :return:
         """
         # input must be log probability
-        # if self.sample>1:
-        ishape=list(inmat.shape)
-        vshape=list(inmat.shape)
-        ishape.insert(2, self.sample) # dw, batch, sample, ...
-        vshape.insert(2, self.sample)
-        inmat=torch.unsqueeze(inmat, 2).expand(ishape)
+        if self.sample_mode:
+            ishape=list(inmat.shape)
+            vshape=list(inmat.shape)
+            ishape.insert(2, self.sample) # dw, batch, sample, ...
+            vshape.insert(2, self.sample)
+            inmat=torch.unsqueeze(inmat, 2).expand(ishape)
         ui = torch.rand(inmat.shape)
         ui = ui.to(cuda_device)
         gi = -torch.log(-torch.log(ui))
@@ -2089,7 +2093,7 @@ class BiGRU_NLP_GSVIB_HSOFTMAX2(torch.nn.Module):
         self.sample_size=sample_size
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
 
-    def forward(self, inputl, hidden1, schedule=None, context_set=None, attention_sig=None):
+    def forward(self, inputl, hidden1, schedule=None, context_set=None, attention_sig=None, logit_mode=True):
         """
         Forward
         :param inputl: [window batch l_size], cluster
@@ -2154,7 +2158,7 @@ class BiGRU_NLP_GSVIB_HSOFTMAX2(torch.nn.Module):
             outputc = self.c2oc(gssample)
             outputh = self.c2o(gssample, cluster)
 
-        output = torch.cat((outputc, outputh), dim=-1)
+        output = torch.cat((outputc, outputh), dim=-1) # (wd, b, s, outc+outh)
 
         return output, hn
 
@@ -2836,6 +2840,96 @@ class W2V_Softmax(torch.nn.Module):
         #     pass
 
         return output, None # [window_size_ext-self.window_size+1,batch,Nvcab]
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self,device, batch):
+        return None
+
+class bClustering(torch.nn.Module):
+    """
+    PyTorch simple balanced clustering method
+    """
+    def __init__(self, n_cluster, dim, para=None, cluster_init=None):
+        """
+
+        :param N: Number of points
+        :param n_cluster: number of clusters
+        :param dim: point dimension
+        """
+        super(self.__class__, self).__init__()
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.n_cluster = n_cluster
+        self.dim = dim
+
+        # self.assignMat=torch.nn.Parameter(torch.zeros((N,n_cluster)), requires_grad=True)
+        self.assignMat = torch.nn.Linear(self.n_cluster, self.n_cluster)
+        # centroidMat initialization should match data
+        if cluster_init is not None:
+            self.centroidMat = torch.nn.Parameter(torch.rand((n_cluster, dim))-0.5, requires_grad=True)
+        else:
+            self.centroidMat = torch.nn.Parameter(torch.from_numpy(cluster_init).type(torch.FloatTensor), requires_grad=True)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax()
+
+        self.layer_norm = torch.nn.LayerNorm(n_cluster)
+        # self.layer_norm = torch.nn.LayerNorm(n_cluster*dim)
+
+    def para(self,para):
+        self.cuda_device = para.get("cuda_device", "cuda:0")
+        self.freeze_mode = para.get("freeze_mode", True)
+        self.temp_scan_num = para.get("temp_scan_num", 4)
+        self.beta = para.get("beta", 0) # Lagrangian multiplier
+
+    def forward(self, input, hidden=None, schedule=None):
+        """
+
+        :param input: (N,dim)
+        :param hidden:
+        :param schedule:
+        :return:
+        """
+
+        if schedule<1.0: # Multi-scanning trial
+            schedule=schedule*self.temp_scan_num
+            schedule=schedule-np.floor(schedule)
+
+        if not self.freeze_mode:
+            # temperature = np.exp(-schedule * 5)
+            temperature = 1.005-schedule
+        else:
+            temperature = np.exp(-5)
+
+        self.cuda_device = input.device
+
+        N,dim = input.shape
+        diff=input.view(N,1,dim)-self.centroidMat.view(1,self.n_cluster,dim)
+        dist=torch.sqrt(torch.mean(diff**2,dim=-1))
+        dist=self.layer_norm(dist) #Very important
+        assignMat = self.assignMat(dist)
+        assignMat=self.softmax(assignMat)
+        assignMat_sample = self.gsoftmax(assignMat, temperature=temperature, cuda_device=self.cuda_device) # (N,n_cluster)
+
+        diff2 = input - assignMat_sample.matmul(self.centroidMat)
+        rms_dist=torch.sqrt(torch.mean(diff2**2))
+
+        cltcnt = torch.sum(assignMat_sample, dim=0)
+        # blcost=torch.sqrt(torch.mean((cltcnt-torch.mean(cltcnt))**2))
+
+        cltcnt_p = torch.log(cltcnt / torch.sum(cltcnt)+1e-9)
+        blcost = torch.sum(torch.exp(cltcnt_p) * (cltcnt_p + np.log(self.n_cluster)))
+
+        self.gssample=assignMat_sample
+
+        output=rms_dist+self.beta*blcost
+
+        return output, None
 
     def initHidden(self,batch):
         return None

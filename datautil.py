@@ -48,11 +48,12 @@ def load_data(file):
 def save_model(model,file):
     torch.save(model.state_dict(), file)
     print("Model saved to ", file)
-    if model.model_para is not None:
-        file_p=file+str(".para")
-        model.model_para["type"]=type(model)
-        model.model_para["misc_para"] = model.misc_para
-        save_data(model.model_para,file_p)
+    if hasattr(model,"model_para"):
+        if model.model_para is not None:
+            file_p=file+str(".para")
+            model.model_para["type"]=type(model)
+            model.model_para["misc_para"] = model.misc_para
+            save_data(model.model_para,file_p)
 
 def load_model(model,file,map_location=None,except_list=None):
     if map_location is None:
