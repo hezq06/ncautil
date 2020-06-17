@@ -104,9 +104,11 @@ class Hierachical_BiGRU_NLP_GSVIB(torch.nn.Module):
     Hierachical Inductive Bias
     gs_dim is 2
     """
-    def __init__(self, coop_bigru_nlp, maskmat, input_size, hidden_size, gs_head_num, gs_head_dim, output_size, num_layers=1
-                 ,para=None, coop_bigru_nlp2 = None):
+    def __init__(self, coop_bigru_nlp, maskmat, model_para, para=None, coop_bigru_nlp2 = None):
         super(self.__class__, self).__init__()
+
+        self.set_model_para(model_para)
+
         self.coop_bigru_nlp = coop_bigru_nlp
         for param in self.coop_bigru_nlp.parameters():
             param.requires_grad = False
@@ -116,38 +118,32 @@ class Hierachical_BiGRU_NLP_GSVIB(torch.nn.Module):
                 param.requires_grad = False
 
         self.maskmat = torch.from_numpy(maskmat).type(torch.FloatTensor)
-        self.hidden_size = hidden_size
-        self.input_size = input_size
-        self.output_size = output_size
-        self.gs_head_num = gs_head_num
-        self.gs_head_dim = gs_head_dim
-        self.num_layers = num_layers
 
         if para is None:
             para = dict([])
         self.para(para)
 
-        self.gru = torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
-        self.h2c = torch.nn.Linear(hidden_size * 2, gs_head_num*gs_head_dim)
-        self.prior = torch.nn.Parameter(torch.zeros((gs_head_num,gs_head_dim)) , requires_grad=True)
+        self.gru = torch.nn.GRU(self.input_size,self.hidden_size,num_layers=self.num_layers,bidirectional=True)
+        self.h2c = torch.nn.Linear(self.hidden_size * 2, self.gs_head_num*self.gs_head_dim)
+        self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num,self.gs_head_dim)) , requires_grad=True)
         if coop_bigru_nlp2 is not None:
-            self.maskmat_t2 = torch.nn.Parameter(torch.zeros((gs_head_num,5)), requires_grad=True)
+            self.maskmat_t2 = torch.nn.Parameter(torch.zeros((self.gs_head_num,5)), requires_grad=True)
 
         if self.mlp_num_layers>0:
-            self.c2h = torch.nn.Linear(gs_head_num*gs_head_dim, self.mlp_hidden)
+            self.c2h = torch.nn.Linear(self.gs_head_num*self.gs_head_dim, self.mlp_hidden)
             self.linear_layer_stack = torch.nn.ModuleList([
                 torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
                 for _ in range(self.mlp_num_layers-1)])
-            self.h2o = torch.nn.Linear(self.mlp_hidden, output_size)
+            self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size)
         else:
-            self.c2o = torch.nn.Linear(gs_head_num*gs_head_dim, output_size)
+            self.c2o = torch.nn.Linear(self.gs_head_num*self.gs_head_dim, self.output_size)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.zsoftmax = torch.nn.LogSoftmax(dim=0)
-        self.gsoftmax = Gumbel_Softmax()
+        self.gsoftmax = Gumbel_Softmax(sample_mode=False)
         self.layer_norm = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
 
         self.dropout = torch.nn.Dropout(self.dropout_rate)
@@ -155,10 +151,26 @@ class Hierachical_BiGRU_NLP_GSVIB(torch.nn.Module):
         if torch.cuda.is_available():
             self.maskmat=self.maskmat.to(self.cuda_device)
 
+        self.save_para = {
+            "cooprer": coop_bigru_nlp.save_para,
+            "model_para":self.model_para,
+            "type": "Hierachical_BiGRU_NLP_GSVIB",
+            "misc_para": para
+        }
+
+    def set_model_para(self,model_para):
+        self.model_para = model_para
+        self.hidden_size = model_para["hidden_size"]
+        self.input_size = model_para["input_size"]
+        self.output_size = model_para["output_size"]
+        self.gs_head_num = model_para["gs_head_num"]
+        self.gs_head_dim = model_para["gs_head_dim"]
+        self.num_layers = model_para["num_layers"]
+        self.mlp_num_layers = int(model_para.get("mlp_num_layers", 0))
+        self.mlp_hidden = int(model_para.get("mlp_hidden", 80))
+
     def para(self,para):
         self.cuda_device = para.get("cuda_device", "cuda:0")
-        self.mlp_num_layers = int(para.get("mlp_num_layers", 0))
-        self.mlp_hidden = int(para.get("mlp_hidden", 80))
         self.freeze_mode = para.get("freeze_mode", False)
         self.temp_scan_num = para.get("temp_scan_num", 1)
         self.dropout_rate = para.get("dropout_rate", 0.2)
@@ -1048,27 +1060,25 @@ class BiGRU_NLP(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1, para=None):
+    def __init__(self, model_para, para=None):
         super(self.__class__, self).__init__()
-        self.hidden_size = hidden_size
-        self.input_size = input_size
-        self.output_size = output_size
-        self.num_layers = num_layers
+
+        self.set_model_para(model_para)
 
         if para is None:
             para = dict([])
         self.para(para)
 
-        self.gru=torch.nn.GRU(input_size,hidden_size,num_layers=num_layers,bidirectional=True)
+        self.gru=torch.nn.GRU(self.input_size,self.hidden_size,num_layers=self.num_layers,bidirectional=True)
 
         if self.mlp_num_layers>0:
-            self.h2h = torch.nn.Linear(2*hidden_size, self.mlp_hidden)
+            self.h2h = torch.nn.Linear(2*self.hidden_size, self.mlp_hidden)
             self.linear_layer_stack = torch.nn.ModuleList([
                 torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
                 for _ in range(self.mlp_num_layers-1)])
-            self.h2o = torch.nn.Linear(self.mlp_hidden, output_size)
+            self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size)
         else:
-            self.h2o = torch.nn.Linear(2*hidden_size, output_size)
+            self.h2o = torch.nn.Linear(2*self.hidden_size, self.output_size)
 
         if self.weight_dropout>0:
             print("Be careful, only GPU works for now.")
@@ -1087,14 +1097,27 @@ class BiGRU_NLP(torch.nn.Module):
 
         self.loss_intf=None
 
+        self.save_para = {
+            "model_para": model_para,
+            "type": "BiGRU_NLP",
+            "misc_para": para
+        }
+
+    def set_model_para(self,model_para):
+        self.model_para = model_para
+        self.hidden_size = model_para["hidden_size"]
+        self.input_size = model_para["input_size"]
+        self.output_size = model_para["output_size"]
+        self.num_layers = model_para["num_layers"]
+        self.mlp_hidden = int(model_para.get("mlp_hidden", 20))
+        self.mlp_num_layers = int(model_para.get("mlp_num_layers", 1))
+
     def para(self,para):
+        self.misc_para = para
         self.weight_dropout = para.get("weight_dropout", 0.0)
         self.cuda_device = para.get("cuda_device", "cuda:0")
-        self.mlp_hidden = int(para.get("mlp_hidden", 20))
-        self.mlp_num_layers = int(para.get("mlp_num_layers", 1))
         self.dropout_rate = para.get("dropout_rate", 0.2)
         self.input_mask_mode = para.get("input_mask_mode", False)
-
         self.mask_rate = para.get("mask_rate", 0.15)
         self.self_unmask_rate = para.get("self_unmask_rate", 0.1)
 

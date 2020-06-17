@@ -3411,10 +3411,11 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # self.pt.evalmem[5].append(ent.cpu().data.numpy())
         # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
         # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
-        # self.pt.evalmem[5].append(rnn.gs_mask.cpu().data.numpy())
+        self.pt.evalmem[5].append(rnn.gs_mask.cpu().data.numpy())
         # self.pt.evalmem[2].append(rnn.seq1_coop.context.cpu().data.numpy())
         # self.pt.evalmem[3].append(rnn.seq1_coop.gssample.cpu().data.numpy())
         try:
+            pass
             # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.seq1_coop.gssample.cpu().data.numpy())

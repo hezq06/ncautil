@@ -59,6 +59,10 @@ def save_model(model,file):
             # model.model_para["type"]=type(model)
             # model.model_para["misc_para"] = model.misc_para
             save_data(model.save_para,file_p)
+        else:
+            print("Attribute save_para is None.")
+    else:
+        print("Attribute save_para not found.")
 
 def load_model(model,file,map_location=None,except_list=[]):
     try:
