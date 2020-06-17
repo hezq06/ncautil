@@ -48,21 +48,36 @@ def load_data(file):
 def save_model(model,file):
     torch.save(model.state_dict(), file)
     print("Model saved to ", file)
-    if hasattr(model,"model_para"):
-        if model.model_para is not None:
+    if hasattr(model,"save_para"):
+        if model.save_para is not None:
             file_p=file+str(".para")
-            model.model_para["type"]=type(model)
-            model.model_para["misc_para"] = model.misc_para
-            save_data(model.model_para,file_p)
+            # save_para={
+            #     "model_para":model.model_para,
+            #     "type":type(model)
+            #
+            # }
+            # model.model_para["type"]=type(model)
+            # model.model_para["misc_para"] = model.misc_para
+            save_data(model.save_para,file_p)
 
-def load_model(model,file,map_location=None,except_list=None):
-    if map_location is None:
-        state_dict=torch.load(file)
-        model.load_state_dict(state_dict)
-    else:
-        model.load_state_dict(torch.load(file,map_location=map_location))
-
-    print("Model load from ", file)
+def load_model(model,file,map_location=None,except_list=[]):
+    try:
+        if map_location is None:
+            state_dict=torch.load(file)
+            model.load_state_dict(state_dict)
+        else:
+            model.load_state_dict(torch.load(file,map_location=map_location))
+        print("Model load from ", file)
+    except Exception as inst:
+        print(inst)
+        pretrained_dict = torch.load(file)
+        model_dict = model.state_dict()
+        # 1. filter out unnecessary keys
+        pretrained_dict = {k: v for k, v in pretrained_dict.items() if (k in model_dict) and (k not in except_list)}
+        # 2. overwrite entries in the existing state dict
+        model_dict.update(pretrained_dict)
+        # 3. load the new state dict
+        model.load_state_dict(model_dict)
     return model
 
 def create_dataset_sup(train_data, train_label, valid_data, valid_label, test_data, test_label):

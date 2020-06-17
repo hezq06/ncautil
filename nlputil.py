@@ -1266,6 +1266,55 @@ class IMDbSentimentUtil(object):
                 cleaned_test.append(wrd)
         self.corpus_test = cleaned_test
 
+class POS_SIMP(object):
+
+    def __init__(self):
+        self.pos_simp={
+        '#': "MRK",
+        '$': "MRK",
+         "''": "MRK",
+         ',': "MRK",
+         '.': "MRK",
+         ':': "MRK",
+         'CC': "VT",
+         'CD': "CD",
+         'DT': "VT",
+         'EX': "VT",
+         'FW': "VT",
+         'IN': "VT",
+         'JJ': "JJ",
+         'JJR': "JJ",
+         'JJS': "JJ",
+         'LS': "CD",
+         'MD': "VT",
+         'NN': "NN",
+         'NNP': "NN",
+         'NNPS': "NN",
+         'NNS': "NN",
+         'PDT': "VT",
+         'POS': "VT",
+         'PRP': "VT",
+         'PRP$': "VT",
+         'RB': "RB",
+         'RBR': "RB",
+         'RBS': "RB",
+         'RP': "VT",
+         'SYM': "VT",
+         'TO': "VT",
+         'UH': "VT",
+         'VB': "VB",
+         'VBD': "VB",
+         'VBG': "VB",
+         'VBN': "VB",
+         'VBP': "VB",
+         'VBZ': "VB",
+         'WDT': "VT",
+         'WP': "VT",
+         'WP$': "VT",
+         'WRB': "VT",
+         '``': "MRK"}
+
+
 
 
 

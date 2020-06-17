@@ -3388,8 +3388,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             self.pt.evalmem[0].append(x.cpu().data.numpy())
         except:
             pass
-        # self.pt.evalmem[1].append(label.permute(1,0).cpu().data.numpy())
-        self.pt.evalmem[1].append(label.permute(1, 0, 2).cpu().data.numpy())
+        self.pt.evalmem[1].append(label.permute(1,0).cpu().data.numpy())
+        # self.pt.evalmem[1].append(label.permute(1, 0, 2).cpu().data.numpy())
         self.pt.evalmem[2].append(rnn.context.cpu().data.numpy())
         # self.pt.evalmem[3].append(rnn.ctheta.cpu().data.numpy())
         # self.pt.evalmem[4].append(rnn.cmu.cpu().data.numpy())
@@ -3397,7 +3397,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         self.pt.evalmem[3].append(rnn.gssample.cpu().data.numpy())
         # ent = cal_entropy(output.cpu().data, log_flag=True, byte_flag=False, torch_flag=True, cuda_device=self.pt.cuda_device)
         lsoftmax = torch.nn.LogSoftmax(dim=-1)
-        if rnn.hsoftmax_depth>1:
+        if getattr(rnn,"hsoftmax_depth",0)>1:
             cluster_size=rnn.output_cluster #(wd, b, s, outc+outh)
             outputc= lsoftmax(output[:,:,:,:cluster_size])
             entc = cal_entropy(outputc.cpu().data, log_flag=True, byte_flag=False, torch_flag=True)
@@ -3415,12 +3415,11 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # self.pt.evalmem[2].append(rnn.seq1_coop.context.cpu().data.numpy())
         # self.pt.evalmem[3].append(rnn.seq1_coop.gssample.cpu().data.numpy())
         try:
-            pass
-            self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
-            self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
+            # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.seq1_coop.gssample.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
-            # self.pt.evalmem[5].append(rnn.attention_sig.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.attention_prob.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.seq1_coop.context_coop.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.seq1_coop.gssample_coop.cpu().data.numpy())
         except:
@@ -3855,26 +3854,26 @@ class MyDataFun(object):
         if rstartv is None:
             rstartv = np.floor(np.random.rand(batch) * (len(dataset) - window - 1))
 
-        yl = np.zeros((batch, window))
-        for iib in range(batch):
-            if shift:
-                yl[iib, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
-            else:
-                yl[iib, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
-        ylp1 = yl % output_cluster
-        ylp2 = np.floor(yl / output_cluster)
-        yla=np.array([ylp1,ylp2]).transpose(1,2,0)
-        outlab = torch.from_numpy(yla)
-        outlab = outlab.type(torch.LongTensor)
-
-        # yl = np.zeros((batch, window, 2))
+        # yl = np.zeros((batch, window))
         # for iib in range(batch):
         #     if shift:
-        #         yl[iib, :, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
+        #         yl[iib, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
         #     else:
-        #         yl[iib, :, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
-        # outlab = torch.from_numpy(yl)
-        # outlab = outlab.type(torch.LongTensor) # (batch, window, 2)
+        #         yl[iib, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
+        # ylp1 = yl % output_cluster
+        # ylp2 = np.floor(yl / output_cluster)
+        # yla=np.array([ylp1,ylp2]).transpose(1,2,0)
+        # outlab = torch.from_numpy(yla)
+        # outlab = outlab.type(torch.LongTensor)
+
+        yl = np.zeros((batch, window, 2))
+        for iib in range(batch):
+            if shift:
+                yl[iib, :, :] = labelset[int(rstartv[iib]) + 1:int(rstartv[iib]) + window + 1]
+            else:
+                yl[iib, :, :] = labelset[int(rstartv[iib]):int(rstartv[iib]) + window]
+        outlab = torch.from_numpy(yl)
+        outlab = outlab.type(torch.LongTensor) # (batch, window, 2)
 
         vec1m = torch.zeros(window, batch, lsize_in)
         for iib in range(batch):
@@ -4048,9 +4047,9 @@ class MyLossFun(object):
         if len(outputl.shape) == 3:
             # wd, batch, l_size
             outputl = outputl.permute(1, 2, 0)  # batch, l_size, wd
-            if model.hsoftmax_depth == 1:
+            if getattr(model,"hsoftmax_depth",1) == 1:
                 loss1 = lossc(outputl, outlab)
-            elif model.hsoftmax_depth == 2:
+            elif getattr(model,"hsoftmax_depth",1) == 2:
                 loss1p1 = lossc(outputl[:,:model.output_cluster, :, : ], outlab[:, :, :, 0])
                 loss1p2 = lossc(outputl[:,model.output_cluster:, :, :], outlab[:, :, :, 1])
                 loss1 = loss1p1 + loss1p2
@@ -4059,10 +4058,10 @@ class MyLossFun(object):
             wd, batch, sample, l_size = outputl.shape
             outputl = outputl.permute(1, 3, 0, 2)  # batch,  l_size, wd, sample
 
-            if model.hsoftmax_depth == 1:
+            if getattr(model,"hsoftmax_depth",1) == 1:
                 outlab = outlab.view(batch, wd, 1).expand(batch, wd, sample)
                 loss1 = lossc(outputl, outlab)
-            elif model.hsoftmax_depth == 2:
+            elif getattr(model,"hsoftmax_depth",1) == 2:
                 outlab = outlab.view(batch, wd, 1, 2).expand(batch, wd, sample, 2)
                 loss1p1 = lossc(outputl[:, :model.output_cluster , :, :], outlab[:, :, :, 0])
                 loss1p2 = lossc(outputl[:, model.output_cluster:, :, :], outlab[:, :, :, 1])
