@@ -86,9 +86,10 @@ class ABS_NLP_SEQ(torch.nn.Module):
         out_seq2, hn_seq2 = self.seq2_train(out_seq1, hidden1[1], logit_mode=True, schedule=schedule)
 
         self.loss_intf = self.seq2_train.loss_intf
-
-        # self.context=self.seq2_train.context
-        # self.gssample=self.seq2_train.gssample
+        self.context = self.seq2_train.context
+        self.gssample = self.seq2_train.gssample
+        self.gssample_coop = out_seq1
+        self.coop_sample = self.seq1_coop.coop_sample
 
         return out_seq2, [hn_seq1, hn_seq2]
 
@@ -159,6 +160,16 @@ class Hierachical_BiGRU_NLP_GSVIB(torch.nn.Module):
         }
 
     def set_model_para(self,model_para):
+        # model_para_hgsbigru = {
+        #     "input_size": 300,
+        #     "output_size": 30001,
+        #     "gs_head_num": 21,
+        #     "gs_head_dim": 2,
+        #     "hidden_size": 50,
+        #     "num_layers": 3,
+        #     "mlp_hidden": 160,
+        #     "mlp_num_layers": 1,
+        # }
         self.model_para = model_para
         self.hidden_size = model_para["hidden_size"]
         self.input_size = model_para["input_size"]
@@ -220,6 +231,7 @@ class Hierachical_BiGRU_NLP_GSVIB(torch.nn.Module):
         self.gssample = gssample
         self.gs_mask = gs_mask
         self.loss_intf = [self.context, p_prior]
+        self.coop_sample = coop_sample
 
         gssample = gssample.view(dw, batch, self.gs_head_num*self.gs_head_dim)
         gssample=self.layer_norm(gssample) ## Very important
@@ -1104,6 +1116,14 @@ class BiGRU_NLP(torch.nn.Module):
         }
 
     def set_model_para(self,model_para):
+        # model_para_bigrunlp = {
+        #     "input_size": 300,
+        #     "output_size": 43,
+        #     "hidden_size": 30,
+        #     "num_layers": 3,
+        #     "mlp_hidden": 80,
+        #     "mlp_num_layers": 0
+        # }
         self.model_para = model_para
         self.hidden_size = model_para["hidden_size"]
         self.input_size = model_para["input_size"]
@@ -1539,7 +1559,7 @@ class Gumbel_Softmax(torch.nn.Module):
     PyTorch Gumbel softmax function
     Categorical Reprarameterization with Gumbel-Softmax
     """
-    def __init__(self,sample=1,sample_mode=True):
+    def __init__(self,sample=1, sample_mode=False):
         super(self.__class__, self).__init__()
         self.sample=sample
         self.sample_mode=sample_mode
@@ -1568,6 +1588,67 @@ class Gumbel_Softmax(torch.nn.Module):
         self.betax=betax
         yi=torch.exp(betax)/torch.sum(torch.exp(betax),dim=-1,keepdim=True)
         return yi
+
+class LinearProb(torch.nn.Module): ## Not useful
+    """
+    PyTorch linear probability calculation method.
+    Aims at breaking softmax information bottleneck
+    """
+    def __init__(self):
+        super(self.__class__, self).__init__()
+
+    def forward(self, inmat):
+        """
+        Forward
+        :param input:
+        :param hidden:
+        :return:
+        """
+        # inmat_shift = inmat - torch.min(inmat,dim=-1,keepdim=True)[0]
+        inmat_shift = torch.relu(inmat)
+        lprob = inmat_shift/torch.sum(inmat_shift,dim=-1,keepdim=True)
+        return lprob
+
+class HighRank_Softmax(torch.nn.Module):
+    """
+    PyTorch High Rank Softmax
+    Breaking Softmax bottleneck ...
+    Aims at breaking softmax information bottleneck
+
+    """
+    def __init__(self,input_size,output_size,num_sfm=3, bias=True):
+        super(self.__class__, self).__init__()
+        self.input_size=input_size
+        self.output_size = output_size
+        self.num_sfm=num_sfm
+        self.psoftmax = torch.nn.Softmax(dim=-1)
+        self.i2pi = torch.nn.Linear(input_size, num_sfm)
+        self.i2sfms = torch.nn.Parameter(torch.Tensor(output_size, num_sfm, input_size), requires_grad=True)
+        torch.nn.init.kaiming_uniform_(self.i2sfms, a=math.sqrt(5))
+        fan_in, _ = torch.nn.init._calculate_fan_in_and_fan_out(self.i2sfms)
+        if bias:
+            self.bias = torch.nn.Parameter(torch.Tensor(num_sfm, output_size), requires_grad=True)
+            bound = 1 / math.sqrt(fan_in)
+            torch.nn.init.uniform_(self.bias, -bound, bound)
+        else:
+            self.bias = None
+
+    def forward(self, inmat):
+        """
+        Forward
+        :param input:[w,b,s,input_size]
+        :param hidden:
+        :return:
+        """
+        pimat = self.i2pi(inmat)
+        pimat = self.psoftmax(pimat) # [w,b,s,num_sfm]
+        sfmout=torch.matmul(inmat.unsqueeze(-3),self.i2sfms.permute(1,2,0)).transpose(-3,-2) #[w,b,num_sfm,s,output_size]
+        sfmout=sfmout+self.bias
+        sfmout = self.psoftmax(sfmout)
+        # print(pimat.shape,sfmout.shape)
+        pi_sfmout = torch.matmul(pimat.unsqueeze(-2),sfmout).squeeze()
+        pi_sfmout = torch.log(pi_sfmout+1e-9)
+        return pi_sfmout
 
 class FF_MLP(torch.nn.Module):
     """
@@ -1778,16 +1859,20 @@ class FF_MLP_GSVIB(torch.nn.Module):
                     torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
                     for _ in range(self.mlp_num_layers-1)])
                 self.h2o_2 = torch.nn.Linear(self.mlp_hidden, self.output_size)
+                # self.c2o_2 = HighRank_Softmax(self.gs_head_dim * self.gs_head_num, self.output_size,
+                #                               num_sfm=self.num_sfm)
             else:
                 self.c2o_2 = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_size)
+                # self.c2o_2 = HighRank_Softmax(self.gs_head_dim*self.gs_head_num, self.output_size, num_sfm=self.num_sfm)
+        else:
+            self.layer_norm_coop = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size,sample_mode=True)
         self.dropout = torch.nn.Dropout(self.dropout_rate)
-        self.layer_norm_coop = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
 
         self.save_para = {
             "model_para": model_para,
@@ -1796,6 +1881,13 @@ class FF_MLP_GSVIB(torch.nn.Module):
         }
 
     def set_model_para(self,model_para):
+        # model_para = {"input_size": 300,
+        #               "output_size": 7,
+        #               "gs_head_dim": 2,
+        #               "gs_head_num": 11,
+        #               "mlp_num_layers": [3, 0],
+        #               "mlp_hidden": 80,
+        #               }
         self.model_para = model_para
         self.input_size = model_para["input_size"]
         self.output_size = model_para["output_size"]
@@ -1806,11 +1898,17 @@ class FF_MLP_GSVIB(torch.nn.Module):
         self.mlp_num_layers_2 = model_para["mlp_num_layers"][1]
 
     def para(self,para):
+        # misc_para = {
+        #     "freeze_mode", False,
+        #     "temp_scan_num", 4
+        # }
+        self.misc_para = para
         self.dropout_rate = para.get("dropout_rate", 0.0)
         self.freeze_mode = para.get("freeze_mode", False)
         self.temp_scan_num = para.get("temp_scan_num", 1)
         self.coop_mode = para.get("coop_mode", False)
         self.sample_size = para.get("sample_size",1)
+        self.num_sfm = para.get("num_sfm",3)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None, attention_sig=None):
         """
@@ -1833,7 +1931,7 @@ class FF_MLP_GSVIB(torch.nn.Module):
         if self.mlp_num_layers > 0:
             hidden=self.i2h(input)
             for fmd in self.linear_layer_stack:
-                # hidden = self.dropout(hidden)
+                hidden = self.dropout(hidden)
                 hidden = fmd(hidden)
             context=self.h2o(hidden)
         else:
@@ -1861,7 +1959,7 @@ class FF_MLP_GSVIB(torch.nn.Module):
         self.gssample = gssample
         self.loss_intf = [self.context, p_prior]
 
-        gssample = gssample.view(dw, batch, self.gs_head_num * self.gs_head_dim)
+        gssample = gssample.view(dw, batch, self.sample_size, self.gs_head_num * self.gs_head_dim)
 
         if self.coop_mode :
             coop_out = self.layer_norm_coop(gssample)
@@ -1876,8 +1974,8 @@ class FF_MLP_GSVIB(torch.nn.Module):
         else:
             output = self.c2o_2(gssample)
 
-        if not logit_mode:
-            output = self.softmax(output)
+        # if not logit_mode:
+        #     output = self.softmax(output)
 
         return output, None
 
@@ -1928,13 +2026,14 @@ class BiGRU_NLP_GSVIB(torch.nn.Module):
                 self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size*self.hsoftmax_depth)
             else:
                 self.c2o = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_size*self.hsoftmax_depth)
+        else:
+            self.layer_norm_coop = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
         self.relu = torch.nn.ReLU()
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
-        self.layer_norm_coop = torch.nn.LayerNorm(self.gs_head_num*self.gs_head_dim)
 
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
@@ -2076,7 +2175,7 @@ class Linear_Multihead(torch.nn.Module):
         :return:
         """
         self.cuda_device=input.device
-        cluster_oh = one_hot(cluster, self.head_num,cuda_device=self.cuda_device) # [wd, batch, self.head_num]
+        cluster_oh = one_hot(cluster, self.head_num, cuda_device=self.cuda_device) # [wd, batch, self.head_num]
         weight_c = cluster_oh.unsqueeze(-3).matmul(self.weight) # [wd, output_size, batch, input_size]
         weight_c=weight_c.transpose(-2,-3).transpose(-1,-2) # [wd, batch, input_size, output_size]
         res = input.matmul(weight_c)
@@ -2095,29 +2194,7 @@ class BiGRU_NLP_GSVIB_HSOFTMAX2(torch.nn.Module):
     def __init__(self, model_para ,para=None):
         super(self.__class__, self).__init__()
 
-        # model_para = {"input_size": lsize_in,
-        #               "output_size": 201,
-        #                "output_cluster": 150,
-        #               "gs_head_dim": 2,
-        #               "gs_head_num": 21,
-        #               "bigru_hidden_size": 30,
-        #               "mlp_num_layers": 0,
-        #               "mlp_hidden": 80,
-        #               "bigru_num_layers": 3,
-        #               "hsoftmax_depth": 2
-        #               }
-
-        self.model_para=model_para
-        self.hidden_size = model_para.get("hidden_size",30)
-        self.input_size = model_para.get("input_size",None)
-        self.output_size = model_para.get("output_size",None)
-        self.output_cluster = model_para.get("output_cluster", None)
-        self.gs_head_dim = model_para.get("gs_head_dim",2)
-        self.gs_head_num = model_para.get("gs_head_num",21)
-        self.bigru_num_layers = model_para.get("bigru_num_layers",1)
-        self.mlp_num_layers = model_para.get("mlp_num_layers", 0)
-        self.mlp_hidden = model_para.get("mlp_hidden", 80)
-        self.hsoftmax_depth = model_para.get("hsoftmax_depth", 2)
+        self.set_model_para(model_para)
 
         self.context_attn_size = self.gs_head_num * self.gs_head_dim
 
@@ -2151,6 +2228,30 @@ class BiGRU_NLP_GSVIB_HSOFTMAX2(torch.nn.Module):
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size)
         self.layer_norm = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
         self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+    def set_model_para(self,model_para):
+        # model_para = {"input_size": lsize_in,
+        #               "output_size": 201,
+        #                "output_cluster": 150,
+        #               "gs_head_dim": 2,
+        #               "gs_head_num": 21,
+        #               "bigru_hidden_size": 30,
+        #               "mlp_num_layers": 0,
+        #               "mlp_hidden": 80,
+        #               "bigru_num_layers": 3,
+        #               "hsoftmax_depth": 2
+        #               }
+        self.model_para = model_para
+        self.hidden_size = model_para.get("hidden_size", 30)
+        self.input_size = model_para.get("input_size", None)
+        self.output_size = model_para.get("output_size", None)
+        self.output_cluster = model_para.get("output_cluster", None)
+        self.gs_head_dim = model_para.get("gs_head_dim", 2)
+        self.gs_head_num = model_para.get("gs_head_num", 21)
+        self.bigru_num_layers = model_para.get("bigru_num_layers", 1)
+        self.mlp_num_layers = model_para.get("mlp_num_layers", 0)
+        self.mlp_hidden = model_para.get("mlp_hidden", 80)
+        self.hsoftmax_depth = model_para.get("hsoftmax_depth", 2)
 
     def para(self,para):
         self.freeze_mode = para.get("freeze_mode", False)

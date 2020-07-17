@@ -37,6 +37,7 @@ class ScanUtil(object):
             # f.write("On device " + cuda_device_list[ii%3])
             f.close()
             subprocess.call(['cp', self.python_main, os.path.join(directory, self.python_main)])
+            assert type(self.para_scan[ii])== list
             subprocess.call(['python', os.path.join(directory, self.python_main)] + self.para_scan[ii] + [directory])
             # subprocess.call(['rm', os.path.join(directory, self.python_main)])
 
@@ -47,6 +48,7 @@ class ParallelUtil(object):
         :param para_scan_l: a list of para_scan [[para1_w1,para2_w1],[[para1_w2,para2_w2]],...]
         :param python_main:
         """
+        print(para_scan_l)
         self.num=len(para_scan_l)
         self.para_scan_l=para_scan_l
         self.python_main=python_main
@@ -71,7 +73,7 @@ class ParallelUtil(object):
 #     para1 = 1
 #     para2 = 2
 #
-#     para_scan_l = [[para1],[para2]]
+#     para_scan_l = [[[para11, para12],[para21, para22]]] # From outside to inside: multi-processing, trial case, paralist
 #
 #     python_main = "somefile.py"
 #

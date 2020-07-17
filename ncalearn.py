@@ -3282,7 +3282,7 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             return MyLossFun.KNWLoss_VIB(outputl, outlab, self.pt.reg_lamda, model,cstep, self.pt.beta_warmup, self.pt.scale_factor)
         elif self.version in ["gsvib" , "gsvib_coop_special" , "gsvib_task2","gsvib_hsoftmax2"]:
             return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
-        elif self.version == "sigvib": # advanced wersion of sigmoid gsvib, each neuron is either 0 or 1
+        elif self.version == "sigvib": # advanced version of sigmoid gsvib, each neuron is either 0 or 1
             return MyLossFun.KNWLoss_SIGVIB(outputl, outlab, self.pt.reg_lamda, model, self.pt.scale_factor)
         elif self.version == "gsvib_attcoop":
             return MyLossFun.KNWLoss_GSVIB_ATTCOOP(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup, self.pt.scale_factor)
@@ -3411,13 +3411,14 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
         # self.pt.evalmem[5].append(ent.cpu().data.numpy())
         # self.pt.evalmem[5].append(rnn.level1_coop.gssample.cpu().data.numpy())
         # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
-        self.pt.evalmem[5].append(rnn.gs_mask.cpu().data.numpy())
         # self.pt.evalmem[2].append(rnn.seq1_coop.context.cpu().data.numpy())
         # self.pt.evalmem[3].append(rnn.seq1_coop.gssample.cpu().data.numpy())
         try:
-            pass
-            # self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
-            # self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+            # pass
+            self.pt.evalmem[5].append(rnn.context_coop.cpu().data.numpy())
+            self.pt.evalmem[6].append(rnn.gssample_coop.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.gs_mask.cpu().data.numpy())
+            # self.pt.evalmem[5].append(rnn.coop_sample.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.seq1_coop.gssample.cpu().data.numpy())
             # self.pt.evalmem[6].append(rnn.level1_coop.gssample_coop.cpu().data.numpy())
             # self.pt.evalmem[5].append(rnn.attention_prob.cpu().data.numpy())

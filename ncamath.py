@@ -888,6 +888,7 @@ def sort_w_arg(datal,down_order=True,top_k=None):
     :param datal: a list with data
     :return: list of tuple [(arg,data),...]
     """
+
     if top_k is None:
         l=len(datal)
         sorttp = zip(np.linspace(0, l - 1, l), datal)

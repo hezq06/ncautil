@@ -108,7 +108,7 @@ class NLPutil(object):
         elif corpus=="simple_qa_dataset":
             self.corpus = simple_qa_dataset(train=True)
             self.sub_corpus = self.corpus
-        elif corpus=="wiki":
+        elif corpus=="wiki": ## Something wrong
             tmpcorp = wikitext_2_dataset(train=True)
             self.corpus = []
             for item in tmpcorp:
@@ -190,7 +190,7 @@ class NLPutil(object):
         self.corpus=corpus
         print("Corpus updated.")
 
-    def build_vocab(self,corpus=None,Vsize=None):
+    def build_vocab(self,corpus=None,nVcab=None):
         """
         Building vocabulary
         Referencing part of code from: Basic word2vec example tensorflow, reader.py
@@ -206,13 +206,13 @@ class NLPutil(object):
         counter = collections.Counter(corpus)
         count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
         words, counts = list(zip(*count_pairs))
-        if Vsize is not None and len(words)>Vsize:
+        if nVcab is not None and len(words)>nVcab:
             words = list(words)
             counts = list(counts)
             print(len(words),len(counts))
             unkc=0
             clenw = len(words)
-            for iiex in range(clenw-Vsize):
+            for iiex in range(clenw-nVcab):
                 del words[clenw-iiex-1]
                 unkc=unkc+counts[clenw - iiex - 1]
                 del counts[clenw - iiex - 1]
@@ -233,7 +233,7 @@ class NLPutil(object):
         print("Collected vocabulary size:",self.nVcab)
         return self.word_to_id, self.id_to_word
 
-    def build_w2v(self,mode="onehot",Nvac=10000):
+    def build_w2v(self,mode="onehot"):
         """
         Build word to vector lookup table
         :param mode: "pickle"
@@ -263,7 +263,7 @@ class NLPutil(object):
                 model = GloVe(cache=cache_path)
             self.w2v_dict = dict([])
             skip = []
-            for ii in range(Nvac):
+            for ii in range(self.nVcab):
                 try:
                     word = self.id_to_word[ii]
                     if mode=="torchnlp":
@@ -279,6 +279,7 @@ class NLPutil(object):
                     skip.append(word)
             print("Except list: length " + str(len(skip)))
             print(skip)
+            self.skip = skip
             self.w2v_dict["UNK"] = np.zeros(len(self.w2v_dict[self.id_to_word[10]]))
             # self.w2v_dict["UNK"] = np.random.random(len(self.w2v_dict[self.id_to_word[10]])) !!!!!! A BIG BUG !!! Source of unpredictable behavior when using model reload
         else:
@@ -978,6 +979,7 @@ class SQuADutil(object):
         pos_tot_l = []
         N_split = int(np.ceil(len(sent) / tag_lenghth))
         for ii in tqdm_notebook(range(N_split)):
+        # for ii in tqdm(range(N_split)):
             sent_seg = sent[ii * tag_lenghth:(ii + 1) * tag_lenghth]
             pos_sent = self.pos.tag(sent_seg)
             for item in pos_sent:
@@ -1052,13 +1054,12 @@ class WikiTextProcess(object):
     """
     def __init__(self,path_to_raw_data,path_to_workspace):
         """
-        A NLP Data processing class should link to a NLPutil object when initialization
-        :param NLPutilC:
+        A wikitext processor
         """
         self.path_to_raw_data=path_to_raw_data
         self.path_to_workspace=path_to_workspace
 
-    def file_iterator(self):
+    def main_file_iterator(self):
         for ii in range(2):
             print("File wiki_"+str(ii))
             file_r=open(os.path.join(self.path_to_raw_data,"wiki_"+str(ii)),"r")
@@ -1104,6 +1105,8 @@ class WikiTextProcess(object):
         line = line.replace("? ", " ? ")
         line = line.replace("; ", " ; ")
         line = line.replace("\'s ", " \'s ")
+        line = line.replace('``', " \" ")
+        line = line.replace('\'\'', " \" ")
         return line
 
 class StanfordSentimentUtil(object):
