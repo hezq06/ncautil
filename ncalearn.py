@@ -634,7 +634,7 @@ class PyTrain_Lite(object):
         self.data_parallel_dim = para.get("data_parallel_dim", 1)  # data parallel switch
         self.dist_data_parallel = para.get("dist_data_parallel", False)  # distributed data parallel switch
         self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)  # distributed data parallel dimention
-        self.scale_factor=para.get("scale_factor", 0.1)
+        self.scale_factor=para.get("scale_factor", 1.0)
         self.output_cluster=para.get("output_cluster", None)
 
     def run_training(self,epoch=2,step_per_epoch=2000,lr=1e-3,optimizer_label=None,print_step=200):
@@ -3315,6 +3315,8 @@ class PyTrain_Interface_sup(PyTrain_Interface_Default):
             return MyLossFun.KNWLoss(outputl, outlab, model=model,hsoftmax_depth=2)
         else:
             # return MyLossFun.KNWLoss_VIB_EVAL(outputl, outlab, model)
+            # return MyLossFun.KNWLoss_GSVIB(outputl, outlab, self.pt.reg_lamda, model, cstep, self.pt.beta_warmup,
+            #                                self.pt.scale_factor)
             return MyLossFun.KNWLoss(outputl, outlab)
 
     def get_data_sup(self, dataset_dict, batch=None, rstartv=None, shift=False):
@@ -4036,7 +4038,7 @@ class MyLossFun(object):
         return loss1 + beta_scaling * reg_lamda * gausskl
 
     @staticmethod
-    def KNWLoss_GSVIB(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor=0.1):
+    def KNWLoss_GSVIB(outputl, outlab, reg_lamda, model, cstep, beta_warmup, scale_factor):
         """
         Loss for variational information bottleneck, Gauss Expanded
         :param outputl:
@@ -4085,7 +4087,7 @@ class MyLossFun(object):
         # else:
         #     beta_scaling = 1.0
         beta_scaling = 1.0
-
+        # print(loss1,beta_scaling,reg_lamda,flatkl,scale_factor,ent_prior)
         return loss1 + beta_scaling * reg_lamda * (flatkl + scale_factor*ent_prior)
 
     @staticmethod

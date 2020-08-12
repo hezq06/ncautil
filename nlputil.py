@@ -76,7 +76,7 @@ class NLPutil(object):
 
         # self.synmat=SyntaxMat()
 
-    def get_data(self,corpus,file_idx=0,data=None,format="txt"):
+    def get_data(self,corpus,file_idx=0,data=None,format="txt",directory=None):
         """
         Get corpus data
         :param corpus: "brown","ptb"
@@ -131,7 +131,11 @@ class NLPutil(object):
             self.corpus_test = imdb.corpus_test
             self.sub_corpus = self.corpus[:self.sub_size]
         else:
-            file = os.path.join(os.path.dirname(os.path.realpath(__file__)), '../data/' + str(corpus))
+            if directory is None:
+                directory = os.path.dirname(os.path.realpath(__file__))
+                file = os.path.join(directory, '../data/' + str(corpus))
+            else:
+                file = os.path.join(directory, str(corpus))
             if format=="txt":
                 f = open(file)
                 raw = f.read()
@@ -190,7 +194,7 @@ class NLPutil(object):
         self.corpus=corpus
         print("Corpus updated.")
 
-    def build_vocab(self,corpus=None,nVcab=None):
+    def build_vocab(self,corpus=None,nVcab=None,verbose_print=False):
         """
         Building vocabulary
         Referencing part of code from: Basic word2vec example tensorflow, reader.py
@@ -228,7 +232,8 @@ class NLPutil(object):
         for id in range(len(self.id_to_word)):
             self.prior[id]=1/self.word_to_cnt[self.id_to_word[id]]
         self.prior=self.prior/np.sum(self.prior)
-        print(self.id_to_word)
+        if verbose_print:
+            print(self.id_to_word)
         self.nVcab=len(self.word_to_id.items())
         print("Collected vocabulary size:",self.nVcab)
         return self.word_to_id, self.id_to_word
@@ -978,8 +983,8 @@ class SQuADutil(object):
 
         pos_tot_l = []
         N_split = int(np.ceil(len(sent) / tag_lenghth))
-        for ii in tqdm_notebook(range(N_split)):
-        # for ii in tqdm(range(N_split)):
+        # for ii in tqdm_notebook(range(N_split)):
+        for ii in tqdm(range(N_split)):
             sent_seg = sent[ii * tag_lenghth:(ii + 1) * tag_lenghth]
             pos_sent = self.pos.tag(sent_seg)
             for item in pos_sent:
@@ -1059,8 +1064,8 @@ class WikiTextProcess(object):
         self.path_to_raw_data=path_to_raw_data
         self.path_to_workspace=path_to_workspace
 
-    def main_file_iterator(self):
-        for ii in range(2):
+    def main_file_iterator(self,nfile=133):
+        for ii in range(nfile):
             print("File wiki_"+str(ii))
             file_r=open(os.path.join(self.path_to_raw_data,"wiki_"+str(ii)),"r")
             file_w=open(os.path.join(self.path_to_workspace,"wiki_"+str(ii)),"w+")

@@ -11,18 +11,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 from  matplotlib.animation import writers,ArtistAnimation
 import os
-import pickle
+import pickle, json
 import time
 import copy
 
 import torch
 from torch.autograd import Variable
-from ncautil.ncalearn import *
 import pickle
 
-from tqdm import tqdm
+from tqdm import tqdm,tqdm_notebook
 
 from torchvision import datasets
+from PIL import Image
+from pycocotools import mask as coco_mask
 
 # def save(item,path):
 #     # torch.save(model.state_dict(), path))
@@ -450,3 +451,137 @@ class MNIST_dataset(object):
         self.dataset_sup_test["dataset"] = data_test.test_data.reshape(dshape[0],-1).type(torch.FloatTensor)
         self.dataset_sup_test["dataset"] = self.dataset_sup_test["dataset"] / 256.0
         self.dataset_sup_test["label"] = data_test.test_labels
+
+class ClevrDataset(torch.utils.data.Dataset):
+    def __init__(self, json_path, image_path, get_mode="mask_color"):
+        """
+        Clevr Dataset Util
+        :param path: pictures path
+        :param json_path: path for json file
+        :param img_seg_path: pretrain CLEVR segmentation model
+        """
+        # json_path = ""
+        # data_path_scene_train = "/storage/hezq17/CLEVR_v1.0/scenes/CLEVR_train_scenes.json"
+        # data_path_scene_val = "/storage/hezq17/CLEVR_v1.0/scenes/CLEVR_val_scenes.json"
+        # data_path_images_train = "/storage/hezq17/CLEVR_v1.0/images/train"
+        # data_path_images_val = "/storage/hezq17/CLEVR_v1.0/images/val"
+        # img_seg_path = "/storage/hezq17/CLEVR_v1.0/seg_model/Mask_RCNN_ClevrMiniTrained.model"
+        self.image_path = image_path
+
+        # with open(json_path) as f:
+        #     self.json_clevr = json.load(f)
+        self.json_clevr = load_data(json_path)
+        self.img_size = [320, 480]
+
+        # self.seg_model = None
+        # if img_seg_path is not None:
+        #     self.device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
+        #     # get the model using our helper function
+        #     self.seg_model = self.get_instance_segmentation_model()
+        #     # move model to the right device
+        #     load_model(self.seg_model, img_seg_path)
+        #     self.seg_model.to(self.device)
+        #     self.seg_model.eval()
+
+        self.masks = []
+        self.imgs = []
+        print("Parsing dataset ...")
+        for iis in range(len(self.json_clevr["scenes"])):
+            self.imgs.append(self.json_clevr["scenes"][iis]["image_filename"])
+
+        self.get_mode = get_mode
+
+        self.color_map={
+            "gray":0, "blue":1, "brown":2, "yellow":3, "red":4, "green":5, "purple":6, "cyan":7
+        }
+
+    def __getitem__(self, idx):
+        if self.get_mode == "full":
+            return self.getitem_full(idx)
+        elif self.get_mode == "mask_color":
+            return self.getitem_mask_color(idx)
+
+    def getitem_full(self, idx):
+        img_path = os.path.join(self.image_path, self.imgs[idx])
+        img = Image.open(img_path).convert("RGB")
+        img = np.array(img)
+
+        # mask_t = np.zeros(self.img_size)
+        # if self.seg_model is not None:
+        #     imgt = torch.from_numpy(img / 255).type(torch.FloatTensor).permute(2, 0, 1)
+        #     with torch.no_grad():
+        #         prediction = self.seg_model([imgt.to(self.device)])
+        #     Nobj = len(prediction[0]['masks'][:, 0])
+        #     for iio in range(Nobj):
+        #         mask = prediction[0]['masks'][iio, 0].mul(255).cpu().numpy() * (iio + 1)
+        #         mask_t = mask_t + mask
+
+        json_scene = self.json_clevr["scenes"][idx]
+
+        mask_t = np.zeros(self.img_size)
+        for iio in range(len(json_scene["objects"])):
+            rle = json_scene["objects"][iio]["mask"]
+            compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
+            mask = coco_mask.decode(compressed_rle)
+            mask = mask*(iio + 1)
+            mask_t = mask_t+mask
+
+        return img, mask_t, json_scene
+
+    def getitem_mask_color(self,idx):
+        img_path = os.path.join(self.image_path, self.imgs[idx])
+        img = Image.open(img_path).convert("RGB")
+        img = np.array(img)
+
+        json_scene = self.json_clevr["scenes"][idx]
+
+        masked_imgl=[]
+        colorsl=[]
+
+        for iio in range(len(json_scene["objects"])):
+            rle = json_scene["objects"][iio]["mask"]
+            compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
+            mask = coco_mask.decode(compressed_rle)
+            masked_img = img*mask.reshape(self.img_size+[1])
+            masked_imgl.append(masked_img)
+            color = json_scene["objects"][iio]["color"]
+            # colorsl.append(self.color_map[color])
+            colorsl.append(color)
+
+        return masked_imgl,colorsl
+
+    def __len__(self):
+        return len(self.imgs)
+
+
+
+
+    def get_instance_segmentation_model(self, num_classes=2):
+        """
+        https://colab.research.google.com/github/pytorch/vision/blob/temp-tutorial/tutorials/torchvision_finetuning_instance_segmentation.ipynb#scrollTo=mTgWtixZTs3X
+        :param num_classes: number of classes
+        :return:
+        """
+        import torchvision
+        from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+        from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+
+        # load an instance segmentation model pre-trained on COCO
+        model = torchvision.models.detection.maskrcnn_resnet50_fpn(pretrained=True)
+
+        # get the number of input features for the classifier
+        in_features = model.roi_heads.box_predictor.cls_score.in_features
+        # replace the pre-trained head with a new one
+        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+        # now get the number of input features for the mask classifier
+        in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+        hidden_layer = 256
+        # and replace the mask predictor with a new one
+        model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask,
+                                                           hidden_layer,
+                                                           num_classes)
+
+        return model
+
+

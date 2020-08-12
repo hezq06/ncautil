@@ -64,6 +64,8 @@ class ParallelUtil(object):
             t = threading.Thread(target=self.worker, args=(ii,))
             threads.append(t)
             t.start()
+        for ii in range(self.num):
+            threads[ii].join()
         print("Exiting Main Thread")
 
 # if __name__ == "__main__":

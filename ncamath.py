@@ -958,11 +958,14 @@ def relu(x):
 #         raise Exception("NaN Error 1")
 #     return res
 
-def softmax(x,dim=-1):
-    sfm=torch.nn.Softmax(dim=dim)
-    res=sfm(x)
-    if torch.isnan(res).any():
-        raise Exception("NaN Error 1")
+def softmax(x,dim=-1,torch_flag=False):
+    if torch_flag:
+        sfm=torch.nn.Softmax(dim=dim)
+        res=sfm(x)
+        if torch.isnan(res).any():
+            raise Exception("NaN Error 1")
+    else:
+        res = np.exp(x)/(np.sum(np.exp(x),axis=-1,keepdims=True)+1e-9)
     return res
 
 ####### Section Logit Dynamic study

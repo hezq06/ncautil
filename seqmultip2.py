@@ -85,11 +85,11 @@ class ABS_NLP_SEQ(torch.nn.Module):
         # else:
         out_seq2, hn_seq2 = self.seq2_train(out_seq1, hidden1[1], logit_mode=True, schedule=schedule)
 
-        self.loss_intf = self.seq2_train.loss_intf
-        self.context = self.seq2_train.context
-        self.gssample = self.seq2_train.gssample
-        self.gssample_coop = out_seq1
-        self.coop_sample = self.seq1_coop.coop_sample
+        # self.loss_intf = self.seq2_train.loss_intf
+        # self.context = self.seq2_train.context
+        # self.gssample = self.seq2_train.gssample
+        # self.gssample_coop = out_seq1
+        # self.coop_sample = self.seq1_coop.coop_sample
 
         return out_seq2, [hn_seq1, hn_seq2]
 
@@ -818,9 +818,9 @@ class ABS_NLP_COOP_LOGIT(torch.nn.Module):
         self.gssample_coop = self.cooprer.gssample
 
         if self.coop_mode:
-            return [logit_coop,logit_train], None # Coop is label, train is self
-            # gasample_lv1 = torch.cat((self.trainer.gssample, self.cooprer.gssample), dim=-2)
-            # return gasample_lv1.view(dw,batch,self.l_size_tot), None  # Coop is label, train is self
+            # return [logit_coop,logit_train], None # Coop is label, train is self
+            gasample_lv1 = torch.cat((self.trainer.gssample, self.cooprer.gssample), dim=-2)
+            return gasample_lv1.view(dw,batch,self.l_size_tot), None  # Coop is label, train is self
 
         # output=logit_coop[0]+logit_train[0]
         output = logit_coop + logit_train
@@ -1681,11 +1681,22 @@ class FF_MLP(torch.nn.Module):
 
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
+        self.save_para = {
+            "model_para": model_para,
+            "type": "FF_MLP",
+            "misc_para": para
+        }
+
     def para(self,para):
         self.misc_para=para
         self.dropout_rate = para.get("dropout_rate", 0.0)
 
     def set_model_para(self,model_para):
+        # model_para = {"input_size": 300,
+        #               "output_size": 7,
+        #               "mlp_num_layers": 3,
+        #               "mlp_hidden": 160,
+        #               }
         self.model_para = model_para
         self.input_size = model_para["input_size"]
         self.output_size = model_para["output_size"]
@@ -1859,13 +1870,16 @@ class FF_MLP_GSVIB(torch.nn.Module):
                     torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
                     for _ in range(self.mlp_num_layers-1)])
                 self.h2o_2 = torch.nn.Linear(self.mlp_hidden, self.output_size)
-                # self.c2o_2 = HighRank_Softmax(self.gs_head_dim * self.gs_head_num, self.output_size,
-                #                               num_sfm=self.num_sfm)
+                if self.num_sfm ==1:
+                    self.c2o_2 = torch.nn.Linear(self.gs_head_dim * self.gs_head_num, self.output_size)
+                else:
+                    self.c2o_2 = HighRank_Softmax(self.gs_head_dim * self.gs_head_num, self.output_size,
+                                                  num_sfm=self.num_sfm)
             else:
-                self.c2o_2 = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_size)
-                # self.c2o_2 = HighRank_Softmax(self.gs_head_dim*self.gs_head_num, self.output_size, num_sfm=self.num_sfm)
-        else:
-            self.layer_norm_coop = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
+                if self.num_sfm == 1:
+                    self.c2o_2 = torch.nn.Linear(self.gs_head_dim*self.gs_head_num, self.output_size)
+                else:
+                    self.c2o_2 = HighRank_Softmax(self.gs_head_dim*self.gs_head_num, self.output_size, num_sfm=self.num_sfm)
 
         self.sigmoid = torch.nn.Sigmoid()
         self.tanh = torch.nn.Tanh()
@@ -1873,6 +1887,7 @@ class FF_MLP_GSVIB(torch.nn.Module):
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size,sample_mode=True)
         self.dropout = torch.nn.Dropout(self.dropout_rate)
+        self.layer_norm_coop = torch.nn.LayerNorm(self.gs_head_num * self.gs_head_dim)
 
         self.save_para = {
             "model_para": model_para,
@@ -1897,6 +1912,13 @@ class FF_MLP_GSVIB(torch.nn.Module):
         self.mlp_num_layers = model_para["mlp_num_layers"][0]
         self.mlp_num_layers_2 = model_para["mlp_num_layers"][1]
 
+    def set_sample_size(self,sample_size):
+        self.sample_size=sample_size
+        sample_mode = False
+        if sample_size>1:
+            sample_mode = True
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size,sample_mode=sample_mode)
+
     def para(self,para):
         # misc_para = {
         #     "freeze_mode", False,
@@ -1908,7 +1930,7 @@ class FF_MLP_GSVIB(torch.nn.Module):
         self.temp_scan_num = para.get("temp_scan_num", 1)
         self.coop_mode = para.get("coop_mode", False)
         self.sample_size = para.get("sample_size",1)
-        self.num_sfm = para.get("num_sfm",3)
+        self.num_sfm = para.get("num_sfm",1)
 
     def forward(self, input, hidden1, add_logit=None, logit_mode=False, schedule=None, context_set=None, attention_sig=None):
         """
@@ -1937,7 +1959,7 @@ class FF_MLP_GSVIB(torch.nn.Module):
         else:
             context = self.i2o(input)
 
-        dw, batch, l_size = input.shape
+        dw, batch, l_size = input.squeeze().shape
         context = context.view(dw, batch, self.gs_head_num, self.gs_head_dim)
 
         if attention_sig is not None:
