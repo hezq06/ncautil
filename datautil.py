@@ -471,7 +471,7 @@ class ClevrDataset(torch.utils.data.Dataset):
         # with open(json_path) as f:
         #     self.json_clevr = json.load(f)
         self.json_clevr = load_data(json_path)
-        self.img_size = [320, 480]
+        self.img_size = [320, 480] # [H, W]
 
         # self.seg_model = None
         # if img_seg_path is not None:
@@ -494,12 +494,15 @@ class ClevrDataset(torch.utils.data.Dataset):
         self.color_map={
             "gray":0, "blue":1, "brown":2, "yellow":3, "red":4, "green":5, "purple":6, "cyan":7
         }
+        self.shape_map = {
+            "cube": 0, "cylinder": 1, "sphere": 2
+        }
 
     def __getitem__(self, idx):
         if self.get_mode == "full":
             return self.getitem_full(idx)
-        elif self.get_mode == "mask_color":
-            return self.getitem_mask_color(idx)
+        elif self.get_mode in ["mask_color","auto_encode"]:
+            return self.getitem_mask_posicolorshape(idx)
 
     def getitem_full(self, idx):
         img_path = os.path.join(self.image_path, self.imgs[idx])
@@ -528,33 +531,47 @@ class ClevrDataset(torch.utils.data.Dataset):
 
         return img, mask_t, json_scene
 
-    def getitem_mask_color(self,idx):
+    def getitem_mask_posicolorshape(self,idx):
         img_path = os.path.join(self.image_path, self.imgs[idx])
         img = Image.open(img_path).convert("RGB")
-        img = np.array(img)
+        img = np.array(img)/255.0
 
         json_scene = self.json_clevr["scenes"][idx]
 
-        masked_imgl=[]
-        colorsl=[]
+        # masked_imgl=[]
+        # colorsl=[]
+        # for iio in range(len(json_scene["objects"])):
+        #     rle = json_scene["objects"][iio]["mask"]
+        #     compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
+        #     mask = coco_mask.decode(compressed_rle)
+        #     masked_img = img*mask.reshape(self.img_size+[1])
+        #     masked_imgl.append(masked_img)
+        #     color = json_scene["objects"][iio]["color"]
+        #     colorsl.append(self.color_map[color])
+        # print("Len",len(masked_imgl),len(colorsl))
+        # return masked_imgl,colorsl
 
-        for iio in range(len(json_scene["objects"])):
-            rle = json_scene["objects"][iio]["mask"]
-            compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
-            mask = coco_mask.decode(compressed_rle)
-            masked_img = img*mask.reshape(self.img_size+[1])
-            masked_imgl.append(masked_img)
-            color = json_scene["objects"][iio]["color"]
-            # colorsl.append(self.color_map[color])
-            colorsl.append(color)
+        Nobj = len(json_scene["objects"])
+        objp = int(np.random.rand()*Nobj)
+        rle = json_scene["objects"][objp]["mask"]
+        compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
+        mask = coco_mask.decode(compressed_rle)
+        masked_img = img * mask.reshape(self.img_size + [1])
+        masked_img = np.transpose(masked_img, (2, 0, 1))
+        masked_img = torch.from_numpy(masked_img).type(torch.FloatTensor)
 
-        return masked_imgl,colorsl
+        if self.get_mode =="mask_color":
+            posix = json_scene["objects"][objp]["pixel_coords"][0]/ self.img_size[1]
+            posiy = json_scene["objects"][objp]["pixel_coords"][1] / self.img_size[0]
+            color = self.color_map[json_scene["objects"][objp]["color"]]
+            shape = self.shape_map[json_scene["objects"][objp]["shape"]]
+            return masked_img, np.array([float(posix),float(posiy),color,shape])
+
+        elif self.get_mode == "auto_encode":
+            return masked_img, masked_img
 
     def __len__(self):
         return len(self.imgs)
-
-
-
 
     def get_instance_segmentation_model(self, num_classes=2):
         """
@@ -585,3 +602,105 @@ class ClevrDataset(torch.utils.data.Dataset):
         return model
 
 
+class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
+    def __init__(self, json_path, image_path, question_mode="default"):
+        """
+        Clevr Dataset Util
+        :param path: pictures path
+        :param json_path: path for json file
+        :param img_seg_path: pretrain CLEVR segmentation model
+        """
+
+        self.image_path = image_path
+        self.json_clevr = load_data(json_path)
+        self.img_size = [320, 480] # [H, W]
+
+        self.masks = []
+        self.imgs = []
+        print("Parsing dataset ...")
+        for iis in range(len(self.json_clevr["scenes"])):
+            self.imgs.append(self.json_clevr["scenes"][iis]["image_filename"])
+
+        self.question_mode = question_mode
+
+        self.color_map={
+            "gray":0, "blue":1, "brown":2, "yellow":3, "red":4, "green":5, "purple":6, "cyan":7
+        }
+        self.shape_map = {
+            "cube": 0, "cylinder": 1, "sphere": 2
+        }
+
+    def __getitem__(self, idx):
+        if self.get_mode == "full":
+            return self.getitem_full(idx)
+        elif self.get_mode in ["mask_color","auto_encode"]:
+            return self.getitem_mask_posicolorshape(idx)
+
+    def getitem_full(self, idx):
+        img_path = os.path.join(self.image_path, self.imgs[idx])
+        img = Image.open(img_path).convert("RGB")
+        img = np.array(img)
+
+        # mask_t = np.zeros(self.img_size)
+        # if self.seg_model is not None:
+        #     imgt = torch.from_numpy(img / 255).type(torch.FloatTensor).permute(2, 0, 1)
+        #     with torch.no_grad():
+        #         prediction = self.seg_model([imgt.to(self.device)])
+        #     Nobj = len(prediction[0]['masks'][:, 0])
+        #     for iio in range(Nobj):
+        #         mask = prediction[0]['masks'][iio, 0].mul(255).cpu().numpy() * (iio + 1)
+        #         mask_t = mask_t + mask
+
+        json_scene = self.json_clevr["scenes"][idx]
+
+        mask_t = np.zeros(self.img_size)
+        for iio in range(len(json_scene["objects"])):
+            rle = json_scene["objects"][iio]["mask"]
+            compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
+            mask = coco_mask.decode(compressed_rle)
+            mask = mask*(iio + 1)
+            mask_t = mask_t+mask
+
+        return img, mask_t, json_scene
+
+    def getitem_mask_posicolorshape(self,idx):
+        img_path = os.path.join(self.image_path, self.imgs[idx])
+        img = Image.open(img_path).convert("RGB")
+        img = np.array(img)/255.0
+
+        json_scene = self.json_clevr["scenes"][idx]
+
+        # masked_imgl=[]
+        # colorsl=[]
+        # for iio in range(len(json_scene["objects"])):
+        #     rle = json_scene["objects"][iio]["mask"]
+        #     compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
+        #     mask = coco_mask.decode(compressed_rle)
+        #     masked_img = img*mask.reshape(self.img_size+[1])
+        #     masked_imgl.append(masked_img)
+        #     color = json_scene["objects"][iio]["color"]
+        #     colorsl.append(self.color_map[color])
+        # print("Len",len(masked_imgl),len(colorsl))
+        # return masked_imgl,colorsl
+
+        Nobj = len(json_scene["objects"])
+        objp = int(np.random.rand()*Nobj)
+        rle = json_scene["objects"][objp]["mask"]
+        compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
+        mask = coco_mask.decode(compressed_rle)
+        masked_img = img * mask.reshape(self.img_size + [1])
+        masked_img = np.transpose(masked_img, (2, 0, 1))
+        masked_img = torch.from_numpy(masked_img).type(torch.FloatTensor)
+
+        if self.get_mode =="mask_color":
+            posix = json_scene["objects"][objp]["pixel_coords"][0]/ self.img_size[1]
+            posiy = json_scene["objects"][objp]["pixel_coords"][1] / self.img_size[0]
+            color = self.color_map[json_scene["objects"][objp]["color"]]
+            shape = self.shape_map[json_scene["objects"][objp]["shape"]]
+            return masked_img, np.array([float(posix),float(posiy),color,shape])
+
+        elif self.get_mode == "auto_encode":
+            return masked_img, masked_img
+
+    def __len__(self):
+        return len(self.imgs)

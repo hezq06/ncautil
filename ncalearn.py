@@ -523,6 +523,123 @@ def logit_sampling_layer(l_input): ### Not seems to be working
     l_output_masked = l_output / torch.norm(l_output, 2, -1, keepdim=True)
     return l_output_masked
 
+class PyTrain_Main(object):
+    """
+    A main class to run training
+    """
+    def __init__(self, model, data_dict, device="cuda:0", para=None):
+        self.model = model.to(device)
+        self.data_dict = data_dict
+        self.device = device
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        currentDT = datetime.datetime.now()
+        self.log = "Time of creation: " + str(currentDT) + "\n"
+        self.train_hist = []
+
+    def para(self, para):
+        self.loss_exp_flag = para.get("loss_exp_flag", False)
+        self.figure_plot = para.get("figure_plot", True)
+        self.loss_clip = para.get("loss_clip", 20000.0)
+
+    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200):
+
+        self.model.train()
+
+        if optimizer_label == "adam":
+            print("Using adam optimizer")
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=0.0)
+        elif optimizer_label == "adamw":
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
+        else:
+            print("Using SGD optimizer")
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
+
+        startt = time.time()
+        pt_model = self.model
+
+        for ii_epoch in range(epoch):
+            print("Starting epoch %s." % str(ii_epoch))
+
+            for iis,(datax, labels) in enumerate(self.data_dict["train"]):
+
+                step_per_epoch=len(self.data_dict["train"])
+                ii_tot = iis + ii_epoch * step_per_epoch
+                cstep = ii_tot / (epoch * step_per_epoch)
+
+                loss = pt_model(datax.to(self.device), labels.to(self.device), schedule=cstep)
+                self._profiler(ii_tot, loss, print_step=print_step)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            midt = time.time()
+            print("Time used till now:", midt - startt)
+            print("Validation of epoch ", ii_epoch, ":")
+            self.do_eval()
+
+        endt = time.time()
+        print("Time used in training:", endt - startt)
+        self.log = self.log + "Time used in training: " + str(endt - startt) + "\n"
+        self._postscript()
+
+    def do_eval(self, data_pt = "val"):
+        self.model.eval()
+        # Validation
+        lossl = []
+        for iis, (datax, labels) in enumerate(self.data_dict[data_pt]):
+            with torch.no_grad():
+                loss = self.model(datax.to(self.device), labels.to(self.device), schedule=1.0)
+                lossl.append(loss.item())
+        if self.loss_exp_flag:
+            print("Evaluation Perplexity: ", np.exp(np.mean(np.array(lossl))))
+        else:
+            print("Evaluation Perplexity: ", np.mean(np.array(lossl)))
+
+    def _profiler(self, iis, loss, print_step=200):
+
+        if iis % print_step == 0:
+            if self.loss_exp_flag:
+                print("Perlexity: ", iis, np.exp(loss.item()))
+                self.log = self.log + "Perlexity: " + str(iis)+" "+ str(np.exp(loss.item())) + "\n"
+            else:
+                print("Loss: ", iis, loss.item())
+                self.log = self.log + "Loss: " + str(iis) + " " + str(loss.item()) + "\n"
+
+        if self.loss_exp_flag:
+            self.train_hist.append(np.exp(loss.item()))
+        else:
+            self.train_hist.append(loss.item())
+
+    def _postscript(self):
+        x = []
+        for ii in range(len(self.train_hist)):
+            x.append([ii, self.train_hist[ii]])
+        x = np.array(x)
+        if self.figure_plot:
+            try:
+                plt.plot(x[:, 0], x[:, 1])
+                if self.loss_clip > 0:
+                    # plt.ylim((-self.loss_clip, self.loss_clip))
+                    if self.loss_exp_flag:
+                        low_b=1.0
+                    else:
+                        low_b=0.0
+                    plt.ylim((low_b, self.loss_clip))
+                if self.save_fig is not None:
+                    filename=self.save_fig+str(self.cuda_device)+".png"
+                    print(filename)
+                    plt.savefig(filename)
+                    self.log = self.log + "Figure saved: " + filename + "\n"
+                    plt.gcf().clear()
+                else:
+                    plt.show()
+            except:
+                pass
 
 class PyTrain_Lite(object):
     """
