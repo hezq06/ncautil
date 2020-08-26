@@ -1564,7 +1564,7 @@ class Gumbel_Softmax(torch.nn.Module):
         self.sample=sample
         self.sample_mode=sample_mode
 
-    def forward(self, inmat, temperature=1.0, cuda_device="cuda:0"):
+    def forward(self, inmat, temperature=1.0):
         """
         Forward
         :param input:
@@ -1572,6 +1572,7 @@ class Gumbel_Softmax(torch.nn.Module):
         :return:
         """
         # input must be log probability
+        device = inmat.device
         if self.sample_mode:
             ishape=list(inmat.shape)
             vshape=list(inmat.shape)
@@ -1579,7 +1580,7 @@ class Gumbel_Softmax(torch.nn.Module):
             vshape.insert(2, self.sample)
             inmat=torch.unsqueeze(inmat, 2).expand(ishape)
         ui = torch.rand(inmat.shape)
-        ui = ui.to(cuda_device)
+        ui = ui.to(device)
         gi = -torch.log(-torch.log(ui))
         betax1 = (inmat + gi) / temperature
         self.betax1 = betax1
@@ -1664,20 +1665,15 @@ class FF_MLP(torch.nn.Module):
             para = dict([])
         self.para(para)
 
-        if self.mlp_num_layers>0:
-            self.i2h = torch.nn.Linear(self.input_size, self.mlp_hidden)
+        if len(self.mlp_layer_para)>0:
+            mlp_layer_para0 = [self.input_size] + self.mlp_layer_para
             self.linear_layer_stack = torch.nn.ModuleList([
-                torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
-                for _ in range(self.mlp_num_layers-1)])
-            self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size)
+                torch.nn.Sequential(torch.nn.Linear(mlp_layer_para0[iil], mlp_layer_para0[iil+1], bias=True),
+                                    torch.nn.LayerNorm(mlp_layer_para0[iil+1]),torch.nn.ReLU())
+                for iil in range(len(mlp_layer_para0)-1)])
+            self.h2o = torch.nn.Linear(mlp_layer_para0[-1], self.output_size)
         else:
             self.i2o = torch.nn.Linear(self.input_size, self.output_size)
-
-        self.sigmoid = torch.nn.Sigmoid()
-        self.tanh = torch.nn.Tanh()
-        self.relu = torch.nn.ReLU()
-        self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.gsoftmax = Gumbel_Softmax()
 
         self.dropout = torch.nn.Dropout(self.dropout_rate)
 
@@ -1692,37 +1688,33 @@ class FF_MLP(torch.nn.Module):
         self.dropout_rate = para.get("dropout_rate", 0.0)
 
     def set_model_para(self,model_para):
-        # model_para = {"input_size": 300,
-        #               "output_size": 7,
-        #               "mlp_num_layers": 3,
-        #               "mlp_hidden": 160,
-        #               }
+        # model_para_h={
+        #     "input_size": 64,
+        #     "output_size":1,
+        #     "mlp_layer_para": [32,16,8]
+        # }
         self.model_para = model_para
         self.input_size = model_para["input_size"]
         self.output_size = model_para["output_size"]
-        self.mlp_hidden = model_para["mlp_hidden"]
-        self.mlp_num_layers = model_para["mlp_num_layers"]
+        self.mlp_layer_para = model_para["mlp_layer_para"] # [hidden0, hidden1, ...]
 
-    def forward(self, input, hidden1, add_logit=None, logit_mode=True, schedule=None, context_set=None):
+    def forward(self, inputx, hidden1=None, add_logit=None, logit_mode=True, schedule=None, context_set=None):
         """
         Forward
         :param input: [window batch l_size]
         :param hidden:
         :return:
         """
-        self.cuda_device=input.device
+        self.cuda_device=inputx.device
 
-        if self.mlp_num_layers > 0:
-            hidden=self.i2h(input)
+        hidden = inputx
+        if len(self.mlp_layer_para) > 0:
             for fmd in self.linear_layer_stack:
-                hidden = self.dropout(hidden)
                 hidden = fmd(hidden)
+                # hidden = self.dropout(hidden)
             output=self.h2o(hidden)
         else:
-            output = self.i2o(input)
-
-        if not logit_mode:
-            output = self.softmax(output)
+            output = self.i2o(inputx)
 
         return output, None
 
@@ -1838,12 +1830,11 @@ class FF_MLP_VIB(torch.nn.Module):
 
 class FF_MLP_GSVIB(torch.nn.Module):
     """
-    Feed forward multi-layer perceotron
+    Feed forward multi-layer perceptron
     """
     def __init__(self, model_para ,para=None):
         super(self.__class__, self).__init__()
 
-        self.model_para = model_para
         self.set_model_para(model_para)
 
         # self.coop_mode=False
@@ -1852,12 +1843,13 @@ class FF_MLP_GSVIB(torch.nn.Module):
             para = dict([])
         self.para(para)
 
-        if self.mlp_num_layers>0:
-            self.i2h = torch.nn.Linear(self.input_size, self.mlp_hidden)
+        if len(self.mlp_layer_para)>0:
+            mlp_layer_para0 = [self.input_size] + self.mlp_layer_para0
             self.linear_layer_stack = torch.nn.ModuleList([
-                torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
-                for _ in range(self.mlp_num_layers-1)])
-            self.h2o = torch.nn.Linear(self.mlp_hidden, self.gs_head_dim*self.gs_head_num)
+                torch.nn.Sequential(torch.nn.Linear(mlp_layer_para0[iil], mlp_layer_para0[iil + 1], bias=True),
+                                    torch.nn.LayerNorm(mlp_layer_para0[iil + 1]), torch.nn.ReLU())
+                for iil in range(len(mlp_layer_para0) - 1)])
+            self.h2o = torch.nn.Linear(mlp_layer_para0[-1], self.gs_head_dim*self.gs_head_num)
         else:
             self.i2o = torch.nn.Linear(self.input_size, self.gs_head_dim*self.gs_head_num)
 
@@ -1908,9 +1900,8 @@ class FF_MLP_GSVIB(torch.nn.Module):
         self.output_size = model_para["output_size"]
         self.gs_head_dim = model_para["gs_head_dim"]
         self.gs_head_num = model_para["gs_head_num"]
-        self.mlp_hidden = model_para["mlp_hidden"]
-        self.mlp_num_layers = model_para["mlp_num_layers"][0]
-        self.mlp_num_layers_2 = model_para["mlp_num_layers"][1]
+        self.mlp_layer_para0 = model_para["mlp_layer_para0"] # [hidden0, hidden1 ...]
+        self.mlp_layer_para1 = model_para["mlp_layer_para1"]  # [hidden0, hidden1 ...]
 
     def set_sample_size(self,sample_size):
         self.sample_size=sample_size

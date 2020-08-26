@@ -539,11 +539,12 @@ class PyTrain_Main(object):
         currentDT = datetime.datetime.now()
         self.log = "Time of creation: " + str(currentDT) + "\n"
         self.train_hist = []
+        self.evalmem = None
 
     def para(self, para):
         self.loss_exp_flag = para.get("loss_exp_flag", False)
         self.figure_plot = para.get("figure_plot", True)
-        self.loss_clip = para.get("loss_clip", 20000.0)
+        self.loss_clip = para.get("loss_clip", 50.0)
 
     def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200):
 
@@ -587,18 +588,54 @@ class PyTrain_Main(object):
         self.log = self.log + "Time used in training: " + str(endt - startt) + "\n"
         self._postscript()
 
-    def do_eval(self, data_pt = "val"):
+    def do_eval(self, data_pt = "val", eval_mem_flag=False):
         self.model.eval()
         # Validation
         lossl = []
+        print("Start evaluation ...")
         for iis, (datax, labels) in enumerate(self.data_dict[data_pt]):
             with torch.no_grad():
                 loss = self.model(datax.to(self.device), labels.to(self.device), schedule=1.0)
                 lossl.append(loss.item())
+                if eval_mem_flag:
+                    self.eval_mem(datax, labels, self.model)
         if self.loss_exp_flag:
             print("Evaluation Perplexity: ", np.exp(np.mean(np.array(lossl))))
         else:
             print("Evaluation Perplexity: ", np.mean(np.array(lossl)))
+
+    def do_test(self, data_pt = "val"):
+        """
+        Calculate correct rate
+        :param step_test:
+        :return:
+        """
+        print("Start testing ...")
+        self.model.eval()
+        total = 0
+        correct = 0
+        for iis, (datax, labels) in enumerate(self.data_dict[data_pt]):
+            with torch.no_grad():
+                loss = self.model(datax.to(self.device), labels.to(self.device), schedule=1.0)
+                output = self.model.output.cpu()
+                _, predicted = torch.max(output, 1)
+                total += len(labels.view(-1))
+                correct += (predicted == labels).sum().item()
+        crate = correct / total
+        print("Correct rate: ", correct / total)
+
+        return crate
+
+    def eval_mem(self, datax, labels, model):
+        if self.evalmem is None:
+            # self.evalmem = []
+            self.evalmem = [[],[]]  # x,label,context
+        self.evalmem[0].append(model.model.out_seq1.detach().cpu().numpy())
+        # self.evalmem[1].append(model.model.seq1_coop.contextl.detach().cpu().numpy())
+        # self.evalmem.append(model.seq1_coop.cooprer.output.detach().cpu().numpy())
+        # self.evalmem.append(model.output.detach().cpu().numpy())
+        # self.evalmem[0].append(datax.cpu().numpy())
+        # self.evalmem[1].append(labels.cpu().numpy())
 
     def _profiler(self, iis, loss, print_step=200):
 
