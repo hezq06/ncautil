@@ -601,12 +601,12 @@ def cal_entropy_gauss(theta):
     :param theta:
     :return:
     """
-    if type(theta) is float:
-        ent = np.log(theta*np.sqrt(2*np.pi*np.e))
-    elif type(theta) is list:
+    if type(theta) is list:
         ent=0
         for item in theta:
             ent=ent+np.log(item*np.sqrt(2*np.pi*np.e))
+    else:
+        ent = np.log(theta*np.sqrt(2*np.pi*np.e))
     return ent
 
 def cal_entropy_gauss_gpu(theta,cuda_device="cuda:0"):
@@ -938,6 +938,12 @@ def genDist(N):
     """
     vec=np.random.random(N)
     return vec/np.sum(vec)
+
+def softplus(x):
+    # if x>30.0:
+    #     return x
+    # else:
+    return np.log(1+np.exp(x))
 
 def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)

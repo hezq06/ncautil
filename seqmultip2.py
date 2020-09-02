@@ -1308,14 +1308,13 @@ class VariationalGauss(torch.nn.Module):
 
         super(self.__class__, self).__init__()
 
-        self.noise = None
+        # self.noise = None
         self.sample_size=sample_size
         self.multi_sample_flag=multi_sample_flag
 
-        self.gpuavail = torch.cuda.is_available()
-
-    def forward(self, mu, theta, cuda_device="cuda:0"):
+    def forward(self, mu, theta):
         assert mu.shape==theta.shape
+        device = mu.device
         shape = np.array(mu.shape)
         if self.multi_sample_flag:
             shape=np.insert(shape,-1,self.sample_size)
@@ -1323,16 +1322,16 @@ class VariationalGauss(torch.nn.Module):
             mushape[-2]=1
             mu=mu.view(tuple(mushape))
             theta = theta.view(tuple(mushape))
-        if self.noise is None:
-            self.noise = torch.nn.init.normal_(torch.empty(tuple(shape)))
-            if self.gpuavail:
-                self.noise = self.noise.to(cuda_device)
-        else:
-            self.noise.data.normal_(0,std=1.0)
+        noise = torch.nn.init.normal_(torch.empty(tuple(shape))).to(device)
+        # if self.noise is None:
+        #     self.noise = torch.nn.init.normal_(torch.empty(tuple(shape))).to(device)
+        # else:
+        #     self.noise.data.normal_(0,std=1.0)
+
         if self.training:
-            return mu + theta * self.noise
+            return mu + theta * noise
         else:
-            return mu + theta * self.noise
+            return mu + theta * noise
 
 class FF_VIB(torch.nn.Module):
     """

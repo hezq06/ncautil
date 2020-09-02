@@ -9,7 +9,7 @@ from __future__ import print_function
 
 import numpy as np
 import torch
-from ncautil.seqmultip2 import FF_MLP, Gumbel_Softmax
+from ncautil.seqmultip2 import FF_MLP, Gumbel_Softmax, VariationalGauss
 
 
 def cnn_outszie(HWin, kernel_size, stride=1, padding=0, dilation=1):
@@ -41,22 +41,72 @@ class CAL_LOSS(torch.nn.Module):
             loss = self.CrossEntropyLoss(output, labels)
         elif self.loss_flag == "mse_loss":
             loss = self.MSELoss(output, labels[...,:output.shape[-2],:output.shape[-1]])*10000
+        elif self.loss_flag == "posicolorshape_loss":
+            loss = self.posiColorShapeLoss(output, labels)
 
         # print("Loss,",loss)
 
-        if hasattr(self.model, "loss_reg"):
-            loss = loss +self.model.loss_reg
-            # print("A",self.model.loss_reg)
-        if hasattr(self.model, "submodels"):
-            for submodel in self.model.submodels:
-                if hasattr(submodel, "loss_reg"):
-                    loss = loss + submodel.loss_reg
-                    # print("B", submodel.loss_reg)
+        loss = self.cal_loss_reg_recursize(self.model, loss)
+
+        # if hasattr(self.model, "loss_reg"):
+        #     loss = loss +self.model.loss_reg
+        #     print("A",self.model.loss_reg)
+        # if hasattr(self.model, "submodels"):
+        #     for submodel in self.model.submodels:
+        #         if hasattr(submodel, "loss_reg"):
+        #             loss = loss + submodel.loss_reg
+        #             print("B", submodel.loss_reg)
         return loss
+
+    def cal_loss_reg_recursize(self, model, loss):
+        if hasattr(model, "loss_reg"):
+            loss = loss + model.loss_reg
+            # print("A", model.loss_reg)
+        if hasattr(model, "submodels"):
+            # print("B")
+            for submodel in model.submodels:
+                loss = self.cal_loss_reg_recursize(submodel, loss)
+        return loss
+
 
     def para(self,para):
         self.misc_para = para
-        self.loss_flag = para.get("loss_flag", "cross_entropy")
+        self.loss_flag = para.get("loss_flag", "posicolorshape_loss")
+
+    def posiColorShapeLoss(self, output, labels):
+
+        device=output.device
+        loss_mse = torch.nn.MSELoss()
+        lossposi = loss_mse(output[:,0:2],labels[:,0:2].type(torch.FloatTensor).to(device))
+        ## Loss, color
+        lossc = torch.nn.CrossEntropyLoss()
+        losscolor = lossc(output[:, 2:10], labels[:, 2].type(torch.LongTensor).to(device))
+        ## Loss, shape
+        lossshape = lossc(output[:, 10:], labels[:, 3].type(torch.LongTensor).to(device))
+        # print(lossposi, losscolor, lossshape)
+        loss = losscolor+lossshape+lossposi
+        return loss
+
+        ## Loss, posi
+        self.output = output
+        # device = datax.device
+        # if self.loss_flag == "posicolorshape":
+        #     loss_mse = torch.nn.MSELoss()
+        #         #     lossposi = loss_mse(output[:,0:2],labels[:,0:2].type(torch.FloatTensor).to(device))
+        #         #     ## Loss, color
+        #         #     lossc = torch.nn.CrossEntropyLoss()
+        #         #     losscolor = lossc(output[:, 2:10], labels[:, 2].type(torch.LongTensor).to(device))
+        #         #     ## Loss, shape
+        #         #     lossshape = lossc(output[:, 10:], labels[:, 3].type(torch.LongTensor).to(device))
+        #         #     loss = losscolor+lossshape+lossposi
+        # elif self.loss_flag == "colorshape":
+        #     ## Loss, color
+        #     lossc = torch.nn.CrossEntropyLoss()
+        #     losscolor = lossc(output[:, :8], labels[:,0].type(torch.LongTensor).to(device))
+        #     ## Loss, shape
+        #     lossshape = lossc(output[:, 8:], labels[:, 1].type(torch.LongTensor).to(device))
+        #     loss = losscolor+lossshape
+
 
     def CrossEntropyLoss(self, output, labels):
         device = labels.device
@@ -91,10 +141,9 @@ class ABS_CNN_SEQ(torch.nn.Module):
             para = dict([])
         self.para(para)
 
-        if not self.seq1_train_flag:
+        if not self.seq1_coop_train_flag:
             for param in self.seq1_coop.parameters():
                 param.requires_grad = False
-        self.seq1_coop.coop_mode = True
 
         self.save_para = {
             "model_para":[seq1_coop.save_para, seq2_train.save_para],
@@ -104,17 +153,18 @@ class ABS_CNN_SEQ(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
-        self.seq1_train_flag = para.get("seq1_train_flag", False)
-        self.loss_flag = para.get("loss_flag", "cross_entropy")
+        self.seq1_coop_train_flag = para.get("seq1_coop_train_flag", False)
+        self.auto_code_context_flag = para.get("auto_code_context_flag",False)
 
     def forward(self, datax, schedule=1.0):
         self.device = datax.device
-        if self.seq1_train_flag:
+        if self.seq1_coop_train_flag:
             out_seq1 = self.seq1_coop(datax, schedule=schedule)
         else:
             out_seq1 = self.seq1_coop(datax, schedule=1.0)
         self.out_seq1=out_seq1
-        # self.auto_code_context=torch.cat((self.seq1_coop.cooprer.context,self.seq1_coop.trainer.context),dim=-1)
+        if self.auto_code_context_flag == True:
+            self.auto_code_context=torch.cat((self.seq1_coop.cooprer.context,self.seq1_coop.trainer.context),dim=-1)
         # out_seq2 = self.seq2_train(out_seq1, labels, schedule=schedule)
 
         output = self.seq2_train(out_seq1, schedule=schedule)
@@ -158,6 +208,7 @@ class ABS_CNN_COOP(torch.nn.Module):
     def para(self, para):
         self.misc_para = para
         self.cooprer_train_flag = para.get("cooprer_train_flag", False)
+        self.coop_mode = para.get("coop_mode", "concatenate")
 
     def forward(self, datax, schedule=1.0):
         self.device = datax.device
@@ -166,7 +217,10 @@ class ABS_CNN_COOP(torch.nn.Module):
         else:
             out_coop = self.cooprer(datax, schedule=1.0)
         out_train = self.trainer(datax, schedule=schedule)
-        output = torch.cat([out_coop,out_train],dim=-1)
+        if self.coop_mode == "concatenate":
+            output = torch.cat([out_coop,out_train],dim=-1)
+        elif self.coop_mode == "sum":
+            output = out_coop+out_train
         return output
 
 class ConvNet(torch.nn.Module):
@@ -221,8 +275,10 @@ class ConvNet(torch.nn.Module):
         else:
             self.i2o = torch.nn.Linear(conv_out, self.output_size)
 
-        if self.infobn_flag:
+        if self.postprocess_mode == "GSVIB":
             self.infobn=GSVIB_InfoBottleNeck(self.infobn_model,para=self.infobn_para)
+        elif self.postprocess_mode == "posicolorshape_VIB":
+            self.infobn = VIB_InfoBottleNeck(self.infobn_model, para=self.infobn_para)
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
@@ -235,13 +291,11 @@ class ConvNet(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
-        self.coop_mode = para.get("coop_mode", False)
-        self.infobn_flag = para.get("infobn_flag", False)
+        self.postprocess_mode = para.get("postprocess_mode", "posicolorshape_VIB")
         self.infobn_para = para.get("infobn_para", None)
         self.sfmsample_flag = para.get("sfmsample_flag", False)
         self.sample_mode = para.get("sample_mode", False)
         self.sample_size = para.get("sample_size", 1)
-        self.loss_flag = para.get("loss_flag", "colorshape")
 
     def set_model_para(self,model_para):
         # model_para = {
@@ -284,55 +338,29 @@ class ConvNet(torch.nn.Module):
         else:
             output = self.i2o(datax)
 
-        if self.coop_mode:
-            if self.infobn_flag:
-                output = self.infobn(output, schedule=schedule)
-                self.context = self.infobn.context.view(*self.infobn.context.shape[:-2],-1)
-                self.output = output
-                return output
-            elif self.sfmsample_flag:
-                if self.loss_flag == "colorshape":
-                    output0s = self.softmax(output[:, :8])
-                    output1s = self.softmax(output[:, 8:])
-                    self.context = torch.cat([ output0s, output1s], dim=-1)
-                    output0 = self.gsoftmax(output0s, temperature=np.exp(-5))
-                    output1 = self.gsoftmax(output1s, temperature=np.exp(-5))
-                    output = torch.cat([output0,output1],dim=-1)
-                elif self.loss_flag == "posicolorshape":
-                    output0s = self.softmax(output[:, 2:10])
-                    output1s = self.softmax(output[:, 10:])
-                    self.context = torch.cat([output[:,:2],output0s,output1s],dim=-1)
-                    output0 = self.gsoftmax(output0s, temperature=np.exp(-5))
-                    output1 = self.gsoftmax(output1s, temperature=np.exp(-5))
-                    output = torch.cat([output[:,:2],output0,output1],dim=-1)
-                self.output = output
-                return output
+        if self.postprocess_mode == "GSVIB":
+            output = self.infobn(output, schedule=schedule)
+            self.context = self.infobn.context.view(*self.infobn.context.shape[:-2],-1)
+            self.loss_reg = self.infobn.cal_regloss()
+            self.output = output
+            return output
+        elif self.postprocess_mode == "posicolorshape_VIB":
+            outputp = self.infobn(output[..., :4], schedule=schedule)
+            self.loss_reg = self.infobn.cal_regloss()
+            outputcs = self.softmax(output[:, 4:12])
+            outputss = self.softmax(output[:, 12:])
+            self.context = torch.cat([output[..., :4], outputcs, outputss], dim=-1)
+            if not self.sfmsample_flag:
+                self.output = torch.cat([outputp,output[..., 4:]], dim=-1)
+                return self.output
             else:
+                outputc = self.gsoftmax(outputcs, temperature=np.exp(-5))
+                outputs = self.gsoftmax(outputss, temperature=np.exp(-5))
+                output = torch.cat([outputp,outputc,outputs],dim=-1)
                 self.output = output
                 return output
-
-
-        ## Loss, posi
-        self.output = output
-        # device = datax.device
-        # if self.loss_flag == "posicolorshape":
-        #     loss_mse = torch.nn.MSELoss()
-        #     lossposi = loss_mse(output[:,0:2],labels[:,0:2].type(torch.FloatTensor).to(device))
-        #     ## Loss, color
-        #     lossc = torch.nn.CrossEntropyLoss()
-        #     losscolor = lossc(output[:, 2:10], labels[:, 2].type(torch.LongTensor).to(device))
-        #     ## Loss, shape
-        #     lossshape = lossc(output[:, 10:], labels[:, 3].type(torch.LongTensor).to(device))
-        #     loss = losscolor+lossshape+lossposi
-        # elif self.loss_flag == "colorshape":
-        #     ## Loss, color
-        #     lossc = torch.nn.CrossEntropyLoss()
-        #     losscolor = lossc(output[:, :8], labels[:,0].type(torch.LongTensor).to(device))
-        #     ## Loss, shape
-        #     lossshape = lossc(output[:, 8:], labels[:, 1].type(torch.LongTensor).to(device))
-        #     loss = losscolor+lossshape
-
-        return output
+        else:
+            raise Exception("Unknown postprocess_mode")
 
 class DeConvNet(torch.nn.Module):
     """
@@ -440,7 +468,6 @@ class DeConvNet(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
-        self.coop_mode = para.get("coop_mode", False)
 
     def forward(self, datax, schedule=1.0):
         """
@@ -467,8 +494,6 @@ class DeConvNet(torch.nn.Module):
             tconvin = fwd(tconvin)
 
         self.outimage=tconvin
-        if self.coop_mode:
-            return self.outimage
 
         return tconvin
 
@@ -548,8 +573,8 @@ class ConvFF_MLP_CLEVR(torch.nn.Module):
     def para(self,para):
         self.misc_para=para
         self.dropout_rate = para.get("dropout_rate", 0.0)
-        self.sfmsample_flag = para.get("sfmsample_flag", True)
-        self.loss_flag = para.get("loss_flag", "posicolorshape")
+        # self.sfmsample_flag = para.get("sfmsample_flag", True)
+        # self.loss_flag = para.get("loss_flag", "posicolorshape")
         self.sample_mode = para.get("sample_mode", False)
         self.sample_size = para.get("sample_size", 1)
 
@@ -561,14 +586,14 @@ class ConvFF_MLP_CLEVR(torch.nn.Module):
         :return:
         """
         ### softmax sample
-        if self.sfmsample_flag:
-            if self.loss_flag == "posicolorshape":
-                output0 = self.gsoftmax(datax[:,:,:, 2:10], temperature=np.exp(-5))
-                output1 = self.gsoftmax(datax[:,:,:, 10:13], temperature=np.exp(-5))
-                output2 = self.gsoftmax(datax[:,:,:, 13:].view([*datax.shape[0:3],-1,2]), temperature=np.exp(-5))
-                output2 = output2.view([*output2.shape[0:3],-1])
-                datax = torch.cat([datax[:,:,:, :2], output0, output1, output2], dim=-1)
-                datax = self.layer_norm(datax)
+        # if self.sfmsample_flag:
+        #     if self.loss_flag == "posicolorshape":
+        # output0 = self.gsoftmax(datax[:,:,:, 2:10], temperature=np.exp(-5))
+        # output1 = self.gsoftmax(datax[:,:,:, 10:13], temperature=np.exp(-5))
+        # output2 = self.gsoftmax(datax[:,:,:, 13:].view([*datax.shape[0:3],-1,2]), temperature=np.exp(-5))
+        # output2 = output2.view([*output2.shape[0:3],-1])
+        # datax = torch.cat([datax[:,:,:, :2], output0, output1, output2], dim=-1)
+        # datax = self.layer_norm(datax)
 
         datax = self.HiddenConvFF(datax)[0].squeeze()
         output = self.ObjConvFF(datax)[0].squeeze()
@@ -587,8 +612,10 @@ class Multitube_FF_MLP(torch.nn.Module):
         self.set_model_para(model_para)
 
         assert len(self.input_divide) == len(self.output_divide) == len(self.mlp_layer_para)
-        assert  np.sum(self.input_divide) == self.input_size
+        assert np.sum(self.input_divide) == self.input_size
         assert np.sum(self.output_divide) == self.output_size
+
+        self.infobnvib = VIB_InfoBottleNeck({})
 
         model_paral = []
         for iim in range(len(self.input_divide)):
@@ -606,10 +633,9 @@ class Multitube_FF_MLP(torch.nn.Module):
             para = dict([])
         self.para(para)
 
-        if self.infobn_flag:
-            self.infobnl = torch.nn.ModuleList([
-                GSVIB_InfoBottleNeck(self.infobn_model[iim],para=self.infobn_para)
-                for iim in range(len(self.input_divide))])
+        self.infobnl = torch.nn.ModuleList([
+            GSVIB_InfoBottleNeck(self.infobn_model[iim],para=self.infobn_para)
+            for iim in range(len(self.input_divide))])
 
         self.layer_norm0 = torch.nn.LayerNorm(self.input_size)
         self.layer_norm1 = torch.nn.LayerNorm(self.output_size)
@@ -623,13 +649,9 @@ class Multitube_FF_MLP(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
-        self.coop_mode = para.get("coop_mode", True)
-        self.infobn_flag = para.get("infobn_flag", True)
         self.infobn_para = para.get("infobn_para", None)
         self.sample_mode = para.get("sample_mode", False)
         self.sample_size = para.get("sample_size", 1)
-        self.sfmsample_flag = para.get("sfmsample_flag", True)
-        self.loss_flag = para.get("loss_flag", "posicolorshape")
 
     def set_model_para(self,model_para):
         # model_para_h={
@@ -657,14 +679,16 @@ class Multitube_FF_MLP(torch.nn.Module):
         :return:
         """
         ### softmax sample
-        if self.sfmsample_flag:
-            if self.loss_flag == "posicolorshape":
-                output0 = self.gsoftmax(datax[... , 2:10], temperature=np.exp(-5))
-                output1 = self.gsoftmax(datax[... , 10:13], temperature=np.exp(-5))
-                output2 = self.gsoftmax(datax[... , 13:].view([*datax.shape[0:3], -1, 2]), temperature=np.exp(-5))
-                output2 = output2.view([*output2.shape[0:3], -1])
-                datax = torch.cat([datax[... , :2], output0, output1, output2], dim=-1)
-                datax = self.layer_norm0(datax)
+        # if self.sfmsample_flag:
+        #     if self.loss_flag == "posicolorshape":
+        ## Preprocessing
+        outputp = self.infobnvib(datax[..., :4], schedule=schedule)
+        output0 = self.gsoftmax(datax[... , 4:12], temperature=np.exp(-5))
+        output1 = self.gsoftmax(datax[... , 12:15], temperature=np.exp(-5))
+        output2 = self.gsoftmax(datax[... , 15:].view([*datax.shape[0:3], -1, 2]), temperature=np.exp(-5))
+        output2 = output2.view([*output2.shape[0:3], -1])
+        datax = torch.cat([outputp, output0, output1, output2], dim=-1)
+        datax = self.layer_norm0(datax)
 
         startp=0
         dataml=[]
@@ -675,15 +699,13 @@ class Multitube_FF_MLP(torch.nn.Module):
 
         gsamplel = []
         contextl = []
-        if self.infobn_flag:
-            for iim, infobn in enumerate(self.infobnl):
-                gsample = infobn(dataml[iim], schedule=schedule)
-                gsamplel.append(gsample)
-                contextl.append(infobn.contextl)
-            self.loss_reg = 0
-            for iim in range(len(self.input_divide)):
-                self.loss_reg = self.loss_reg + self.infobnl[iim].cal_regloss()
-
+        for iim, infobn in enumerate(self.infobnl):
+            gsample = infobn(dataml[iim], schedule=schedule)
+            gsamplel.append(gsample)
+            contextl.append(infobn.contextl)
+        self.loss_reg = 0
+        for iim in range(len(self.input_divide)):
+            self.loss_reg = self.loss_reg + self.infobnl[iim].cal_regloss()
 
         self.contextl = torch.cat(contextl, dim=-1)
         output = torch.cat(gsamplel, dim=-1)
@@ -710,7 +732,7 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
 
         self.save_para = {
             "model_para": model_para,
-            "type": "GSVIB_InfoBottleNeck",
+            "type": str(self.__class__),
             "misc_para": para
         }
 
@@ -765,8 +787,55 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         prior = prior.view(1, self.gs_head_num, self.gs_head_dim).expand_as(self.context)
         flatkl = torch.mean(torch.sum(torch.exp(self.context) * (self.context - prior), dim=-1))
         loss =  self.reg_lamda * (flatkl + self.scale_factor * ent_prior)
+        # print("Loss GSVIB", flatkl, ent_prior)
         return loss
 
+class VIB_InfoBottleNeck(torch.nn.Module):
+    """
+    A VIB information bottleneck module, input 2*context_size, [mu, theta]
+    """
+    def __init__(self, model_para={} ,para=None):
+        super(self.__class__, self).__init__()
 
+        self.set_model_para(model_para)
 
+        if para is None:
+            para = dict([])
+        self.para(para)
 
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.softplus = torch.nn.Softplus()
+        self.vagauss = VariationalGauss()
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para
+        }
+
+    def para(self,para):
+        self.misc_para=para
+        self.reg_lamda = para.get("reg_lamda", 0.01) # weight on KL
+
+    def set_model_para(self,model_para):
+        # model_para = {
+        # }
+        self.model_para = model_para
+
+    def forward(self, datax, schedule=None):
+
+        assert datax.shape[-1] % 2 == 0
+        context_size = int(datax.shape[-1]/2)
+
+        self.cmu = datax[ ... , :context_size]
+        self.ctheta = datax[ ... , context_size:]
+        self.ctheta = self.softplus(self.ctheta)
+        context = self.vagauss(self.cmu, self.ctheta)
+        self.loss_reg = self.cal_regloss()
+
+        return context
+
+    def cal_regloss(self, cshift=0.5):
+        gausskl = 0.5 * torch.mean(torch.sum(self.ctheta ** 2 + (self.cmu-cshift) ** 2 - torch.log(self.ctheta ** 2) - 1, dim=-1))
+        assert gausskl > 0
+        return self.reg_lamda * gausskl

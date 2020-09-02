@@ -659,6 +659,7 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         self.epoch_len = epoch_len
         self.img_size = [320, 480] # [H, W]
         self.question_mode = question_mode
+        self.checkmode = False
 
         self.imgs = []
         print("Parsing dataset ...")
@@ -678,19 +679,35 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         """
         ## get a random sets of imgs of a question and an answer
         if self.question_mode == "exist_colorshape":
-            idxl, answ = self.question_exist_colorshape()
-            dataxl = []
-            self.imgl=[]
-            for idx in idxl:
+            idxl, answ = self.question_exist_colorshapesize(color="green", shape = "sphere", size = None, material = None)
+        elif self.question_mode == "exist_shapesize":
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "cube", size = "large", material = None)
+        elif self.question_mode == "posimost_property":
+            idxl, answ = self.question_posimost_colorshapesize(posimost = "leftmost", color=None, shape = "cylinder", size = None, material = None)
+        dataxl = []
+        self.imgl=[]
+        for idx in idxl:
+            # dataxl.append(img.unsqueeze(0))
+            autocodel = self.getitem_autocodeperobj(idx)
+            dataxl.append(autocodel.unsqueeze(0))
+            if self.checkmode:
                 img = self.getitem_maskedperobj(idx)
-                # dataxl.append(img.unsqueeze(0))
-                autocodel = self.getitem_autocodeperobj(idx)
-                dataxl.append(autocodel.unsqueeze(0))
                 self.imgl.append(self.img)
-            datax = torch.cat(dataxl,dim=0)
-            return datax, answ
+        datax = torch.cat(dataxl,dim=0)
+        return datax, answ
 
-    def question_exist_colorshape(self, color="green", shape = "sphere"):
+    def question_exist_colorshapesize(self, color=None, shape = "cube", size = "large", material = None):
+
+        checklist=[]
+        if color is not None:
+            checklist.append(["color",color])
+        if shape is not None:
+            checklist.append(["shape",shape])
+        if size is not None:
+            checklist.append(["size",size])
+        if material is not None:
+            checklist.append(["material",material])
+
         json_scene = self.json_clevr["scenes"]
         Nscene = len(json_scene)
 
@@ -699,7 +716,11 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             idp_exist = int(np.random.rand()*Nscene)
             exist_flag = False
             for obj in json_scene[idp_exist]["objects"]:
-                if obj["color"] == color and obj["shape"] == shape :
+                andFlag = True
+                for itemd in checklist:
+                    andFlag = (andFlag and obj[itemd[0]]==itemd[1])
+                # if obj["color"] == color and obj["shape"] == shape :
+                if andFlag:
                     exist_flag=True
                     break
             if exist_flag:
@@ -710,13 +731,106 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             idp_Nexist = int(np.random.rand()*Nscene)
             exist_flag = False
             for obj in json_scene[idp_Nexist]["objects"]:
-                if obj["color"] == color and obj["shape"] == shape :
+                andFlag = True
+                for itemd in checklist:
+                    andFlag = (andFlag and obj[itemd[0]] == itemd[1])
+                # if obj["color"] == color and obj["shape"] == shape :
+                if andFlag:
                     exist_flag = True
                     break
             if not exist_flag:
                 idp_Nexistl.append(idp_Nexist)
                 if len(idp_Nexistl) >= 3:
                     break
+        idxl = [idp_exist] + idp_Nexistl
+        np.random.shuffle(idxl)
+        return idxl , idxl.index(idp_exist)
+
+    def question_posimost_colorshapesize(self, posimost = "leftmost", color=None, shape = "cylinder", size = None, material = None):
+
+        checklist=[]
+        if color is not None:
+            checklist.append(["color",color])
+        if shape is not None:
+            checklist.append(["shape",shape])
+        if size is not None:
+            checklist.append(["size",size])
+        if material is not None:
+            checklist.append(["material",material])
+
+        posimost_dict = {
+            "leftmost":0,
+            "rightmost":1,
+            "farmost":2,
+            "nearmost":3
+        }
+
+        json_scene = self.json_clevr["scenes"]
+        Nscene = len(json_scene)
+
+        ## get one exist scene
+        while True:
+            idp_exist = int(np.random.rand()*Nscene)
+            exist_flag = False
+            posimost_id = [-1, 1, -1, -1] # [leftmost, rightmost, farmost, nearmost] ids
+            posimost_record = [1.0, 0.0, 1.0, 0.0]
+            for iid, obj in enumerate(json_scene[idp_exist]["objects"]):
+                posix = obj["pixel_coords"][0] / self.img_size[1]
+                posiy = obj["pixel_coords"][1] / self.img_size[0]
+                if posix<posimost_record[0]:
+                    posimost_id[0] = iid
+                    posimost_record[0] = posix
+                if posix>posimost_record[1]:
+                    posimost_id[1] = iid
+                    posimost_record[1] = posix
+                if posiy<posimost_record[2]:
+                    posimost_id[2] = iid
+                    posimost_record[2] = posix
+                if posiy>posimost_record[3]:
+                    posimost_id[3] = iid
+                    posimost_record[3] = posix
+            andFlag = True
+            objpick = json_scene[idp_exist]["objects"][posimost_id[posimost_dict[posimost]]]
+            for itemd in checklist:
+                andFlag = (andFlag and objpick[itemd[0]]==itemd[1])
+            if andFlag:
+                exist_flag=True
+            if exist_flag:
+                break
+        ## get 3 non-exist scene
+        idp_Nexistl = []
+        while True:
+            idp_Nexist = int(np.random.rand()*Nscene)
+            exist_flag = False
+            posimost_id = [-1, -1, -1, -1] # [leftmost, rightmost, farmost, nearmost] ids
+            posimost_record = [1.0, 0.0, 1.0, 0.0]
+            for iid, obj in enumerate(json_scene[idp_Nexist]["objects"]):
+                posix = obj["pixel_coords"][0] / self.img_size[1]
+                posiy = obj["pixel_coords"][1] / self.img_size[0]
+                if posix<posimost_record[0]:
+                    posimost_id[0] = iid
+                    posimost_record[0] = posix
+                if posix>posimost_record[1]:
+                    posimost_id[1] = iid
+                    posimost_record[1] = posix
+                if posiy<posimost_record[2]:
+                    posimost_id[2] = iid
+                    posimost_record[2] = posiy
+                if posiy>posimost_record[3]:
+                    posimost_id[3] = iid
+                    posimost_record[3] = posiy
+            andFlag = True
+            objpick = json_scene[idp_Nexist]["objects"][posimost_id[posimost_dict[posimost]]]
+            for itemd in checklist:
+                andFlag = (andFlag and objpick[itemd[0]]==itemd[1])
+            if andFlag:
+                exist_flag=True
+
+            if not exist_flag:
+                idp_Nexistl.append(idp_Nexist)
+                if len(idp_Nexistl) >= 3:
+                    break
+
         idxl = [idp_exist] + idp_Nexistl
         np.random.shuffle(idxl)
         return idxl , idxl.index(idp_exist)
