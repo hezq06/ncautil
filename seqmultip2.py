@@ -1317,9 +1317,9 @@ class VariationalGauss(torch.nn.Module):
         device = mu.device
         shape = np.array(mu.shape)
         if self.multi_sample_flag:
-            shape=np.insert(shape,-1,self.sample_size)
+            shape=np.insert(shape,2,self.sample_size)
             mushape=copy.copy(shape)
-            mushape[-2]=1
+            mushape[2]=1
             mu=mu.view(tuple(mushape))
             theta = theta.view(tuple(mushape))
         noise = torch.nn.init.normal_(torch.empty(tuple(shape))).to(device)
@@ -1715,7 +1715,7 @@ class FF_MLP(torch.nn.Module):
         else:
             output = self.i2o(inputx)
 
-        return output, None
+        return output
 
     def initHidden(self,batch):
         return None

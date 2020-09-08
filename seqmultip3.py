@@ -45,8 +45,9 @@ class CAL_LOSS(torch.nn.Module):
             loss = self.posiColorShapeLoss(output, labels)
 
         # print("Loss,",loss)
-
-        loss = self.cal_loss_reg_recursize(self.model, loss)
+        if self.loss_mode=="train":
+            loss = self.cal_loss_reg_recursize(self.model, loss)
+            # print("Train Loss,", loss)
 
         # if hasattr(self.model, "loss_reg"):
         #     loss = loss +self.model.loss_reg
@@ -72,18 +73,21 @@ class CAL_LOSS(torch.nn.Module):
     def para(self,para):
         self.misc_para = para
         self.loss_flag = para.get("loss_flag", "posicolorshape_loss")
+        self.loss_mode = para.get("loss_mode", "train")
+        self.sample_mode = para.get("sample_mode", False)
+        self.sample_size = para.get("sample_size", 1)
 
     def posiColorShapeLoss(self, output, labels):
 
         device=output.device
         loss_mse = torch.nn.MSELoss()
-        lossposi = loss_mse(output[:,0:2],labels[:,0:2].type(torch.FloatTensor).to(device))
+        lossposi = torch.sqrt(loss_mse(output[:,0:2],labels[:,0:2].type(torch.FloatTensor).to(device)))
         ## Loss, color
         lossc = torch.nn.CrossEntropyLoss()
         losscolor = lossc(output[:, 2:10], labels[:, 2].type(torch.LongTensor).to(device))
         ## Loss, shape
         lossshape = lossc(output[:, 10:], labels[:, 3].type(torch.LongTensor).to(device))
-        # print(lossposi, losscolor, lossshape)
+        print(lossposi, losscolor, lossshape)
         loss = losscolor+lossshape+lossposi
         return loss
 
@@ -111,7 +115,12 @@ class CAL_LOSS(torch.nn.Module):
     def CrossEntropyLoss(self, output, labels):
         device = labels.device
         lossc = torch.nn.CrossEntropyLoss()
-        loss = lossc(output, labels.type(torch.LongTensor).to(device))
+        if not self.sample_mode:
+            loss = lossc(output, labels.type(torch.LongTensor).to(device))
+        else:
+            labels = labels.type(torch.LongTensor).to(device)
+            labels = labels.view(labels.shape[0],1).expand(labels.shape[0],self.sample_size)
+            loss = lossc(output, labels)
         return loss
 
     def MSELoss(self, output, labels):
@@ -433,15 +442,28 @@ class DeConvNet(torch.nn.Module):
                                 torch.nn.LayerNorm(sizel[iic]),
                                 torch.nn.ReLU())
             for iic in range(len(self.deconv_para)-1)])
-        self.conv_layer_stack.append(
-            torch.nn.Sequential(
-                # torch.nn.MaxUnpool2d(self.maxunpool_para),
-                # Use deconvolution to replace MaxUnpool2d, no change in channel, same kernel and stride
-                torch.nn.ConvTranspose2d(self.deconv_para[-1][0], self.deconv_para[-1][0], self.maxunpool_para,
-                                         self.maxunpool_para),
-                torch.nn.ConvTranspose2d(*self.deconv_para[-1]),
-                torch.nn.ReLU())
-        )
+
+        if self.output_allow_negative_flag:
+            self.conv_layer_stack.append(
+                torch.nn.Sequential(
+                    # torch.nn.MaxUnpool2d(self.maxunpool_para),
+                    # Use deconvolution to replace MaxUnpool2d, no change in channel, same kernel and stride
+                    torch.nn.ConvTranspose2d(self.deconv_para[-1][0], self.deconv_para[-1][0], self.maxunpool_para,
+                                             self.maxunpool_para),
+                    torch.nn.ConvTranspose2d(*self.deconv_para[-1]),
+                )
+            )
+        else:
+            self.conv_layer_stack.append(
+                torch.nn.Sequential(
+                    # torch.nn.MaxUnpool2d(self.maxunpool_para),
+                    # Use deconvolution to replace MaxUnpool2d, no change in channel, same kernel and stride
+                    torch.nn.ConvTranspose2d(self.deconv_para[-1][0], self.deconv_para[-1][0], self.maxunpool_para,
+                                             self.maxunpool_para),
+                    torch.nn.ConvTranspose2d(*self.deconv_para[-1]),
+                    torch.nn.ReLU()
+                )
+            )
 
         self.save_para = {
             "model_para": model_para,
@@ -468,6 +490,7 @@ class DeConvNet(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
+        self.output_allow_negative_flag = para.get("output_allow_negative_flag", False)
 
     def forward(self, datax, schedule=1.0):
         """
@@ -556,6 +579,7 @@ class ConvFF_MLP_CLEVR(torch.nn.Module):
 
         self.HiddenConvFF = FF_MLP(model_para["HiddenConvFF"], para=para) # [b, 4, objN, hd]-->[b, 4, objN, 1]
         self.ObjConvFF = FF_MLP(model_para["ObjConvFF"], para=para) # [b, 4, objN] --> [b, 4, 1]
+        # self.OutFF = FF_MLP(model_para["OutFF"], para=para) # [b, 4] --> [b, 4_softmax]
 
         if para is None:
             para = dict([])
@@ -567,8 +591,11 @@ class ConvFF_MLP_CLEVR(torch.nn.Module):
             "misc_para": para
         }
 
-        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
-        self.layer_norm = torch.nn.LayerNorm(model_para["HiddenConvFF"]["input_size"])
+        # self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
+        # self.layer_norm = torch.nn.LayerNorm(model_para["HiddenConvFF"]["input_size"])
+
+        # self.layer_norm0 = torch.nn.LayerNorm(model_para["HiddenConvFF"]["input_size"])
+        # self.layer_norm1 = torch.nn.LayerNorm(model_para["ObjConvFF"]["input_size"])
 
     def para(self,para):
         self.misc_para=para
@@ -595,8 +622,12 @@ class ConvFF_MLP_CLEVR(torch.nn.Module):
         # datax = torch.cat([datax[:,:,:, :2], output0, output1, output2], dim=-1)
         # datax = self.layer_norm(datax)
 
-        datax = self.HiddenConvFF(datax)[0].squeeze()
-        output = self.ObjConvFF(datax)[0].squeeze()
+        # datax = self.layer_norm0(datax)
+        datax = self.HiddenConvFF(datax).squeeze()
+        # datax = self.layer_norm1(datax)
+        output = self.ObjConvFF(datax).squeeze()
+        # output = self.ObjConvFF(datax.view(-1,40))[0]#.squeeze()
+        # output = self.OutFF(output.permute(0,2,1)).permute(0,2,1)
         self.output = output
 
         return output
@@ -611,11 +642,18 @@ class Multitube_FF_MLP(torch.nn.Module):
         # self.coop_mode=False
         self.set_model_para(model_para)
 
+        if para is None:
+            para = dict([])
+        self.para(para)
+
         assert len(self.input_divide) == len(self.output_divide) == len(self.mlp_layer_para)
         assert np.sum(self.input_divide) == self.input_size
         assert np.sum(self.output_divide) == self.output_size
 
-        self.infobnvib = VIB_InfoBottleNeck({})
+        self.infobnvib = VIB_InfoBottleNeck(para={
+            "multi_sample_flag":self.sample_mode,
+            "sample_size":self.sample_size
+        })
 
         model_paral = []
         for iim in range(len(self.input_divide)):
@@ -629,16 +667,14 @@ class Multitube_FF_MLP(torch.nn.Module):
             FF_MLP(model_paral[iim])
             for iim in range(len(self.input_divide))])
 
-        if para is None:
-            para = dict([])
-        self.para(para)
-
         self.infobnl = torch.nn.ModuleList([
             GSVIB_InfoBottleNeck(self.infobn_model[iim],para=self.infobn_para)
             for iim in range(len(self.input_divide))])
 
         self.layer_norm0 = torch.nn.LayerNorm(self.input_size)
         self.layer_norm1 = torch.nn.LayerNorm(self.output_size)
+        # self.batch_norm0 = torch.nn.BatchNorm2d(4)
+        # self.batch_norm1 = torch.nn.BatchNorm2d(4)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
 
         self.save_para = {
@@ -682,18 +718,20 @@ class Multitube_FF_MLP(torch.nn.Module):
         # if self.sfmsample_flag:
         #     if self.loss_flag == "posicolorshape":
         ## Preprocessing
-        outputp = self.infobnvib(datax[..., :4], schedule=schedule)
+        outputp = self.infobnvib(datax[..., :4], schedule=1.0)
         output0 = self.gsoftmax(datax[... , 4:12], temperature=np.exp(-5))
         output1 = self.gsoftmax(datax[... , 12:15], temperature=np.exp(-5))
-        output2 = self.gsoftmax(datax[... , 15:].view([*datax.shape[0:3], -1, 2]), temperature=np.exp(-5))
-        output2 = output2.view([*output2.shape[0:3], -1])
+        output2 = self.gsoftmax(datax[... , 15:].view([*datax.shape[0:-1], -1, 2]), temperature=np.exp(-5))
+        output2 = output2.view([*output2.shape[0:-2], -1])
         datax = torch.cat([outputp, output0, output1, output2], dim=-1)
-        datax = self.layer_norm0(datax)
+        # datax = self.layer_norm0(datax)
+        # print(torch.mean(datax), torch.var(datax))
+        datax = (datax-0.4495)/0.5
 
         startp=0
         dataml=[]
         for iim, fmd in enumerate(self.ff_tubes):
-            datam, _ = fmd(datax[...,startp:startp+self.input_divide[iim]])
+            datam = fmd(datax[...,startp:startp+self.input_divide[iim]])
             dataml.append(datam)
             startp+=self.input_divide[iim]
 
@@ -709,7 +747,9 @@ class Multitube_FF_MLP(torch.nn.Module):
 
         self.contextl = torch.cat(contextl, dim=-1)
         output = torch.cat(gsamplel, dim=-1)
-        output = self.layer_norm1(output)
+        # output = self.layer_norm1(output)
+        # print(torch.mean(output), torch.var(output))
+        output = (output-0.5)/0.3
         return output
 
 class GSVIB_InfoBottleNeck(torch.nn.Module):
@@ -805,7 +845,7 @@ class VIB_InfoBottleNeck(torch.nn.Module):
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.softplus = torch.nn.Softplus()
-        self.vagauss = VariationalGauss()
+        self.vagauss = VariationalGauss(multi_sample_flag=self.multi_sample_flag, sample_size=self.sample_size)
 
         self.save_para = {
             "model_para": model_para,
@@ -816,6 +856,8 @@ class VIB_InfoBottleNeck(torch.nn.Module):
     def para(self,para):
         self.misc_para=para
         self.reg_lamda = para.get("reg_lamda", 0.01) # weight on KL
+        self.multi_sample_flag = para.get("multi_sample_flag", False)
+        self.sample_size = para.get("sample_size", 1)
 
     def set_model_para(self,model_para):
         # model_para = {

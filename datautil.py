@@ -682,8 +682,16 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             idxl, answ = self.question_exist_colorshapesize(color="green", shape = "sphere", size = None, material = None)
         elif self.question_mode == "exist_shapesize":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = "cube", size = "large", material = None)
+        elif self.question_mode == "exist_sizematerial":
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = "small", material = "rubber")
         elif self.question_mode == "posimost_property":
-            idxl, answ = self.question_posimost_colorshapesize(posimost = "leftmost", color=None, shape = "cylinder", size = None, material = None)
+            idxl, answ = self.question_posimost_colorshapesize(posimost = "rightmost", color=None, shape = None, size = None, material = "metal")
+        elif self.question_mode == "posiside_property":
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = None, material = "metal", posi_side = "right")
+        elif self.question_mode == "number_shape":
+            idxl, answ = self.question_number_colorshapesize(key_aim = ["shape","cube"], num = 3)
+        else:
+            raise Exception("Not implemented")
         dataxl = []
         self.imgl=[]
         for idx in idxl:
@@ -691,12 +699,13 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             autocodel = self.getitem_autocodeperobj(idx)
             dataxl.append(autocodel.unsqueeze(0))
             if self.checkmode:
+                print("Image getting ...")
                 img = self.getitem_maskedperobj(idx)
                 self.imgl.append(self.img)
         datax = torch.cat(dataxl,dim=0)
         return datax, answ
 
-    def question_exist_colorshapesize(self, color=None, shape = "cube", size = "large", material = None):
+    def question_exist_colorshapesize(self, color=None, shape = "cube", size = "large", material = None, posi_side = None):
 
         checklist=[]
         if color is not None:
@@ -707,6 +716,21 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             checklist.append(["size",size])
         if material is not None:
             checklist.append(["material",material])
+
+        def checkposi(xy, posi_flag):
+            if posi_flag == "left":
+                if xy[0]/self.img_size[1]<1/3:
+                    return True
+                else:
+                    return False
+            elif posi_flag == "right":
+                if xy[0]/self.img_size[1]>2/3:
+                    return True
+                else:
+                    return False
+            else:
+                raise Exception("Checkposi not implemented")
+
 
         json_scene = self.json_clevr["scenes"]
         Nscene = len(json_scene)
@@ -719,7 +743,8 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
                 andFlag = True
                 for itemd in checklist:
                     andFlag = (andFlag and obj[itemd[0]]==itemd[1])
-                # if obj["color"] == color and obj["shape"] == shape :
+                if posi_side is not None:
+                    andFlag = (andFlag and checkposi(obj["pixel_coords"],posi_side))
                 if andFlag:
                     exist_flag=True
                     break
@@ -734,7 +759,8 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
                 andFlag = True
                 for itemd in checklist:
                     andFlag = (andFlag and obj[itemd[0]] == itemd[1])
-                # if obj["color"] == color and obj["shape"] == shape :
+                if posi_side is not None:
+                    andFlag = (andFlag and checkposi(obj["pixel_coords"],posi_side))
                 if andFlag:
                     exist_flag = True
                     break
@@ -746,7 +772,7 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         np.random.shuffle(idxl)
         return idxl , idxl.index(idp_exist)
 
-    def question_posimost_colorshapesize(self, posimost = "leftmost", color=None, shape = "cylinder", size = None, material = None):
+    def question_posimost_colorshapesize(self, posimost = "rightmost", color=None, shape = None, size = None, material = "metal"):
 
         checklist=[]
         if color is not None:
@@ -831,6 +857,36 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
                 if len(idp_Nexistl) >= 3:
                     break
 
+        idxl = [idp_exist] + idp_Nexistl
+        np.random.shuffle(idxl)
+        return idxl , idxl.index(idp_exist)
+
+    def question_number_colorshapesize(self, key_aim = ["shape","cube"], num = 3):
+
+        json_scene = self.json_clevr["scenes"]
+        Nscene = len(json_scene)
+
+        ## get one exist scene
+        while True:
+            idp_exist = int(np.random.rand()*Nscene)
+            cnt = 0
+            for obj in json_scene[idp_exist]["objects"]:
+                if obj[key_aim[0]] == key_aim[1]:
+                    cnt += 1
+            if cnt == num:
+                break
+        ## get 3 non-exist scene
+        idp_Nexistl=[]
+        while True:
+            idp_Nexist = int(np.random.rand()*Nscene)
+            cnt = 0
+            for obj in json_scene[idp_Nexist]["objects"]:
+                if obj[key_aim[0]] == key_aim[1]:
+                    cnt += 1
+            if cnt != num:
+                idp_Nexistl.append(idp_Nexist)
+                if len(idp_Nexistl) >= 3:
+                    break
         idxl = [idp_exist] + idp_Nexistl
         np.random.shuffle(idxl)
         return idxl , idxl.index(idp_exist)

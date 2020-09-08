@@ -564,6 +564,8 @@ class PyTrain_Main(object):
 
         for ii_epoch in range(epoch):
             print("Starting epoch %s." % str(ii_epoch))
+            self.model.loss_mode = "train"
+            self.model.train()
 
             for iis,(datax, labels) in enumerate(self.data_dict["train"]):
 
@@ -590,6 +592,7 @@ class PyTrain_Main(object):
 
     def do_eval(self, data_pt = "val", eval_mem_flag=False):
         self.model.eval()
+        self.model.loss_mode="eval"
         # Validation
         lossl = []
         print("Start evaluation ...")
@@ -619,8 +622,13 @@ class PyTrain_Main(object):
                 loss = self.model(datax.to(self.device), labels.to(self.device), schedule=1.0)
                 output = self.model.output.cpu()
                 _, predicted = torch.max(output, 1)
-                total += len(labels.view(-1))
-                correct += (predicted == labels).sum().item()
+                if len(predicted.shape)==1:
+                    total += len(labels)
+                    correct += (predicted == labels).sum().item()
+                else:
+                    labels = labels.view(labels.shape[0],1).expand(labels.shape[0],predicted.shape[1])
+                    total += labels.shape[0]*labels.shape[1]
+                    correct += (predicted == labels).sum().item()
         crate = correct / total
         print("Correct rate: ", correct / total)
 
