@@ -916,17 +916,18 @@ def sort_w_arg(datal,down_order=True,top_k=None):
         ids, data = list(zip(*res))
     return ids, data
 
-def one_hot(ind_mat,n_digits,cuda_device="cuda:0"):
+def one_hot(ind_mat,n_digits):
     """
     Generate one hot matrix with ind_mat
     :param mat: LongTensor [N1,N2,...]
     :return: LongTensor [N1,N2,...,vec_onehot]
     """
+    device = ind_mat.device
     rshape=list(ind_mat.shape)
     vshape = list(ind_mat.shape)
     rshape.append(n_digits)
     vshape.append(1)
-    res_onehot = torch.zeros(rshape).to(cuda_device)
+    res_onehot = torch.zeros(rshape).to(device)
     res_onehot.scatter_(-1,ind_mat.view(vshape),1)
     return res_onehot
 

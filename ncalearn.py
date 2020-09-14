@@ -637,11 +637,12 @@ class PyTrain_Main(object):
     def eval_mem(self, datax, labels, model):
         if self.evalmem is None:
             # self.evalmem = []
-            self.evalmem = [[],[]]  # x,label,context
+            self.evalmem = [[],[],[]]  # x,label,context
 
         if self.eval_mode == "task2":
             self.evalmem[0].append(model.model.out_seq1.detach().cpu().numpy())
             self.evalmem[1].append(model.model.seq1_coop.contextl.detach().cpu().numpy())
+            self.evalmem[2].append(model.model.seq1_coop.output.detach().cpu().numpy())
         if self.eval_mode == "cnn_sup":
             self.evalmem[0].append(model.model.context.detach().cpu().numpy())
         if self.eval_mode == "auto_encode":

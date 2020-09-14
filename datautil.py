@@ -511,11 +511,14 @@ class ClevrDataset(torch.utils.data.Dataset):
         self.shape_map = {
             "cube": 0, "cylinder": 1, "sphere": 2
         }
+        self.material_map = {
+            "metal":0, "rubber":1
+        }
 
     def __getitem__(self, idx):
         if self.get_mode == "full":
             return self.getitem_full(idx)
-        elif self.get_mode in ["maskedimage_colorshape","maskedimage_posicolorshape","auto_encode"]:
+        elif self.get_mode in ["maskedimage_colorshape","maskedimage_posicolorshape","maskedimage_posicolormaterial","auto_encode"]:
             return self.getitem_mask_posicolorshape(idx)
         elif self.get_mode == "whole_pic_auto":
             return self.getitem_mask_wholepicauto(idx)
@@ -581,12 +584,16 @@ class ClevrDataset(torch.utils.data.Dataset):
         posiy = json_scene["objects"][objp]["pixel_coords"][1] / self.img_size[0]
         color = self.color_map[json_scene["objects"][objp]["color"]]
         shape = self.shape_map[json_scene["objects"][objp]["shape"]]
+        material = self.material_map[json_scene["objects"][objp]["material"]]
 
         if self.get_mode =="maskedimage_posicolorshape":
             return masked_img, np.array([float(posix),float(posiy),color,shape])
 
         elif self.get_mode =="maskedimage_colorshape":
             return masked_img, np.array([color,shape])
+
+        elif self.get_mode =="maskedimage_posicolormaterial":
+            return masked_img, np.array([float(posix),float(posiy),color,material])
 
         elif self.get_mode == "auto_encode":
             return masked_img, masked_img
@@ -679,21 +686,26 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         """
         ## get a random sets of imgs of a question and an answer
         if self.question_mode == "exist_colorshape":
-            idxl, answ = self.question_exist_colorshapesize(color="green", shape = "sphere", size = None, material = None)
+            idxl, answ = self.question_exist_colorshapesize(color="red", shape = "cube", size = None, material = None)
         elif self.question_mode == "exist_shapesize":
-            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "cube", size = "large", material = None)
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "sphere", size = "large", material = None)
         elif self.question_mode == "exist_sizematerial":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = "small", material = "rubber")
+        elif self.question_mode == "exist_sizecolor":
+            idxl, answ = self.question_exist_colorshapesize(color="yellow", shape = None, size = "small", material = None)
+        elif self.question_mode == "exist_colormaterial":
+            idxl, answ = self.question_exist_colorshapesize(color="green", shape = None, size = None, material = "metal")
         elif self.question_mode == "posimost_property":
-            idxl, answ = self.question_posimost_colorshapesize(posimost = "rightmost", color=None, shape = None, size = None, material = "metal")
+            idxl, answ = self.question_posimost_colorshapesize(posimost = "rightmost", color=None, shape = "cylinder", size = None, material = None)
         elif self.question_mode == "posiside_property":
-            idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = None, material = "metal", posi_side = "right")
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = None, material = "rubber", posi_side = "left")
         elif self.question_mode == "number_shape":
             idxl, answ = self.question_number_colorshapesize(key_aim = ["shape","cube"], num = 3)
         else:
             raise Exception("Not implemented")
         dataxl = []
         self.imgl=[]
+        self.mask_tl=[]
         for idx in idxl:
             # dataxl.append(img.unsqueeze(0))
             autocodel = self.getitem_autocodeperobj(idx)
@@ -702,6 +714,8 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
                 print("Image getting ...")
                 img = self.getitem_maskedperobj(idx)
                 self.imgl.append(self.img)
+                self.mask_tl.append(self.mask_t)
+                self.idxl = idxl
         datax = torch.cat(dataxl,dim=0)
         return datax, answ
 
@@ -901,6 +915,8 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
 
         Nobj = len(json_scene["objects"])
         masked_imgl = torch.zeros([10, 3]+self.img_size).type(torch.FloatTensor)
+
+        mask_t = np.zeros(self.img_size)
         for objp in range(Nobj):
             rle = json_scene["objects"][objp]["mask"]
             compressed_rle = coco_mask.frPyObjects(rle, rle.get('size')[0], rle.get('size')[1])
@@ -909,6 +925,9 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             masked_img = np.transpose(masked_img, (2, 0, 1))
             masked_img = torch.from_numpy(masked_img).type(torch.FloatTensor)
             masked_imgl[objp,:,:,:]=masked_img
+            maskid = mask * (objp + 1)
+            mask_t = mask_t + maskid
+        self.mask_t=mask_t
 
         return masked_imgl # [10, 3, 320, 480]
 

@@ -10,7 +10,7 @@ from __future__ import print_function
 import numpy as np
 import torch
 from ncautil.seqmultip2 import FF_MLP, Gumbel_Softmax, VariationalGauss
-
+from ncautil.ncamath import one_hot
 
 def cnn_outszie(HWin, kernel_size, stride=1, padding=0, dilation=1):
     HWout = (HWin+2*padding-dilation*(kernel_size-1)-1)/stride+1
@@ -43,20 +43,13 @@ class CAL_LOSS(torch.nn.Module):
             loss = self.MSELoss(output, labels[...,:output.shape[-2],:output.shape[-1]])*10000
         elif self.loss_flag == "posicolorshape_loss":
             loss = self.posiColorShapeLoss(output, labels)
+        else:
+            raise Exception("Not implemented")
 
         # print("Loss,",loss)
         if self.loss_mode=="train":
             loss = self.cal_loss_reg_recursize(self.model, loss)
-            # print("Train Loss,", loss)
 
-        # if hasattr(self.model, "loss_reg"):
-        #     loss = loss +self.model.loss_reg
-        #     print("A",self.model.loss_reg)
-        # if hasattr(self.model, "submodels"):
-        #     for submodel in self.model.submodels:
-        #         if hasattr(submodel, "loss_reg"):
-        #             loss = loss + submodel.loss_reg
-        #             print("B", submodel.loss_reg)
         return loss
 
     def cal_loss_reg_recursize(self, model, loss):
@@ -77,7 +70,7 @@ class CAL_LOSS(torch.nn.Module):
         self.sample_mode = para.get("sample_mode", False)
         self.sample_size = para.get("sample_size", 1)
 
-    def posiColorShapeLoss(self, output, labels):
+    def posiColorShapeLoss(self, output, labels): # Also good for posiColorMaterial
 
         device=output.device
         loss_mse = torch.nn.MSELoss()
@@ -90,27 +83,6 @@ class CAL_LOSS(torch.nn.Module):
         print(lossposi, losscolor, lossshape)
         loss = losscolor+lossshape+lossposi
         return loss
-
-        ## Loss, posi
-        self.output = output
-        # device = datax.device
-        # if self.loss_flag == "posicolorshape":
-        #     loss_mse = torch.nn.MSELoss()
-        #         #     lossposi = loss_mse(output[:,0:2],labels[:,0:2].type(torch.FloatTensor).to(device))
-        #         #     ## Loss, color
-        #         #     lossc = torch.nn.CrossEntropyLoss()
-        #         #     losscolor = lossc(output[:, 2:10], labels[:, 2].type(torch.LongTensor).to(device))
-        #         #     ## Loss, shape
-        #         #     lossshape = lossc(output[:, 10:], labels[:, 3].type(torch.LongTensor).to(device))
-        #         #     loss = losscolor+lossshape+lossposi
-        # elif self.loss_flag == "colorshape":
-        #     ## Loss, color
-        #     lossc = torch.nn.CrossEntropyLoss()
-        #     losscolor = lossc(output[:, :8], labels[:,0].type(torch.LongTensor).to(device))
-        #     ## Loss, shape
-        #     lossshape = lossc(output[:, 8:], labels[:, 1].type(torch.LongTensor).to(device))
-        #     loss = losscolor+lossshape
-
 
     def CrossEntropyLoss(self, output, labels):
         device = labels.device
@@ -720,8 +692,8 @@ class Multitube_FF_MLP(torch.nn.Module):
         ## Preprocessing
         outputp = self.infobnvib(datax[..., :4], schedule=1.0)
         output0 = self.gsoftmax(datax[... , 4:12], temperature=np.exp(-5))
-        output1 = self.gsoftmax(datax[... , 12:15], temperature=np.exp(-5))
-        output2 = self.gsoftmax(datax[... , 15:].view([*datax.shape[0:-1], -1, 2]), temperature=np.exp(-5))
+        output1 = self.gsoftmax(datax[... , 12:14], temperature=np.exp(-5))
+        output2 = self.gsoftmax(datax[... , 14:].view([*datax.shape[0:-1], -1, 2]), temperature=np.exp(-5))
         output2 = output2.view([*output2.shape[0:-2], -1])
         datax = torch.cat([outputp, output0, output1, output2], dim=-1)
         # datax = self.layer_norm0(datax)
@@ -747,6 +719,7 @@ class Multitube_FF_MLP(torch.nn.Module):
 
         self.contextl = torch.cat(contextl, dim=-1)
         output = torch.cat(gsamplel, dim=-1)
+        self.output = output
         # output = self.layer_norm1(output)
         # print(torch.mean(output), torch.var(output))
         output = (output-0.5)/0.3
@@ -811,7 +784,11 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         context = self.softmax(context)
         self.context = context
         self.contextl = context.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+        # if not self.test_mode:
         gssample = self.gsoftmax(context, temperature=temperature)
+        # else:
+        # maxind = torch.argmax(context,dim=-1)
+        # gssample = one_hot(maxind, 2)
 
         self.loss_reg = self.cal_regloss()
 
