@@ -572,8 +572,11 @@ class PyTrain_Main(object):
                 step_per_epoch=len(self.data_dict["train"])
                 ii_tot = iis + ii_epoch * step_per_epoch
                 cstep = ii_tot / (epoch * step_per_epoch)
-
-                loss = pt_model(datax.to(self.device), labels.to(self.device), schedule=cstep)
+                try:
+                    datax = datax.to(self.device)
+                except:
+                    datax = [item.to(self.device) for item in datax]
+                loss = pt_model(datax, labels.to(self.device), schedule=cstep)
                 self._profiler(ii_tot, loss, print_step=print_step)
 
                 optimizer.zero_grad()
@@ -598,7 +601,11 @@ class PyTrain_Main(object):
         print("Start evaluation ...")
         for iis, (datax, labels) in enumerate(self.data_dict[data_pt]):
             with torch.no_grad():
-                loss = self.model(datax.to(self.device), labels.to(self.device), schedule=1.0)
+                try:
+                    datax = datax.to(self.device)
+                except:
+                    datax = [item.to(self.device) for item in datax]
+                loss = self.model(datax, labels.to(self.device), schedule=1.0)
                 lossl.append(loss.item())
                 if eval_mem_flag:
                     self.eval_mem(datax, labels, self.model)
@@ -619,7 +626,11 @@ class PyTrain_Main(object):
         correct = 0
         for iis, (datax, labels) in enumerate(self.data_dict[data_pt]):
             with torch.no_grad():
-                loss = self.model(datax.to(self.device), labels.to(self.device), schedule=1.0)
+                try:
+                    datax = datax.to(self.device)
+                except:
+                    datax = [item.to(self.device) for item in datax]
+                loss = self.model(datax, labels.to(self.device), schedule=1.0)
                 output = self.model.output.cpu()
                 _, predicted = torch.max(output, 1)
                 if len(predicted.shape)==1:
@@ -640,9 +651,9 @@ class PyTrain_Main(object):
             self.evalmem = [[],[],[]]  # x,label,context
 
         if self.eval_mode == "task2":
-            self.evalmem[0].append(model.model.out_seq1.detach().cpu().numpy())
+            self.evalmem[0].append(model.model.seq1_coop.output.detach().cpu().numpy())
             self.evalmem[1].append(model.model.seq1_coop.contextl.detach().cpu().numpy())
-            self.evalmem[2].append(model.model.seq1_coop.output.detach().cpu().numpy())
+            self.evalmem[2].append(datax[1].cpu().numpy())
         if self.eval_mode == "cnn_sup":
             self.evalmem[0].append(model.model.context.detach().cpu().numpy())
         if self.eval_mode == "auto_encode":

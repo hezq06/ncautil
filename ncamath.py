@@ -468,6 +468,34 @@ def pltsne(data,D=2,perp=1,labels=None):
     plt.show()
     return tsnetrainer
 
+def align_to(shape_from, shape_to):
+    """
+    Align shape from [128,10,4] to [128,10,7,4,40]
+    :param shape_from:
+    :param shape_to:
+    :return: [128,10,1,4,1]
+    """
+    shape_re = []
+    for id in shape_to:
+        if id in shape_from:
+            shape_re.append(id)
+        else:
+            shape_re.append(1)
+    return shape_re
+
+def check_shape(data):
+    """
+    Check the shape of a hybrid data
+    :param data:
+    :return:
+    """
+    try:
+        print(np.array(data).shape)
+    except:
+        print("No shape available")
+        print(len(data))
+        check_shape(data[0])
+
 def cal_cosdist(v1,v2):
     """
     Calculate cosine distance between two word embedding vectors

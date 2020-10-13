@@ -10,7 +10,8 @@ from __future__ import print_function
 import numpy as np
 import torch
 from ncautil.seqmultip2 import FF_MLP, Gumbel_Softmax, VariationalGauss
-from ncautil.ncamath import one_hot
+from ncautil.ncamath import one_hot, align_to
+from ncautil.ptfunction import GaussNoise
 
 def cnn_outszie(HWin, kernel_size, stride=1, padding=0, dilation=1):
     HWout = (HWin+2*padding-dilation*(kernel_size-1)-1)/stride+1
@@ -138,7 +139,6 @@ class ABS_CNN_SEQ(torch.nn.Module):
         self.auto_code_context_flag = para.get("auto_code_context_flag",False)
 
     def forward(self, datax, schedule=1.0):
-        self.device = datax.device
         if self.seq1_coop_train_flag:
             out_seq1 = self.seq1_coop(datax, schedule=schedule)
         else:
@@ -260,6 +260,9 @@ class ConvNet(torch.nn.Module):
             self.infobn=GSVIB_InfoBottleNeck(self.infobn_model,para=self.infobn_para)
         elif self.postprocess_mode == "posicolorshape_VIB":
             self.infobn = VIB_InfoBottleNeck(self.infobn_model, para=self.infobn_para)
+        elif self.postprocess_mode == "gaussian_noise":
+            self.gauss_noise = GaussNoise(std=self.noise_std)
+
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
@@ -273,6 +276,7 @@ class ConvNet(torch.nn.Module):
     def para(self,para):
         self.misc_para = para
         self.postprocess_mode = para.get("postprocess_mode", "posicolorshape_VIB")
+        self.noise_std = para.get("noise_std",0.5e-2)
         self.infobn_para = para.get("infobn_para", None)
         self.sfmsample_flag = para.get("sfmsample_flag", False)
         self.sample_mode = para.get("sample_mode", False)
@@ -333,6 +337,20 @@ class ConvNet(torch.nn.Module):
             self.context = torch.cat([output[..., :4], outputcs, outputss], dim=-1)
             if not self.sfmsample_flag:
                 self.output = torch.cat([outputp,output[..., 4:]], dim=-1)
+                return self.output
+            else:
+                outputc = self.gsoftmax(outputcs, temperature=np.exp(-5))
+                outputs = self.gsoftmax(outputss, temperature=np.exp(-5))
+                output = torch.cat([outputp,outputc,outputs],dim=-1)
+                self.output = output
+                return output
+        elif self.postprocess_mode == "gaussian_noise":
+            outputp = self.gauss_noise(output[..., :2])
+            outputcs = self.softmax(output[:, 2:10])
+            outputss = self.softmax(output[:, 10:])
+            self.context = torch.cat([outputp, outputcs, outputss], dim=-1)
+            if not self.sfmsample_flag:
+                self.output = torch.cat([outputp,output[..., 2:]], dim=-1)
                 return self.output
             else:
                 outputc = self.gsoftmax(outputcs, temperature=np.exp(-5))
@@ -648,6 +666,7 @@ class Multitube_FF_MLP(torch.nn.Module):
         # self.batch_norm0 = torch.nn.BatchNorm2d(4)
         # self.batch_norm1 = torch.nn.BatchNorm2d(4)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
+        self.gauss_noise = GaussNoise(std=self.noise_std)
 
         self.save_para = {
             "model_para": model_para,
@@ -660,6 +679,7 @@ class Multitube_FF_MLP(torch.nn.Module):
         self.infobn_para = para.get("infobn_para", None)
         self.sample_mode = para.get("sample_mode", False)
         self.sample_size = para.get("sample_size", 1)
+        self.noise_std = para.get("noise_std",0.2e-2)
 
     def set_model_para(self,model_para):
         # model_para_h={
@@ -679,7 +699,7 @@ class Multitube_FF_MLP(torch.nn.Module):
         self.mlp_layer_para = model_para["mlp_layer_para"] # [hidden0l, hidden1l, ...]
         self.infobn_model = model_para.get("infobn_model", None)
 
-    def forward(self, datax, schedule=None):
+    def forward(self, dataxt, schedule=None):
         """
         Forward
         :param input: [window batch l_size]
@@ -690,15 +710,19 @@ class Multitube_FF_MLP(torch.nn.Module):
         # if self.sfmsample_flag:
         #     if self.loss_flag == "posicolorshape":
         ## Preprocessing
-        outputp = self.infobnvib(datax[..., :4], schedule=1.0)
-        output0 = self.gsoftmax(datax[... , 4:12], temperature=np.exp(-5))
-        output1 = self.gsoftmax(datax[... , 12:14], temperature=np.exp(-5))
-        output2 = self.gsoftmax(datax[... , 14:].view([*datax.shape[0:-1], -1, 2]), temperature=np.exp(-5))
+        datax = dataxt[0]
+        # outputp = self.infobnvib(datax[..., :4], schedule=1.0)
+        outputp = self.gauss_noise(datax[..., :2])
+        if self.sample_mode:
+            outputp = outputp.view([*outputp.shape[:2],1,*outputp.shape[2:]]).expand([*outputp.shape[:2],self.sample_size,*outputp.shape[2:]])
+        output0 = self.gsoftmax(datax[... , 2:10], temperature=np.exp(-5))
+        output1 = self.gsoftmax(datax[... , 10:12], temperature=np.exp(-5))
+        output2 = self.gsoftmax(datax[... , 12:].view([*datax.shape[0:-1], -1, 2]), temperature=np.exp(-5))
         output2 = output2.view([*output2.shape[0:-2], -1])
         datax = torch.cat([outputp, output0, output1, output2], dim=-1)
         # datax = self.layer_norm0(datax)
         # print(torch.mean(datax), torch.var(datax))
-        datax = (datax-0.4495)/0.5
+        datax = (datax-0.45)/np.sqrt(0.25)
 
         startp=0
         dataml=[]
@@ -719,10 +743,14 @@ class Multitube_FF_MLP(torch.nn.Module):
 
         self.contextl = torch.cat(contextl, dim=-1)
         output = torch.cat(gsamplel, dim=-1)
+        objNl = dataxt[1]
+        reshape = align_to(objNl.shape, output.shape)
+        output = output*objNl.view(reshape)
         self.output = output
         # output = self.layer_norm1(output)
         # print(torch.mean(output), torch.var(output))
-        output = (output-0.5)/0.3
+        output = (output-0.3)/np.sqrt(0.1)
+
         return output
 
 class GSVIB_InfoBottleNeck(torch.nn.Module):

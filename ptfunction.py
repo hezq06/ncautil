@@ -502,24 +502,15 @@ class GaussNoise(torch.nn.Module):
     """
     A gaussian noise module
     """
-    def __init__(self, shape, std=0.1, cuda_device="cuda:0"):
+    def __init__(self, std=0.1):
 
         super(self.__class__, self).__init__()
-
-        self.noise = torch.autograd.Variable(torch.zeros(shape))
         self.std = std
 
-        self.gpuavail = torch.cuda.is_available()
-        if self.gpuavail:
-            self.cuda_device=cuda_device
-            self.noise=self.noise.to(cuda_device)
-
     def forward(self, x):
-        if not self.training:
-            return x
-        else:
-            self.noise.data.normal_(0, std=self.std)
-        return x + self.noise
+        noise = torch.zeros(x.shape).to(x.device)
+        noise.data.normal_(0, std=self.std)
+        return x + noise
 
 class BackHook(torch.nn.Module):
     def __init__(self, hook):

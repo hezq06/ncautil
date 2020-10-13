@@ -24,6 +24,7 @@ from tqdm import tqdm,tqdm_notebook
 from torchvision import datasets
 from PIL import Image
 from pycocotools import mask as coco_mask
+from ncautil.ncamath import check_shape
 
 # def save(item,path):
 #     # torch.save(model.state_dict(), path))
@@ -667,6 +668,7 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         self.img_size = [320, 480] # [H, W]
         self.question_mode = question_mode
         self.checkmode = False
+        self.singlecheckmode = False
 
         self.imgs = []
         print("Parsing dataset ...")
@@ -689,6 +691,8 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             idxl, answ = self.question_exist_colorshapesize(color="red", shape = "cube", size = None, material = None)
         elif self.question_mode == "exist_shapesize":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = "sphere", size = "large", material = None)
+        elif self.question_mode == "exist_shapesize2":
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "cylinder", size = "large", material = None)
         elif self.question_mode == "exist_sizematerial":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = "small", material = "rubber")
         elif self.question_mode == "exist_sizecolor":
@@ -699,6 +703,10 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             idxl, answ = self.question_posimost_colorshapesize(posimost = "rightmost", color=None, shape = "cylinder", size = None, material = None)
         elif self.question_mode == "posiside_property":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = None, material = "rubber", posi_side = "left")
+        elif self.question_mode == "posiside_property2":
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "cylinder", size = None, material = None, posi_side = "right")
+        elif self.question_mode == "posiside_property3":
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "sphere", size = None, material = None, posi_side = "right")
         elif self.question_mode == "number_shape":
             idxl, answ = self.question_number_colorshapesize(key_aim = ["shape","cube"], num = 3)
         else:
@@ -706,18 +714,42 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         dataxl = []
         self.imgl=[]
         self.mask_tl=[]
+        Nobjl = []
+        singecheckl=[]
         for idx in idxl:
             # dataxl.append(img.unsqueeze(0))
-            autocodel = self.getitem_autocodeperobj(idx)
+            autocodel, Nobj = self.getitem_autocodeperobj(idx)
             dataxl.append(autocodel.unsqueeze(0))
+            Nobjv = torch.zeros(10)
+            Nobjv[:Nobj]=1
+            Nobjl.append(Nobjv)
             if self.checkmode:
                 print("Image getting ...")
                 img = self.getitem_maskedperobj(idx)
                 self.imgl.append(self.img)
                 self.mask_tl.append(self.mask_t)
                 self.idxl = idxl
+            if self.singlecheckmode:
+                # print(self.singlecheck.shape) # torch.Size([4, 10])
+                singecheckl.append(self.singlecheck)
+
         datax = torch.cat(dataxl,dim=0)
-        return datax, answ
+        Nobjl = torch.stack(Nobjl)
+        singecheckmat = torch.stack(singecheckl)
+        return datax, Nobjl, answ, singecheckmat
+
+    def collate_fn(self, batchdata):
+        datax = [item[0].view([1]+list(item[0].shape)) for item in batchdata]
+        Nobjl = [item[1].view([1]+list(item[1].shape)) for item in batchdata]
+        answ = [item[2] for item in batchdata]
+        datax = torch.cat(datax,dim=0)
+        Nobjl = torch.cat(Nobjl, dim=0)
+        answ = torch.LongTensor(answ)
+
+        batchcheckmat = [item[3].view([1] + list(item[3].shape)) for item in batchdata]
+        batchcheckmat = torch.cat(batchcheckmat, dim=0)
+
+        return (datax, Nobjl), answ, batchcheckmat
 
     def question_exist_colorshapesize(self, color=None, shape = "cube", size = "large", material = None, posi_side = None):
 
@@ -941,7 +973,23 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         for objp in range(Nobj):
             autocodel[objp,:] = torch.from_numpy(json_scene["objects"][objp]["auto_code"]).type(torch.FloatTensor)
 
-        return autocodel
+        self.singlecheck = torch.zeros((10,4))
+        for iio in range(Nobj):
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="yellow":
+            #     self.singlecheck[1, iio]=1
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["size"]=="small":
+            #     self.singlecheck[3, iio] = 1
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="red":
+            #     self.singlecheck[iio, 1]=1
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cube":
+            #     self.singlecheck[iio, 3] = 1
+            if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cylinder":
+                self.singlecheck[iio, 3] = 1
+            posix = self.json_clevr["scenes"][idx]['objects'][iio]["pixel_coords"][0]
+            if posix/self.img_size[1]>2/3: # right side
+                self.singlecheck[iio, 0] = 1
+
+        return autocodel, Nobj
 
     def __len__(self):
         return self.epoch_len
