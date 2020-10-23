@@ -70,7 +70,7 @@ def pltscatter3D(data,labels=None,title=None,xlabel=None,ylabel=None):
         plt.ylabel(ylabel)
     plt.show()
 
-def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,show=True,xlabel=None,ylabel=None):
+def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,show=True,xlabel=None,ylabel=None, clim=None):
     if show:
         plt.figure()
     data=np.array(data)
@@ -81,7 +81,7 @@ def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,sho
         plt.imshow(img, cmap='seismic',clim=(-np.amax(np.abs(data)), np.amax(np.abs(data))))
         # plt.imshow(img, cmap='seismic', clim=(-2,2))
     else:
-        plt.imshow(img, cmap='seismic')
+        plt.imshow(img, cmap='seismic',clim=clim)
     plt.colorbar()
     if title is not None:
         plt.title(title)

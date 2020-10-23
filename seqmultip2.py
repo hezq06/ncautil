@@ -1706,6 +1706,9 @@ class FF_MLP(torch.nn.Module):
         """
         self.cuda_device=inputx.device
 
+        # print(torch.mean(inputx), torch.var(inputx))
+        inputx = (inputx - 0.5) / np.sqrt(0.25)
+
         hidden = inputx
         if len(self.mlp_layer_para) > 0:
             for fmd in self.linear_layer_stack:

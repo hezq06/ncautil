@@ -910,6 +910,24 @@ def sample_id(prob, shape):
 
     return tsmat
 
+def sample_exponetial(lamda):
+    """
+    Sample from exponetial distribution
+    :param lamda:
+    :return:
+    """
+    u = np.random.rand()
+    x = - 1/lamda *np.log(u)
+    return x
+
+def sample_levy(c, size=1):
+    u = np.random.normal(loc=0, scale=np.sqrt(1/c), size=size)
+    x = 1/(u**2)
+    return x
+
+def sample_gamma(alpha, beta, size=1):
+    return np.random.gamma(alpha, 1/beta, size=size) # Be careful, numpy use scale and pytorch use rate, they are different
+
 def sort_w_arg(datal,down_order=True,top_k=None):
     """
     Sort data list with arg index information
@@ -977,6 +995,9 @@ def softplus(x):
 def sigmoid(x):
     res=np.exp(x)/(np.exp(x)+1)
     return res
+
+def softplus(x):
+    return np.log(1+np.exp(x))
 
 def relu(x):
     x=np.array(x)

@@ -44,6 +44,8 @@ class CAL_LOSS(torch.nn.Module):
             loss = self.MSELoss(output, labels[...,:output.shape[-2],:output.shape[-1]])*10000
         elif self.loss_flag == "posicolorshape_loss":
             loss = self.posiColorShapeLoss(output, labels)
+        elif self.loss_flag == "posishapematerial_loss":
+            loss = self.posiShapeMaterialLoss(output, labels)
         else:
             raise Exception("Not implemented")
 
@@ -66,7 +68,7 @@ class CAL_LOSS(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
-        self.loss_flag = para.get("loss_flag", "posicolorshape_loss")
+        self.loss_flag = para.get("loss_flag", "posishapematerial_loss")
         self.loss_mode = para.get("loss_mode", "train")
         self.sample_mode = para.get("sample_mode", False)
         self.sample_size = para.get("sample_size", 1)
@@ -83,6 +85,20 @@ class CAL_LOSS(torch.nn.Module):
         lossshape = lossc(output[:, 10:], labels[:, 3].type(torch.LongTensor).to(device))
         print(lossposi, losscolor, lossshape)
         loss = losscolor+lossshape+lossposi
+        return loss
+
+    def posiShapeMaterialLoss(self, output, labels):
+
+        device=output.device
+        loss_mse = torch.nn.MSELoss()
+        lossposi = torch.sqrt(loss_mse(output[:,0:2],labels[:,0:2].type(torch.FloatTensor).to(device)))
+        ## Loss, shape
+        lossc = torch.nn.CrossEntropyLoss()
+        lossshape = lossc(output[:, 2:5], labels[:, 2].type(torch.LongTensor).to(device))
+        ## Loss, material
+        lossmaterial = lossc(output[:, 5:], labels[:, 3].type(torch.LongTensor).to(device))
+        # print(lossposi, lossshape, lossmaterial)
+        loss = lossposi+lossshape+lossmaterial
         return loss
 
     def CrossEntropyLoss(self, output, labels):
@@ -276,7 +292,8 @@ class ConvNet(torch.nn.Module):
     def para(self,para):
         self.misc_para = para
         self.postprocess_mode = para.get("postprocess_mode", "posicolorshape_VIB")
-        self.noise_std = para.get("noise_std",0.5e-2)
+        self.postprocess_partition = para.get("postprocess_partition", [2,5,7])
+        self.noise_std = para.get("noise_std",0.2e-2)
         self.infobn_para = para.get("infobn_para", None)
         self.sfmsample_flag = para.get("sfmsample_flag", False)
         self.sample_mode = para.get("sample_mode", False)
@@ -330,13 +347,15 @@ class ConvNet(torch.nn.Module):
             self.output = output
             return output
         elif self.postprocess_mode == "posicolorshape_VIB":
-            outputp = self.infobn(output[..., :4], schedule=schedule)
+            sep1 = self.postprocess_partition[0]
+            sep2 = self.postprocess_partition[1]
+            outputp = self.infobn(output[..., :sep1], schedule=schedule)
             self.loss_reg = self.infobn.cal_regloss()
-            outputcs = self.softmax(output[:, 4:12])
-            outputss = self.softmax(output[:, 12:])
-            self.context = torch.cat([output[..., :4], outputcs, outputss], dim=-1)
+            outputcs = self.softmax(output[:, sep1:sep2])
+            outputss = self.softmax(output[:, sep2:])
+            self.context = torch.cat([output[..., :sep1], outputcs, outputss], dim=-1)
             if not self.sfmsample_flag:
-                self.output = torch.cat([outputp,output[..., 4:]], dim=-1)
+                self.output = torch.cat([outputp,output[..., sep1:]], dim=-1)
                 return self.output
             else:
                 outputc = self.gsoftmax(outputcs, temperature=np.exp(-5))
@@ -345,12 +364,14 @@ class ConvNet(torch.nn.Module):
                 self.output = output
                 return output
         elif self.postprocess_mode == "gaussian_noise":
-            outputp = self.gauss_noise(output[..., :2])
-            outputcs = self.softmax(output[:, 2:10])
-            outputss = self.softmax(output[:, 10:])
+            sep1 = self.postprocess_partition[0]
+            sep2 = self.postprocess_partition[1]
+            outputp = self.gauss_noise(output[..., :sep1])
+            outputcs = self.softmax(output[:, sep1:sep2])
+            outputss = self.softmax(output[:, sep2:])
             self.context = torch.cat([outputp, outputcs, outputss], dim=-1)
             if not self.sfmsample_flag:
-                self.output = torch.cat([outputp,output[..., 2:]], dim=-1)
+                self.output = torch.cat([outputp,output[..., sep1:]], dim=-1)
                 return self.output
             else:
                 outputc = self.gsoftmax(outputcs, temperature=np.exp(-5))

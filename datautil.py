@@ -468,7 +468,7 @@ class MNIST_dataset(object):
         self.dataset_sup_test["label"] = data_test.test_labels
 
 class ClevrDataset(torch.utils.data.Dataset):
-    def __init__(self, json_path, image_path, get_mode="maskedimage_colorshape"):
+    def __init__(self, json_path, image_path, get_mode="maskedimage_posishapematerial"):
         """
         Clevr Dataset Util
         :param path: pictures path
@@ -519,7 +519,8 @@ class ClevrDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         if self.get_mode == "full":
             return self.getitem_full(idx)
-        elif self.get_mode in ["maskedimage_colorshape","maskedimage_posicolorshape","maskedimage_posicolormaterial","auto_encode"]:
+        elif self.get_mode in ["maskedimage_colorshape","maskedimage_posicolorshape","maskedimage_posicolormaterial","auto_encode","maskedimage_posishapematerial"
+                               ,"maskedimage_shape","maskedimage_color", "maskedimage_posi"]:
             return self.getitem_mask_posicolorshape(idx)
         elif self.get_mode == "whole_pic_auto":
             return self.getitem_mask_wholepicauto(idx)
@@ -593,8 +594,24 @@ class ClevrDataset(torch.utils.data.Dataset):
         elif self.get_mode =="maskedimage_colorshape":
             return masked_img, np.array([color,shape])
 
-        elif self.get_mode =="maskedimage_posicolormaterial":
-            return masked_img, np.array([float(posix),float(posiy),color,material])
+        elif self.get_mode == "maskedimage_posicolormaterial":
+            return masked_img, np.array([float(posix),float(posiy),color, material])
+
+        elif self.get_mode == "maskedimage_posishapematerial":
+            return masked_img, np.array([float(posix), float(posiy), shape, material])
+
+        elif self.get_mode == "maskedimage_shape":
+            return masked_img, shape
+
+        elif self.get_mode == "maskedimage_color":
+            return masked_img, color
+
+        elif self.get_mode == "maskedimage_posi":
+            if posix>2/3:
+                posi_right=1
+            else:
+                posi_right=0
+            return masked_img, posi_right
 
         elif self.get_mode == "auto_encode":
             return masked_img, masked_img
@@ -704,9 +721,11 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         elif self.question_mode == "posiside_property":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = None, material = "rubber", posi_side = "left")
         elif self.question_mode == "posiside_property2":
-            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "cylinder", size = None, material = None, posi_side = "right")
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = "small", material = None, posi_side = "right")
         elif self.question_mode == "posiside_property3":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = "sphere", size = None, material = None, posi_side = "right")
+        elif self.question_mode == "posimost_property2":
+            idxl, answ = self.question_posimost_colorshapesize(posimost = "rightmost", color=None, shape = None, size = "small", material = None)
         elif self.question_mode == "number_shape":
             idxl, answ = self.question_number_colorshapesize(key_aim = ["shape","cube"], num = 3)
         else:
@@ -735,8 +754,11 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
 
         datax = torch.cat(dataxl,dim=0)
         Nobjl = torch.stack(Nobjl)
-        singecheckmat = torch.stack(singecheckl)
-        return datax, Nobjl, answ, singecheckmat
+        if self.singlecheckmode:
+            singecheckmat = torch.stack(singecheckl)
+            return datax, Nobjl, answ, singecheckmat
+        else:
+            return datax, Nobjl, answ
 
     def collate_fn(self, batchdata):
         datax = [item[0].view([1]+list(item[0].shape)) for item in batchdata]
@@ -745,11 +767,12 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         datax = torch.cat(datax,dim=0)
         Nobjl = torch.cat(Nobjl, dim=0)
         answ = torch.LongTensor(answ)
-
-        batchcheckmat = [item[3].view([1] + list(item[3].shape)) for item in batchdata]
-        batchcheckmat = torch.cat(batchcheckmat, dim=0)
-
-        return (datax, Nobjl), answ, batchcheckmat
+        if self.singlecheckmode:
+            batchcheckmat = [item[3].view([1] + list(item[3].shape)) for item in batchdata]
+            batchcheckmat = torch.cat(batchcheckmat, dim=0)
+            return (datax, Nobjl), answ, batchcheckmat
+        else:
+            return (datax, Nobjl), answ
 
     def question_exist_colorshapesize(self, color=None, shape = "cube", size = "large", material = None, posi_side = None):
 
@@ -765,12 +788,12 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
 
         def checkposi(xy, posi_flag):
             if posi_flag == "left":
-                if xy[0]/self.img_size[1]<1/3:
+                if xy[0]/self.img_size[1]<1/2:
                     return True
                 else:
                     return False
             elif posi_flag == "right":
-                if xy[0]/self.img_size[1]>2/3:
+                if xy[0]/self.img_size[1]>1/2:
                     return True
                 else:
                     return False
@@ -974,20 +997,28 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
             autocodel[objp,:] = torch.from_numpy(json_scene["objects"][objp]["auto_code"]).type(torch.FloatTensor)
 
         self.singlecheck = torch.zeros((10,4))
+
+        # posixl=[]
+        # for iio in range(Nobj):
+        #     posixl.append(self.json_clevr["scenes"][idx]['objects'][iio]["pixel_coords"][0])
+        # iio_xmax = np.argmax(posixl)
+        # self.singlecheck[iio_xmax, 0] = 1
+
         for iio in range(Nobj):
             # if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="yellow":
-            #     self.singlecheck[1, iio]=1
-            # if self.json_clevr["scenes"][idx]['objects'][iio]["size"]=="small":
-            #     self.singlecheck[3, iio] = 1
-            # if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="red":
             #     self.singlecheck[iio, 1]=1
-            # if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cube":
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["size"]=="small":
             #     self.singlecheck[iio, 3] = 1
-            if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cylinder":
+            if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="red":
+                self.singlecheck[iio, 1]=1
+            if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cube":
                 self.singlecheck[iio, 3] = 1
-            posix = self.json_clevr["scenes"][idx]['objects'][iio]["pixel_coords"][0]
-            if posix/self.img_size[1]>2/3: # right side
-                self.singlecheck[iio, 0] = 1
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cylinder":
+            #     self.singlecheck[iio, 3] = 1
+            # posix = posixl[iio]
+            # if posix/self.img_size[1]>1/2: # right side
+            #     self.singlecheck[iio, 0] = 1
+
 
         return autocodel, Nobj
 
