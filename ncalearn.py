@@ -598,8 +598,9 @@ class PyTrain_Main(object):
         self.model.loss_mode="eval"
         # Validation
         lossl = []
-        print("Start evaluation ...")
-        for iis, (datax, labels) in enumerate(self.data_dict[data_pt]):
+        print("Start evaluation ...", len(self.data_dict[data_pt]))
+        startt = time.time()
+        for iis, (datax, labels) in tqdm(enumerate(self.data_dict[data_pt])):
             with torch.no_grad():
                 try:
                     datax = datax.to(self.device)
@@ -613,6 +614,8 @@ class PyTrain_Main(object):
             print("Evaluation Perplexity: ", np.exp(np.mean(np.array(lossl))))
         else:
             print("Evaluation Perplexity: ", np.mean(np.array(lossl)))
+        endt = time.time()
+        print("Time used in evaluation: ", endt - startt)
 
     def do_test(self, data_pt = "val"):
         """
@@ -624,22 +627,25 @@ class PyTrain_Main(object):
         self.model.eval()
         total = 0
         correct = 0
-        for iis, (datax, labels) in enumerate(self.data_dict[data_pt]):
+        for iis, (datax, labels) in tqdm(enumerate(self.data_dict[data_pt])):
             with torch.no_grad():
                 try:
                     datax = datax.to(self.device)
                 except:
                     datax = [item.to(self.device) for item in datax]
                 loss = self.model(datax, labels.to(self.device), schedule=1.0)
-                output = self.model.output.cpu()
-                _, predicted = torch.max(output, 1)
-                if len(predicted.shape)==1:
-                    total += len(labels)
+                output = self.model.output
+                _, predicted = torch.max(output, -1)
+                predicted = predicted.cpu()
+                if len(predicted.shape)==len(labels.shape):
+                    total += np.prod(labels.shape)
                     correct += (predicted == labels).sum().item()
-                else:
+                elif len(labels)==1:
                     labels = labels.view(labels.shape[0],1).expand(labels.shape[0],predicted.shape[1])
                     total += labels.shape[0]*labels.shape[1]
                     correct += (predicted == labels).sum().item()
+                else:
+                    raise Exception("Labels unknown shape")
         crate = correct / total
         print("Correct rate: ", correct / total)
 
@@ -648,21 +654,110 @@ class PyTrain_Main(object):
     def eval_mem(self, datax, labels, model):
         if self.evalmem is None:
             # self.evalmem = []
-            self.evalmem = [[],[],[]]  # x,label,context
-
-        if self.eval_mode == "task2":
+            self.evalmem = [[] for ii in range(12)]  # x,label,context
+        if self.mem_eval_mode == "task2":
             self.evalmem[0].append(model.model.seq1_coop.output.detach().cpu().numpy())
             self.evalmem[1].append(model.model.seq1_coop.contextl.detach().cpu().numpy())
             self.evalmem[2].append(datax[1].cpu().numpy())
-        if self.eval_mode == "cnn_sup":
+        elif self.mem_eval_mode == "cnn_sup":
             self.evalmem[0].append(model.model.context.detach().cpu().numpy())
-        if self.eval_mode == "auto_encode":
+        elif self.mem_eval_mode == "auto_encode":
             self.evalmem[0].append(model.model.out_seq1.detach().cpu().numpy())
             self.evalmem[1].append(model.model.seq1_coop.cooprer.context.detach().cpu().numpy())
-    # self.evalmem.append(model.seq1_coop.cooprer.output.detach().cpu().numpy())
-        # self.evalmem[0].append(model.output.detach().cpu().numpy())
-        # self.evalmem[0].append(datax.cpu().numpy())
-        # self.evalmem[1].append(labels.cpu().numpy())
+        elif self.mem_eval_mode == "pos":
+            softmax = torch.nn.Softmax(dim=-1)
+            self.evalmem[0].append(softmax(model.model.output.detach().cpu()).numpy())
+            self.evalmem[1].append(labels.detach().cpu().numpy())
+            self.evalmem[2].append(torch.exp(model.model.seq2_train.context.detach().cpu()).numpy())
+            self.evalmem[3].append(model.model.seq2_train.gssample.detach().cpu().numpy())
+        elif self.mem_eval_mode == "auto_word":
+            # Output
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output.detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[0].append(ent.cpu().data.numpy())
+            self.evalmem[1].append(labels.detach().cpu().numpy())
+            # cooprer
+            self.evalmem[2].append(torch.exp(model.model.cooprer.seq1_coop.seq2_train.context.detach().cpu()).numpy())
+            self.evalmem[3].append(model.model.cooprer.seq1_coop.seq2_train.gssample.detach().cpu().numpy())
+            # trainer
+            self.evalmem[4].append(torch.exp(model.model.trainer.seq2_train.context.detach().cpu()).numpy())
+            self.evalmem[5].append(model.model.trainer.seq2_train.gssample.detach().cpu().numpy())
+        elif self.mem_eval_mode == "senti":
+            # Output
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output.detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[0].append(ent.cpu().data.numpy())
+            self.evalmem[1].append(labels.detach().cpu().numpy())
+            # cooprer POS
+            self.evalmem[2].append(torch.exp(model.model.seq1_coop.seq2_train.infobnl[0].context.detach().cpu()).numpy())
+            self.evalmem[3].append(model.model.seq1_coop.seq2_train.infobnl[0].gssample.detach().cpu().numpy())
+            # trainer Sem
+            self.evalmem[4].append(torch.exp(model.model.seq1_coop.seq2_train.infobnl[1].context.detach().cpu()).numpy())
+            self.evalmem[5].append(model.model.seq1_coop.seq2_train.infobnl[1].gssample.detach().cpu().numpy())
+            # Predected POS label
+            pt_POS_label= self.find_evalmem_recursize(model.model, "POS_label")
+            self.evalmem[6].append(pt_POS_label.gssample.detach().cpu().numpy())
+            pt_SEM_label = self.find_evalmem_recursize(model.model, "SEM_label")
+            self.evalmem[7].append(pt_SEM_label.gssample.detach().cpu().numpy())
+
+        elif self.mem_eval_mode == "senti_auto":
+            # Output
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output[...,:5].detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[0].append(ent.cpu().data.numpy())
+            self.evalmem[1].append(labels[...,0].detach().cpu().numpy())
+
+            output = lsoftmax(model.model.output[..., 5:].detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[2].append(ent.cpu().data.numpy())
+            self.evalmem[3].append(labels[..., 1].detach().cpu().numpy())
+
+            # cooprer POS
+            pt_POS_cooprer = self.find_evalmem_recursize(model.model,"POS_cooprer")
+            self.evalmem[4].append(torch.exp(pt_POS_cooprer.context.detach().cpu()).numpy())
+            self.evalmem[5].append(pt_POS_cooprer.gssample.detach().cpu().numpy())
+            # trainer Sem
+            pt_SEM_trainer = self.find_evalmem_recursize(model.model, "SEM_trainer")
+            self.evalmem[6].append(torch.exp(pt_SEM_trainer.context.detach().cpu()).numpy())
+            self.evalmem[7].append(pt_SEM_trainer.gssample.detach().cpu().numpy())
+            # cooprer POS->Senti
+            pt_Multitube = self.find_evalmem_recursize(model.model, "Multitube")
+            self.evalmem[8].append(torch.exp(pt_Multitube.infobnl[0].context.detach().cpu()).numpy())
+            self.evalmem[9].append(pt_Multitube.infobnl[0].gssample.detach().cpu().numpy())
+            # cooprer Sem->Senti
+            self.evalmem[10].append(torch.exp(pt_Multitube.infobnl[1].context.detach().cpu()).numpy())
+            self.evalmem[11].append(pt_Multitube.infobnl[1].gssample.detach().cpu().numpy())
+        elif self.mem_eval_mode == "senti_only":
+            # Output
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output.detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[0].append(ent)
+            self.evalmem[1].append(labels.detach())
+            # cooprer POS
+            pt_POS_cooprer = self.find_evalmem_recursize(model.model, "POS_cooprer")
+            self.evalmem[2].append(torch.exp(pt_POS_cooprer.context.detach()))
+            self.evalmem[3].append(pt_POS_cooprer.gssample.detach())
+            # trainer Senti
+            pt_Senti_trainer = self.find_evalmem_recursize(model.model, "Senti_trainer")
+            self.evalmem[4].append(torch.exp(pt_Senti_trainer.context.detach()))
+            self.evalmem[5].append(pt_Senti_trainer.gssample.detach())
+
+    def find_evalmem_recursize(self, model, label):
+        # print(model.__class__)
+        if hasattr(model, "evalmem_label"):
+            # print(model.evalmem_label)
+            if model.evalmem_label == label:
+                return model
+        if hasattr(model, "submodels"):
+            for submodel in model.submodels:
+                model_pt = self.find_evalmem_recursize(submodel,label)
+                if model_pt is not None:
+                    return model_pt
+        return None
 
     def _profiler(self, iis, loss, print_step=200):
 

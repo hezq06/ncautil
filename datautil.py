@@ -25,13 +25,11 @@ from torchvision import datasets
 from PIL import Image
 from pycocotools import mask as coco_mask
 from ncautil.ncamath import check_shape
+from ncautil.nlputil import NLPutil
 
-# def save(item,path):
-#     # torch.save(model.state_dict(), path))
-# def load(model,path):
-#     gru_gumbel = GRU_seq2seq(lsize_in, 100, lsize_in, outlen, para=gru_para)
-#     model.load_state_dict(torch.load("./gru_myhsample_finetune"))
-#     gru_gumbel = gru_gumbel.to(cuda_device)
+from ncautil.seqmultip3 import BiGRU_NLP,GSVIB_InfoBottleNeck,ABS_CNN_SEQ,CAL_LOSS,Softmax_Sample,ABS_CNN_COOP,Multitube_FF_MLP,Gsoftmax_Sample
+from ncautil.seqmultip3 import Multitube_BiGRU_MLP
+from ncautil.seqmultip2 import FF_MLP
 
 
 def save_data(data,file,large_data=False):
@@ -86,19 +84,47 @@ def load_model(model,file,map_location=None,except_list=[]):
         model.load_state_dict(model_dict)
     return model
 
-def load_model_ext(file,map_location=None):
-    """
-    Load a extended model file with para
-    :param file:
-    :param map_location:
-    :return:
-    """
-    parafile = load_data(file)
-    abs_list=["ABS_CNN_SEQ","ABS_CNN_COOP"]
-    pass
 
+def build_model_from_para(save_para, leaf_map_dict=None):
+    print(save_para["type"])
+    trial_list = ["ABS_CNN_COOP", "ABS_CNN_SEQ", "Gsoftmax_Sample", "Multitube_FF_MLP", "Softmax_Sample", "FF_MLP",
+                  "BiGRU_NLP"]
+    if leaf_map_dict is None:
+        leaf_map_dict={"leaf_cnt":0, "id_map":dict([])}
 
-    return model
+    typestr = save_para["type"]
+    if type(save_para["model_para"]) is not list:
+        hit_flag = False
+        for ii in range(len(trial_list)):
+            if trial_list[ii] in typestr:
+                hit_flag = True
+                typeclass = eval(trial_list[ii])
+                mid = save_para["id"]
+                if leaf_map_dict["id_map"].get(mid,None) is None: # not yet initialized
+                    pt_class = typeclass(save_para["model_para"], para=save_para["misc_para"])
+                    leaf_name=trial_list[ii]+"_"+str(leaf_map_dict["leaf_cnt"])
+                    leaf_map_dict["leaf_cnt"] += 1
+                    leaf_map_dict[leaf_name]=pt_class
+                    leaf_map_dict["id_map"][mid] = leaf_name
+                else:
+                    leaf_name = leaf_map_dict["id_map"][mid]
+                    pt_class = leaf_map_dict[leaf_name]
+                return pt_class,leaf_map_dict
+        if not hit_flag:
+            raise Exception("%s isn't known" % typestr)
+    else:
+        assert len(save_para["model_para"]) == 2
+        pt_class0,leaf_map_dict = build_model_from_para(save_para["model_para"][0],leaf_map_dict)
+        pt_class1,leaf_map_dict = build_model_from_para(save_para["model_para"][1],leaf_map_dict)
+        hit_flag = False
+        for ii in range(len(trial_list)):
+            if trial_list[ii] in typestr:
+                hit_flag = True
+                typeclass = eval(trial_list[ii])
+                pt_class = typeclass(pt_class0, pt_class1, para=save_para["misc_para"])
+                return pt_class,leaf_map_dict
+        if not hit_flag:
+            raise Exception("%s isn't known" % typestr)
 
 def create_dataset_sup(train_data, train_label, valid_data, valid_label, test_data, test_label):
 
@@ -467,6 +493,113 @@ class MNIST_dataset(object):
         self.dataset_sup_test["dataset"] = self.dataset_sup_test["dataset"] / 256.0
         self.dataset_sup_test["label"] = data_test.test_labels
 
+class IMDbDataset(torch.utils.data.Dataset):
+    def __init__(self, data_path, data_files, window = 128, get_mode="POS", nVcab=30000, nlputil_ls=None):
+        """
+        IMDbDataset util
+        :param data_path: /storage/hezq17/IMDbDataset
+        :param data_files: train: IMDb_corpus_pos.data, imdb_senti_train.data,
+                            test: IMDb_corpus_test_pos.data, imdb_senti_test.data
+        :param get_mode:
+        """
+        self.window = window
+        self.get_mode = get_mode
+
+        print("Loading IMDb dataset...")
+        path_pos = os.path.join(data_path, data_files[0])
+        pos_corpus_tup = load_data(path_pos)
+
+        path_senti = os.path.join(data_path, data_files[1])
+        senti_corpus_tup = load_data(path_senti)
+
+        self.sanity_check(pos_corpus_tup,senti_corpus_tup)
+
+        corpus, pos_corpus = zip(*pos_corpus_tup)
+        corpus, senti = zip(*senti_corpus_tup)
+
+        self.nVcab = nVcab
+        if nlputil_ls is None:
+            self.nlp_text = NLPutil()
+            self.nlp_text.set_corpus(corpus)
+            w2id, id2w = self.nlp_text.build_vocab(nVcab=nVcab)
+            w2v_dict = self.nlp_text.build_w2v(mode="torchnlp")
+            self.nlp_text.build_pt_emb()
+        else:
+            print("Shared NLPUtil detected.")
+            self.nlp_text = nlputil_ls[0]
+            w2id = self.nlp_text.word_to_id
+            id2w = self.nlp_text.id_to_word
+
+        self.dataset = [w2id.get(item, nVcab) for item in corpus]
+
+        if nlputil_ls is None:
+            self.nlp_pos = NLPutil()
+            self.nlp_pos.set_corpus(pos_corpus)
+            w2id_pos, id2w_pos = self.nlp_pos.build_vocab()
+        else:
+            self.nlp_pos = nlputil_ls[1]
+            w2id_pos = self.nlp_pos.word_to_id
+            id2w_pos = self.nlp_pos.id_to_word
+        self.pos_only = [w2id_pos.get(item, 0) for item in pos_corpus]
+
+        self.senti = senti
+
+        self.id2w = id2w
+        self.id2w_pos = id2w_pos
+
+    def sanity_check(self,pos_corpus_tup,senti_corpus_tup):
+        print("Doing sanity check...")
+        assert len(pos_corpus_tup) == len(senti_corpus_tup)
+        for ii in range(100):
+            iip = int(np.random.rand()*len(pos_corpus_tup))
+            assert pos_corpus_tup[iip][0] == senti_corpus_tup[iip][0]
+
+    def __getitem__(self, idx):
+        """
+        Get block idx
+        :param idx:
+        :return: [window, l_size]
+        """
+        startp = self.window * idx
+        endp = self.window * (idx+1)
+
+        ptdata = self.dataset[int(startp):int(endp)]
+        textblock_vecs = self.nlp_text.pt_emb(torch.LongTensor(ptdata))
+
+        if self.get_mode=="POS":
+            pos_p = self.pos_only[int(startp):int(endp)]
+            pt_pos = torch.LongTensor(pos_p)
+            return textblock_vecs,pt_pos
+        elif self.get_mode=="Senti":
+            senti_p = self.senti[int(startp):int(endp)]
+            pt_senti = torch.LongTensor(senti_p)
+            return textblock_vecs, pt_senti
+        elif self.get_mode=="Autoencode":
+            word_p = self.dataset[int(startp):int(endp)]
+            pt_word = torch.LongTensor(word_p)
+            return textblock_vecs, pt_word
+        elif self.get_mode=="senti_auto":
+            senti_p = self.senti[int(startp):int(endp)]
+            pt_senti = torch.LongTensor(senti_p)
+            word_p = self.dataset[int(startp):int(endp)]
+            pt_word = torch.LongTensor(word_p)
+            senti_word = torch.stack([pt_senti,pt_word],dim=-1)
+            return textblock_vecs, senti_word
+        elif self.get_mode=="wordlabel_pos":
+            pos_p = self.pos_only[int(startp):int(endp)]
+            return ptdata, pos_p
+        elif self.get_mode=="AutoencodeWV":
+            return textblock_vecs, textblock_vecs
+
+    def __len__(self):
+        """
+        number of text
+        :return:
+        """
+        numblocks = np.floor(len(self.dataset)/self.window)
+        return int(numblocks)
+
+
 class ClevrDataset(torch.utils.data.Dataset):
     def __init__(self, json_path, image_path, get_mode="maskedimage_posishapematerial"):
         """
@@ -520,10 +653,12 @@ class ClevrDataset(torch.utils.data.Dataset):
         if self.get_mode == "full":
             return self.getitem_full(idx)
         elif self.get_mode in ["maskedimage_colorshape","maskedimage_posicolorshape","maskedimage_posicolormaterial","auto_encode","maskedimage_posishapematerial"
-                               ,"maskedimage_shape","maskedimage_color", "maskedimage_posi"]:
+                               ,"maskedimage_shape","maskedimage_color", "maskedimage_posi","auto_encode_focused"]:
             return self.getitem_mask_posicolorshape(idx)
         elif self.get_mode == "whole_pic_auto":
             return self.getitem_mask_wholepicauto(idx)
+        elif self.get_mode == "hidden_only_no_pic_posi":
+            return self.hidden_only_no_pic_posi(idx)
 
     def getitem_full(self, idx):
         img_path = os.path.join(self.image_path, self.imgs[idx])
@@ -616,6 +751,36 @@ class ClevrDataset(torch.utils.data.Dataset):
         elif self.get_mode == "auto_encode":
             return masked_img, masked_img
 
+        elif self.get_mode == "auto_encode_focused":
+            xrange = 75
+            yrange = 75
+            pixposix = json_scene["objects"][objp]["pixel_coords"][0]
+            pixposiy = json_scene["objects"][objp]["pixel_coords"][1]
+            xcropstart = pixposix-xrange
+            xcropend = pixposix + xrange
+            ycropstart = pixposiy - yrange
+            ycropend = pixposiy + yrange
+            # Boundary handling
+            xlowshift=0
+            if xcropstart<0:
+                xlowshift = 0-xcropstart
+                xcropstart=0
+            xhighshift=0
+            if xcropend>self.img_size[1]:
+                xhighshift=xcropend-self.img_size[1]
+                xcropend = self.img_size[1]
+            ylowshift=0
+            if ycropstart<0:
+                ylowshift = 0-ycropstart
+                ycropstart = 0
+            yhighshift=0
+            if ycropend>self.img_size[0]:
+                yhighshift = ycropend-self.img_size[0]
+                ycropend = self.img_size[0]
+            focused_masked_img = torch.zeros((3, 2*xrange, 2*yrange))
+            focused_masked_img[:,ylowshift:2*yrange-yhighshift,xlowshift:2*xrange-xhighshift] = masked_img[:, ycropstart:ycropend, xcropstart:xcropend]
+            return masked_img, focused_masked_img
+
     def getitem_mask_wholepicauto(self,idx):
         assert self.get_mode == "whole_pic_auto"
         img_path = os.path.join(self.image_path, self.imgs[idx])
@@ -637,6 +802,20 @@ class ClevrDataset(torch.utils.data.Dataset):
             masked_imgl[iio,:,:,:] = masked_img
 
         return masked_imgl, masked_imgl
+
+    def hidden_only_no_pic_posi(self,idx):
+
+        json_scene = self.json_clevr["scenes"][idx]
+
+        Nobj = len(json_scene["objects"])
+        objp = int(np.random.rand() * Nobj)
+        pAutocode = torch.from_numpy(json_scene["objects"][objp]["auto_code"]).type(torch.FloatTensor)
+        posix = json_scene["objects"][objp]["pixel_coords"][0] / self.img_size[1]
+        if posix > 2 / 3:
+            posi_right = 1
+        else:
+            posi_right = 0
+        return pAutocode, posi_right
 
     def __len__(self):
         return len(self.imgs)
@@ -721,7 +900,7 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
         elif self.question_mode == "posiside_property":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = None, material = "rubber", posi_side = "left")
         elif self.question_mode == "posiside_property2":
-            idxl, answ = self.question_exist_colorshapesize(color=None, shape = None, size = "small", material = None, posi_side = "right")
+            idxl, answ = self.question_exist_colorshapesize(color=None, shape = "cylinder", size = None, material = None, posi_side = "right")
         elif self.question_mode == "posiside_property3":
             idxl, answ = self.question_exist_colorshapesize(color=None, shape = "sphere", size = None, material = None, posi_side = "right")
         elif self.question_mode == "posimost_property2":
@@ -788,12 +967,12 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
 
         def checkposi(xy, posi_flag):
             if posi_flag == "left":
-                if xy[0]/self.img_size[1]<1/2:
+                if xy[0]/self.img_size[1]<1/3:
                     return True
                 else:
                     return False
             elif posi_flag == "right":
-                if xy[0]/self.img_size[1]>1/2:
+                if xy[0]/self.img_size[1]>2/3:
                     return True
                 else:
                     return False
@@ -998,26 +1177,27 @@ class MultipleChoiceClevrDataset(torch.utils.data.Dataset):
 
         self.singlecheck = torch.zeros((10,4))
 
-        # posixl=[]
-        # for iio in range(Nobj):
-        #     posixl.append(self.json_clevr["scenes"][idx]['objects'][iio]["pixel_coords"][0])
-        # iio_xmax = np.argmax(posixl)
-        # self.singlecheck[iio_xmax, 0] = 1
+        posixl=[]
+        for iio in range(Nobj):
+            posixl.append(self.json_clevr["scenes"][idx]['objects'][iio]["pixel_coords"][0])
+
+        iio_xmax = np.argmax(posixl)
+        self.singlecheck[iio_xmax, 0] = 1
 
         for iio in range(Nobj):
             # if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="yellow":
             #     self.singlecheck[iio, 1]=1
             # if self.json_clevr["scenes"][idx]['objects'][iio]["size"]=="small":
             #     self.singlecheck[iio, 3] = 1
-            if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="red":
-                self.singlecheck[iio, 1]=1
-            if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cube":
-                self.singlecheck[iio, 3] = 1
-            # if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cylinder":
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["color"]=="red":
+            #     self.singlecheck[iio, 1]=1
+            # if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cube":
             #     self.singlecheck[iio, 3] = 1
-            # posix = posixl[iio]
-            # if posix/self.img_size[1]>1/2: # right side
-            #     self.singlecheck[iio, 0] = 1
+            if self.json_clevr["scenes"][idx]['objects'][iio]["shape"]=="cylinder":
+                self.singlecheck[iio, 3] = 1
+            posix = posixl[iio]
+            if posix/self.img_size[1]>2/3: # right side
+                self.singlecheck[iio, 0] = 1
 
 
         return autocodel, Nobj

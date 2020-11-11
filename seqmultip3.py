@@ -9,6 +9,7 @@ from __future__ import print_function
 
 import numpy as np
 import torch
+from torch.autograd import Variable
 from ncautil.seqmultip2 import FF_MLP, Gumbel_Softmax, VariationalGauss
 from ncautil.ncamath import one_hot, align_to
 from ncautil.ptfunction import GaussNoise
@@ -46,6 +47,8 @@ class CAL_LOSS(torch.nn.Module):
             loss = self.posiColorShapeLoss(output, labels)
         elif self.loss_flag == "posishapematerial_loss":
             loss = self.posiShapeMaterialLoss(output, labels)
+        elif self.loss_flag == "senti_auto_loss":
+            loss = self.SentiAutoLoss(output, labels)
         else:
             raise Exception("Not implemented")
 
@@ -68,7 +71,7 @@ class CAL_LOSS(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
-        self.loss_flag = para.get("loss_flag", "posishapematerial_loss")
+        self.loss_flag = para.get("loss_flag", "posicolorshape_loss")
         self.loss_mode = para.get("loss_mode", "train")
         self.sample_mode = para.get("sample_mode", False)
         self.sample_size = para.get("sample_size", 1)
@@ -101,11 +104,26 @@ class CAL_LOSS(torch.nn.Module):
         loss = lossposi+lossshape+lossmaterial
         return loss
 
+    def SentiAutoLoss(self, output, labels):
+        device = labels.device
+        lossc = torch.nn.CrossEntropyLoss()
+        output_s = output[...,:5]
+        labels_s = labels[...,0]
+        output_a = output[..., 5:]
+        labels_a = labels[...,1]
+        loss_s = lossc(output_s.permute(0,2,1), labels_s.type(torch.LongTensor).to(device))
+        loss_a = lossc(output_a.permute(0, 2, 1), labels_a.type(torch.LongTensor).to(device))
+        # print(loss_s,loss_a)
+        return loss_s+loss_a
+
     def CrossEntropyLoss(self, output, labels):
         device = labels.device
         lossc = torch.nn.CrossEntropyLoss()
         if not self.sample_mode:
-            loss = lossc(output, labels.type(torch.LongTensor).to(device))
+            if len(output.shape)==2:
+                loss = lossc(output, labels.type(torch.LongTensor).to(device))
+            elif len(output.shape)==3:
+                loss = lossc(output.permute(0,2,1), labels.type(torch.LongTensor).to(device))
         else:
             labels = labels.type(torch.LongTensor).to(device)
             labels = labels.view(labels.shape[0],1).expand(labels.shape[0],self.sample_size)
@@ -194,7 +212,6 @@ class ABS_CNN_COOP(torch.nn.Module):
         if not self.cooprer_train_flag:
             for param in self.cooprer.parameters():
                 param.requires_grad = False
-        self.cooprer.coop_mode = True
 
         self.save_para = {
             "model_para": [cooprer.save_para, trainer.save_para],
@@ -216,8 +233,10 @@ class ABS_CNN_COOP(torch.nn.Module):
         out_train = self.trainer(datax, schedule=schedule)
         if self.coop_mode == "concatenate":
             output = torch.cat([out_coop,out_train],dim=-1)
+            self.output = output
         elif self.coop_mode == "sum":
             output = out_coop+out_train
+            self.output = output
         return output
 
 class ConvNet(torch.nn.Module):
@@ -286,7 +305,8 @@ class ConvNet(torch.nn.Module):
         self.save_para = {
             "model_para": model_para,
             "type": str(self.__class__),
-            "misc_para": para
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
         }
 
     def para(self,para):
@@ -478,8 +498,9 @@ class DeConvNet(torch.nn.Module):
 
         self.save_para = {
             "model_para": model_para,
-            "type": "DeConvNet",
-            "misc_para": para
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
         }
 
     def set_model_para(self,model_para):
@@ -598,8 +619,9 @@ class ConvFF_MLP_CLEVR(torch.nn.Module):
 
         self.save_para = {
             "model_para": model_para,
-            "type": "ConvFF_MLP_CLEVR",
-            "misc_para": para
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
         }
 
         # self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
@@ -650,7 +672,217 @@ class Multitube_FF_MLP(torch.nn.Module):
     def __init__(self, model_para ,para=None):
         super(self.__class__, self).__init__()
 
-        # self.coop_mode=False
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        assert len(self.input_divide) == len(self.output_divide) == len(self.mlp_layer_para)
+        assert np.sum(self.input_divide) == self.input_size
+        assert np.sum(self.output_divide) == self.output_size
+
+        # self.infobnvib = VIB_InfoBottleNeck(para={
+        #     "multi_sample_flag":self.sample_mode,
+        #     "sample_size":self.sample_size
+        # })
+
+        model_paral = []
+        for iim in range(len(self.input_divide)):
+            model_paral.append({
+                    "input_size": self.input_divide[iim],
+                    "output_size":self.output_divide[iim],
+                    "mlp_layer_para": self.mlp_layer_para[iim]
+            })
+
+        self.ff_tubes = torch.nn.ModuleList([
+            FF_MLP(model_paral[iim])
+            for iim in range(len(self.input_divide))])
+
+        self.infobnl = torch.nn.ModuleList([
+            GSVIB_InfoBottleNeck(self.infobn_model[iim],para=self.infobn_para)
+            for iim in range(len(self.input_divide))])
+
+        self.layer_norm0 = torch.nn.LayerNorm(self.input_size)
+        self.layer_norm1 = torch.nn.LayerNorm(self.output_size)
+        # self.batch_norm0 = torch.nn.BatchNorm2d(4)
+        # self.batch_norm1 = torch.nn.BatchNorm2d(4)
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
+        self.gauss_noise = GaussNoise(std=self.noise_std)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para = para
+        self.infobn_para = para.get("infobn_para", None)
+        self.sample_mode = para.get("sample_mode", False)
+        self.sample_size = para.get("sample_size", 1)
+        self.noise_std = para.get("noise_std",0.2e-2)
+
+    def set_model_para(self,model_para):
+        # model_para_h={
+        #     "input_size": 2+8+3+64,
+        #     "input_divide":[2,8,3,64]
+        #     "output_size":12+12+12+32,
+        #     "output_divide":[16,16,16,32]
+        #     "mlp_layer_para": [[16,16],[16,16],[16,16],[32,32]]
+        #     "infobn_model": [{"gs_head_dim":2,"gs_head_num":8},{"gs_head_dim":2,"gs_head_num":8},
+        #                    {"gs_head_dim":2,"gs_head_num":8},{"gs_head_dim":2,"gs_head_num":16}]
+        # }
+        self.model_para = model_para
+        self.input_size = model_para["input_size"]
+        self.input_divide = model_para["input_divide"]
+        self.output_size = model_para["output_size"]
+        self.output_divide = model_para["output_divide"]
+        self.mlp_layer_para = model_para["mlp_layer_para"] # [hidden0l, hidden1l, ...]
+        self.infobn_model = model_para.get("infobn_model", None)
+
+    def forward(self, datax, schedule=None):
+
+        # print(torch.mean(datax), torch.var(datax))
+        datax = (datax-0.38)/np.sqrt(0.25)
+
+        startp=0
+        dataml=[]
+        for iim, fmd in enumerate(self.ff_tubes):
+            datam = fmd(datax[...,startp:startp+self.input_divide[iim]])
+            dataml.append(datam)
+            startp+=self.input_divide[iim]
+
+        gsamplel = []
+        contextl = []
+        for iim, infobn in enumerate(self.infobnl):
+            gsample = infobn(dataml[iim], schedule=schedule)
+            gsamplel.append(gsample)
+            contextl.append(infobn.contextl)
+        self.loss_reg = 0
+        for iim in range(len(self.input_divide)):
+            self.loss_reg = self.loss_reg + self.infobnl[iim].cal_regloss()
+
+        self.context = torch.cat(contextl, dim=-1)
+        output = torch.cat(gsamplel, dim=-1)
+        self.output = output
+        # print(torch.mean(output), torch.var(output))
+        output = (output-0.5)/np.sqrt(0.1)
+
+        return output
+
+class Multitube_BiGRU_MLP(torch.nn.Module):
+    """
+    Feed forward multi-tube perceptron (a multiple information flow tube, no mixing within tubes, each tube is an FF)
+    """
+    def __init__(self, model_para ,para=None):
+        super(self.__class__, self).__init__()
+
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        assert len(self.input_divide) == len(self.output_divide)
+        assert np.sum(self.input_divide) == self.input_size
+        assert np.sum(self.output_divide) == self.output_size
+
+        # self.infobnvib = VIB_InfoBottleNeck(para={
+        #     "multi_sample_flag":self.sample_mode,
+        #     "sample_size":self.sample_size
+        # })
+
+        model_paral = []
+        for iim in range(len(self.input_divide)):
+            model_paral.append({
+                    "input_size": self.input_divide[iim],
+                    "output_size":self.output_divide[iim],
+                    "hidden_size":self.hidden_size,
+                    "num_layers":self.num_layers,
+                    "mlp_hidden": self.mlp_hidden,
+                    "mlp_num_layers":self.mlp_num_layers,
+            })
+
+        self.ff_tubes = torch.nn.ModuleList([
+            BiGRU_NLP(model_paral[iim])
+            for iim in range(len(self.input_divide))])
+
+        self.infobnl = torch.nn.ModuleList([
+            GSVIB_InfoBottleNeck(self.infobn_model[iim],para=self.infobn_para)
+            for iim in range(len(self.input_divide))])
+
+        self.layer_norm0 = torch.nn.LayerNorm(self.input_size)
+        self.layer_norm1 = torch.nn.LayerNorm(self.output_size)
+        # self.batch_norm0 = torch.nn.BatchNorm2d(4)
+        # self.batch_norm1 = torch.nn.BatchNorm2d(4)
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
+        self.gauss_noise = GaussNoise(std=self.noise_std)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para = para
+        self.infobn_para = para.get("infobn_para", None)
+        self.sample_mode = para.get("sample_mode", False)
+        self.sample_size = para.get("sample_size", 1)
+        self.noise_std = para.get("noise_std",0.2e-2)
+
+    def set_model_para(self,model_para):
+        self.model_para = model_para
+        self.input_size = model_para["input_size"]
+        self.input_divide = model_para["input_divide"]
+        self.output_size = model_para["output_size"]
+        self.output_divide = model_para["output_divide"]
+        self.hidden_size = model_para["hidden_size"]
+        self.num_layers = model_para["num_layers"]
+        self.mlp_hidden = model_para["mlp_hidden"]
+        self.mlp_num_layers = model_para["mlp_num_layers"]
+        self.infobn_model = model_para.get("infobn_model", None)
+
+    def forward(self, datax, schedule=None):
+
+        # print(torch.mean(datax), torch.var(datax))
+        datax = (datax-0.38)/np.sqrt(0.25)
+
+        startp=0
+        dataml=[]
+        for iim, fmd in enumerate(self.ff_tubes):
+            datam = fmd(datax[...,startp:startp+self.input_divide[iim]])
+            dataml.append(datam)
+            startp+=self.input_divide[iim]
+
+        gsamplel = []
+        contextl = []
+        for iim, infobn in enumerate(self.infobnl):
+            gsample = infobn(dataml[iim], schedule=schedule)
+            gsamplel.append(gsample)
+            contextl.append(infobn.contextl)
+        self.loss_reg = 0
+        for iim in range(len(self.input_divide)):
+            self.loss_reg = self.loss_reg + self.infobnl[iim].cal_regloss()
+
+        self.context = torch.cat(contextl, dim=-1)
+        output = torch.cat(gsamplel, dim=-1)
+        self.output = output
+        # print(torch.mean(output), torch.var(output))
+        output = (output-0.5)/np.sqrt(0.1)
+
+        return output
+
+class Multitube_FF_MLP_CLEVR(torch.nn.Module):
+    """
+    Feed forward multi-tube perceptron (a multiple information flow tube, no mixing within tubes, each tube is an FF)
+    """
+    def __init__(self, model_para ,para=None):
+        super(self.__class__, self).__init__()
+
         self.set_model_para(model_para)
 
         if para is None:
@@ -692,7 +924,8 @@ class Multitube_FF_MLP(torch.nn.Module):
         self.save_para = {
             "model_para": model_para,
             "type": str(self.__class__),
-            "misc_para": para
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
         }
 
     def para(self,para):
@@ -774,6 +1007,89 @@ class Multitube_FF_MLP(torch.nn.Module):
 
         return output
 
+class BiGRU_NLP(torch.nn.Module):
+    """
+    PyTorch GRU for NLP
+    """
+    def __init__(self, model_para, para=None):
+        super(self.__class__, self).__init__()
+
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.gru=torch.nn.GRU(self.input_size,self.hidden_size,num_layers=self.num_layers,bidirectional=True)
+
+        if self.mlp_num_layers>0:
+            self.h2h = torch.nn.Linear(2*self.hidden_size, self.mlp_hidden)
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(self.mlp_hidden, self.mlp_hidden, bias=True), torch.nn.LayerNorm(self.mlp_hidden),torch.nn.ReLU())
+                for _ in range(self.mlp_num_layers-1)])
+            self.h2o = torch.nn.Linear(self.mlp_hidden, self.output_size)
+        else:
+            self.h2o = torch.nn.Linear(2*self.hidden_size, self.output_size)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id":id(self) # to get information about real module sharing
+        }
+
+        self.relu = torch.nn.ReLU()
+
+    def set_model_para(self,model_para):
+        # model_para_bigrunlp = {
+        #     "input_size": 300,
+        #     "output_size": 43,
+        #     "hidden_size": 30,
+        #     "num_layers": 3,
+        #     "mlp_hidden": 80,
+        #     "mlp_num_layers": 0
+        # }
+        self.model_para = model_para
+        self.hidden_size = model_para["hidden_size"]
+        self.input_size = model_para["input_size"]
+        self.output_size = model_para["output_size"]
+        self.num_layers = model_para["num_layers"]
+        self.mlp_hidden = int(model_para.get("mlp_hidden", 20))
+        self.mlp_num_layers = int(model_para.get("mlp_num_layers", 1))
+
+    def para(self,para):
+        self.misc_para = para
+
+    def forward(self, inputx, schedule=None):
+        """
+        Forward
+        :param input: [batch window l_size]
+        :param hidden:
+        :return:
+        """
+        self.cuda_device = inputx.device
+        batch = inputx.shape[0]
+
+        hidden1 = self.initHidden_cuda(self.cuda_device,batch)
+        hout, hn = self.gru(inputx.permute(1,0,2),hidden1) # GRU is [window batch l_size]
+        hout = hout.permute(1,0,2)
+
+        if self.mlp_num_layers > 0:
+            hout = self.h2h(hout)
+            hout =self.relu(hout)
+            for fmd in self.linear_layer_stack:
+                hout = fmd(hout)
+
+        output = self.h2o(hout)
+
+        return output
+
+    def initHidden(self,batch):
+        return Variable(torch.zeros(2*self.num_layers, batch,self.hidden_size), requires_grad=True)
+
+    def initHidden_cuda(self,device, batch):
+        return Variable(torch.zeros(2*self.num_layers, batch, self.hidden_size), requires_grad=True).to(device)
+
 class GSVIB_InfoBottleNeck(torch.nn.Module):
     """
     A GSVIB information bottleneck module
@@ -788,6 +1104,9 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         self.para(para)
 
         self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num, self.gs_head_dim)), requires_grad=True)
+        if self.output_size is not None:
+            self.i2o = torch.nn.Linear(self.gs_head_num * self.gs_head_dim, self.output_size)
+
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
@@ -795,7 +1114,8 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         self.save_para = {
             "model_para": model_para,
             "type": str(self.__class__),
-            "misc_para": para
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
         }
 
     def para(self,para):
@@ -810,11 +1130,13 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
     def set_model_para(self,model_para):
         # model_para = {
         #     "gs_head_dim": 2,
-        #     "gs_head_num": 64
+        #     "gs_head_num": 64,
+        #     "output_size": None
         # }
         self.model_para = model_para
         self.gs_head_dim = model_para["gs_head_dim"]
         self.gs_head_num = model_para["gs_head_num"]
+        self.output_size = model_para.get("output_size",None)
 
     def forward(self, datax, schedule=1.0):
 
@@ -835,16 +1157,29 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         self.contextl = context.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
         # if not self.test_mode:
         gssample = self.gsoftmax(context, temperature=temperature)
+        self.gssample = gssample
         # else:
         # maxind = torch.argmax(context,dim=-1)
         # gssample = one_hot(maxind, 2)
 
+
         self.loss_reg = self.cal_regloss()
 
+        if not hasattr(self, "output_size"):
+            self.output_size=None
+
         if self.sample_mode:
-            return gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim])
+            if self.output_size is not None:
+                output = self.i2o(gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim]))
+                return output
+            else:
+                return gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim])
         else:
-            return gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+            if self.output_size is not None:
+                output = self.i2o(gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim]))
+                return output
+            else:
+                return gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
 
     def cal_regloss(self):
         # context,prior should be log probability
@@ -876,7 +1211,8 @@ class VIB_InfoBottleNeck(torch.nn.Module):
         self.save_para = {
             "model_para": model_para,
             "type": str(self.__class__),
-            "misc_para": para
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
         }
 
     def para(self,para):
@@ -907,3 +1243,74 @@ class VIB_InfoBottleNeck(torch.nn.Module):
         gausskl = 0.5 * torch.mean(torch.sum(self.ctheta ** 2 + (self.cmu-cshift) ** 2 - torch.log(self.ctheta ** 2) - 1, dim=-1))
         assert gausskl > 0
         return self.reg_lamda * gausskl
+
+class Softmax_Sample(torch.nn.Module):
+    """
+    A post-hoc module to do softmax sample
+    """
+    def __init__(self,model_para={},para={}):
+        super(self.__class__, self).__init__()
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax(sample=1, sample_mode=False)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para=para
+
+    def set_model_para(self,model_para):
+        self.model_para = model_para
+
+    def forward(self, datax, schedule=1.0):
+        datax = self.softmax(datax)
+        output = self.gsoftmax(datax, temperature=np.exp(-5))
+        self.context = datax
+        self.gssample = output
+        return output
+
+class Gsoftmax_Sample(torch.nn.Module):
+    """
+    A post-hoc module to do softmax sample
+    """
+    def __init__(self,model_para,para={}):
+        super(self.__class__, self).__init__()
+
+        self.set_model_para(model_para)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax(sample=1, sample_mode=False)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para=para
+
+    def set_model_para(self,model_para):
+        self.model_para = model_para
+        self.gs_head_dim = model_para["gs_head_dim"]
+        self.gs_head_num = model_para["gs_head_num"]
+
+    def forward(self, datax, schedule=1.0):
+
+        context = datax.view([*datax.shape[:-1], self.gs_head_num, self.gs_head_dim])
+        context = self.softmax(context)
+        self.context = context
+
+        gssample = self.gsoftmax(context, temperature=np.exp(-5))
+        self.gssample = gssample
+
+        output = gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+
+        return output
+

@@ -22,7 +22,7 @@ from nltk.corpus import brown,treebank
 from nltk.parse import stanford
 import gensim
 from ncautil.w2vutil import W2vUtil
-from ncautil.datautil import *
+# from ncautil.datautil import *
 from nltk.tag import StanfordPOSTagger
 from nltk.tokenize import word_tokenize
 
@@ -33,9 +33,9 @@ from torchnlp.word_to_vector import GloVe
 from torchnlp.datasets import simple_qa_dataset
 from torchnlp.datasets import wikitext_2_dataset
 
-from ncautil.ncalearn import *
+# from ncautil.ncalearn import *
 from ncautil.ncamath import *
-from ncautil.datautil import save_data
+# from ncautil.datautil import save_data
 
 from tqdm import tqdm,tqdm_notebook
 
@@ -263,8 +263,7 @@ class NLPutil(object):
                 model = gensim.models.KeyedVectors.load_word2vec_format(file, binary=True)
                 return model
             elif mode=="torchnlp":
-                hdir=os.getenv("HOME")
-                cache_path=os.path.join(hdir,"MyWorkSpace/NLConLayer/.word_vectors_cache")
+                cache_path="/storage/hezq17/IMDbDataset/word_vector_cache"
                 model = GloVe(cache=cache_path)
             self.w2v_dict = dict([])
             skip = []

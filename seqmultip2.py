@@ -1068,7 +1068,7 @@ class BiGRU_NLP_COOP(torch.nn.Module):
         return [Variable(torch.zeros(2, batch, self.hidden_size), requires_grad=True).to(device),
                 Variable(torch.zeros(2, batch, self.bigru_coop.hidden_size), requires_grad=False).to(device)]
 
-class BiGRU_NLP(torch.nn.Module):
+class BiGRU_NLP_OLD(torch.nn.Module):
     """
     PyTorch GRU for NLP
     """
@@ -1650,6 +1650,80 @@ class HighRank_Softmax(torch.nn.Module):
         pi_sfmout = torch.log(pi_sfmout+1e-9)
         return pi_sfmout
 
+class FF_MLP0(torch.nn.Module):
+    """
+    Feed forward multi-layer perceotron
+    """
+    def __init__(self, model_para ,para=None):
+        super(self.__class__, self).__init__()
+
+        # self.coop_mode=False
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        if len(self.mlp_layer_para)>0:
+            mlp_layer_para0 = [self.input_size] + self.mlp_layer_para
+            self.linear_layer_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.Linear(mlp_layer_para0[iil], mlp_layer_para0[iil+1], bias=True),
+                                    torch.nn.LayerNorm(mlp_layer_para0[iil+1]),torch.nn.ReLU())
+                for iil in range(len(mlp_layer_para0)-1)])
+            self.h2o = torch.nn.Linear(mlp_layer_para0[-1], self.output_size)
+        else:
+            self.i2o = torch.nn.Linear(self.input_size, self.output_size)
+
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para=para
+        self.dropout_rate = para.get("dropout_rate", 0.0)
+
+    def set_model_para(self,model_para):
+        # model_para_h={
+        #     "input_size": 64,
+        #     "output_size":1,
+        #     "mlp_layer_para": [32,16,8]
+        # }
+        self.model_para = model_para
+        self.input_size = model_para["input_size"]
+        self.output_size = model_para["output_size"]
+        self.mlp_layer_para = model_para["mlp_layer_para"] # [hidden0, hidden1, ...]
+
+    def forward(self, inputx, hidden1=None, add_logit=None, logit_mode=True, schedule=None, context_set=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        self.cuda_device=inputx.device
+
+        hidden = inputx
+        if len(self.mlp_layer_para) > 0:
+            for fmd in self.linear_layer_stack:
+                hidden = fmd(hidden)
+                # hidden = self.dropout(hidden)
+            output=self.h2o(hidden)
+        else:
+            output = self.i2o(inputx)
+
+        return output
+
+    def initHidden(self,batch):
+        return None
+
+    def initHidden_cuda(self, device, batch):
+        return None
+
 class FF_MLP(torch.nn.Module):
     """
     Feed forward multi-layer perceotron
@@ -1678,8 +1752,9 @@ class FF_MLP(torch.nn.Module):
 
         self.save_para = {
             "model_para": model_para,
-            "type": "FF_MLP",
-            "misc_para": para
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
         }
 
     def para(self,para):
@@ -1707,7 +1782,7 @@ class FF_MLP(torch.nn.Module):
         self.cuda_device=inputx.device
 
         # print(torch.mean(inputx), torch.var(inputx))
-        inputx = (inputx - 0.5) / np.sqrt(0.25)
+        inputx = (inputx - 0.5) / np.sqrt(0.25) #!!!!!!!!!!!!! THIS IS NOT GOOD
 
         hidden = inputx
         if len(self.mlp_layer_para) > 0:
