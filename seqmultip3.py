@@ -10,7 +10,7 @@ from __future__ import print_function
 import numpy as np
 import torch
 from torch.autograd import Variable
-from ncautil.seqmultip2 import FF_MLP, Gumbel_Softmax, VariationalGauss
+from ncautil.seqmultip2 import FF_MLP, Gumbel_Softmax, VariationalGauss, Linear_Multihead
 from ncautil.ncamath import one_hot, align_to
 from ncautil.ptfunction import GaussNoise
 
@@ -41,8 +41,12 @@ class CAL_LOSS(torch.nn.Module):
         self.output = output
         if self.loss_flag == "cross_entropy":
             loss = self.CrossEntropyLoss(output, labels)
+        elif self.loss_flag == "masked_cross_entropy":
+            loss = self.Masked_CrossEntropyLoss(output, labels, self.model)
         elif self.loss_flag == "mse_loss":
             loss = self.MSELoss(output, labels[...,:output.shape[-2],:output.shape[-1]])*10000
+        elif self.loss_flag == "mse_loss_wv":
+            loss = self.MSELoss(output, labels)*100
         elif self.loss_flag == "posicolorshape_loss":
             loss = self.posiColorShapeLoss(output, labels)
         elif self.loss_flag == "posishapematerial_loss":
@@ -67,6 +71,16 @@ class CAL_LOSS(torch.nn.Module):
             for submodel in model.submodels:
                 loss = self.cal_loss_reg_recursize(submodel, loss)
         return loss
+
+    def find_para_recursive(self, model, para_str):
+        if hasattr(model, para_str):
+            return getattr(model,para_str)
+        elif hasattr(model, "submodels"):
+            # print("B")
+            for submodel in model.submodels:
+                return self.find_para_recursive(submodel, para_str)
+        else:
+            raise Exception("Attr not found!")
 
 
     def para(self,para):
@@ -129,6 +143,22 @@ class CAL_LOSS(torch.nn.Module):
             labels = labels.view(labels.shape[0],1).expand(labels.shape[0],self.sample_size)
             loss = lossc(output, labels)
         return loss
+
+    def Masked_CrossEntropyLoss(self, output, labels, model):
+        """
+        transformer style masked loss
+        :param output: [batch, w, l_size]
+        :param labels:
+        :param input_mask:
+        :return:
+        """
+        input_mask = self.find_para_recursive(model, "input_mask")
+        device = labels.device
+        lossc=torch.nn.CrossEntropyLoss(reduce=False)
+        assert len(output.shape)==3
+        loss = lossc(output.permute(0,2,1), labels.type(torch.LongTensor).to(device))
+        lossm = torch.sum(loss*(1-input_mask))/torch.sum(1-input_mask)
+        return lossm
 
     def MSELoss(self, output, labels):
         loss_mse = torch.nn.MSELoss()
@@ -1059,6 +1089,8 @@ class BiGRU_NLP(torch.nn.Module):
 
     def para(self,para):
         self.misc_para = para
+        self.rnd_input_mask = para.get("rnd_input_mask", False)
+        self.mask_rate = para.get("mask_rate", 0.0)
 
     def forward(self, inputx, schedule=None):
         """
@@ -1068,9 +1100,15 @@ class BiGRU_NLP(torch.nn.Module):
         :return:
         """
         self.cuda_device = inputx.device
-        batch = inputx.shape[0]
-
+        batch, window = inputx.shape[0], inputx.shape[1]
         hidden1 = self.initHidden_cuda(self.cuda_device,batch)
+
+        if self.rnd_input_mask:
+            rnd = torch.rand((batch, window), device=self.cuda_device) # batch window
+            self.input_mask = torch.zeros((batch, window), device=self.cuda_device)
+            self.input_mask[rnd > self.mask_rate] = 1
+            inputx = inputx * self.input_mask.view(batch, window, 1).expand_as(inputx) # 1 means valid, opposite of numpy.ma
+
         hout, hn = self.gru(inputx.permute(1,0,2),hidden1) # GRU is [window batch l_size]
         hout = hout.permute(1,0,2)
 
@@ -1104,9 +1142,109 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         self.para(para)
 
         self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num, self.gs_head_dim)), requires_grad=True)
-        if self.output_size is not None:
-            self.i2o = torch.nn.Linear(self.gs_head_num * self.gs_head_dim, self.output_size)
 
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para=para
+        self.freeze_mode = para.get("freeze_mode", False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
+        self.sample_mode = para.get("sample_mode", False)
+        self.sample_size = para.get("sample_size", 1)
+        self.reg_lamda = para.get("reg_lamda", 0.1) # weight on KL
+        self.scale_factor = para.get("scale_factor", 1.0) # weight on entropy
+
+    def set_model_para(self,model_para):
+        # model_para = {
+        #     "gs_head_dim": 2,
+        #     "gs_head_num": 64,
+        #     "output_size": None
+        # }
+        self.model_para = model_para
+        self.gs_head_dim = model_para["gs_head_dim"]
+        self.gs_head_num = model_para["gs_head_num"]
+        # self.output_size = model_para.get("output_size",None)
+
+    def forward(self, datax, schedule=1.0):
+
+        assert datax.shape[-1] == self.gs_head_num * self.gs_head_dim
+
+        if schedule < 1.0:  # Multi-scanning trial
+            schedule = schedule * self.temp_scan_num
+            schedule = schedule - np.floor(schedule)
+
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        context = datax.view([*datax.shape[:-1], self.gs_head_num, self.gs_head_dim])
+        context = self.softmax(context)
+        self.context = context
+        self.contextl = context.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+        # if not self.test_mode:
+        gssample = self.gsoftmax(context, temperature=temperature)
+        self.gssample = gssample
+        # else:
+        # maxind = torch.argmax(context,dim=-1)
+        # gssample = one_hot(maxind, 2)
+
+        self.loss_reg = self.cal_regloss()
+
+        # if not hasattr(self, "output_size"):
+        #     self.output_size=None
+
+        # if self.sample_mode:
+        #     if self.output_size is not None:
+        #         output = self.i2o(gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim]))
+        #         return output
+        #     else:
+        #         return gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim])
+        # else:
+        #     if self.output_size is not None:
+        #         output = self.i2o(gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim]))
+        #         return output
+        #     else:
+        #         return gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+
+        if self.sample_mode:
+            return gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim])
+        else:
+            return gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+
+    def cal_regloss(self):
+        # context,prior should be log probability
+        prior = self.softmax(self.prior)
+        ent_prior = -torch.mean(torch.sum(torch.exp(prior) * prior, dim=-1))
+        prior = prior.view(1, self.gs_head_num, self.gs_head_dim).expand_as(self.context)
+        flatkl = torch.mean(torch.sum(torch.exp(self.context) * (self.context - prior), dim=-1))
+        loss =  self.reg_lamda * (flatkl + self.scale_factor * ent_prior)
+        # print("Loss GSVIB", flatkl, ent_prior)
+        return loss
+
+class GSVIB_InfoBottleNeck_Attentional(torch.nn.Module):
+    """
+    A GSVIB information bottleneck module with Attention extension.
+    if attention is 1, sample with context, else, sample with prior.
+    """
+    def __init__(self, model_para ,para=None):
+        super(self.__class__, self).__init__()
+
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num, self.gs_head_dim)), requires_grad=True)
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
         self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
@@ -1138,9 +1276,10 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         self.gs_head_num = model_para["gs_head_num"]
         self.output_size = model_para.get("output_size",None)
 
-    def forward(self, datax, schedule=1.0):
+    def forward(self, datax, attentionmat, schedule=1.0):
 
         assert datax.shape[-1] == self.gs_head_num * self.gs_head_dim
+        assert attentionmat.shape[-1] == self.gs_head_num
 
         if schedule < 1.0:  # Multi-scanning trial
             schedule = schedule * self.temp_scan_num
@@ -1151,17 +1290,20 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         else:
             temperature = np.exp(-5)
 
-        context = datax.view([*datax.shape[:-1], self.gs_head_num, self.gs_head_dim])
+        context_raw = datax.view([*datax.shape[:-1], self.gs_head_num, self.gs_head_dim])
+        attentionmat = attentionmat.view(*attentionmat.shape, 1).expand_as(context_raw)
+        context = context_raw * attentionmat + self.prior.expand_as(context_raw) * (1 - attentionmat)
         context = self.softmax(context)
         self.context = context
         self.contextl = context.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
         # if not self.test_mode:
         gssample = self.gsoftmax(context, temperature=temperature)
+
         self.gssample = gssample
+        self.attentionmat = attentionmat
         # else:
         # maxind = torch.argmax(context,dim=-1)
         # gssample = one_hot(maxind, 2)
-
 
         self.loss_reg = self.cal_regloss()
 
@@ -1188,6 +1330,127 @@ class GSVIB_InfoBottleNeck(torch.nn.Module):
         prior = prior.view(1, self.gs_head_num, self.gs_head_dim).expand_as(self.context)
         flatkl = torch.mean(torch.sum(torch.exp(self.context) * (self.context - prior), dim=-1))
         loss =  self.reg_lamda * (flatkl + self.scale_factor * ent_prior)
+        # print("Loss GSVIB", flatkl, ent_prior)
+        return loss
+
+class GSVIB_InfoBottleNeck_Multihead(torch.nn.Module):
+    """
+    A GSVIB information bottleneck module with Multihead extension.
+    A onehot attention is helping to select FF para
+    """
+    def __init__(self, model_para ,para=None):
+        super(self.__class__, self).__init__()
+
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        # self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num, self.att_size, self.gs_head_dim)), requires_grad=True)
+        self.prior = torch.nn.Parameter(torch.zeros((self.gs_head_num, self.gs_head_dim)),requires_grad=True)
+        self.i2h = Linear_Multihead(self.input_size, self.gs_head_num * self.gs_head_dim, self.att_size, bias=True)
+        # self.h2o = Linear_Multihead(self.gs_head_num * self.gs_head_dim, self.output_size, self.att_size, bias=True)
+
+        self.softmax = torch.nn.LogSoftmax(dim=-1)
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample_size, sample_mode=self.sample_mode)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para=para
+        self.freeze_mode = para.get("freeze_mode", False)
+        self.temp_scan_num = para.get("temp_scan_num", 1)
+        self.sample_mode = para.get("sample_mode", False)
+        self.sample_size = para.get("sample_size", 1)
+        self.reg_lamda = para.get("reg_lamda", 0.1) # weight on KL
+        self.scale_factor = para.get("scale_factor", 1.0) # weight on entropy
+
+    def set_model_para(self,model_para):
+        # model_para = {
+        #     "gs_head_dim": 2,
+        #     "gs_head_num": 64,
+        #     "output_size": None
+        # }
+        self.model_para = model_para
+        self.gs_head_dim = model_para["gs_head_dim"]
+        self.gs_head_num = model_para["gs_head_num"]
+        self.input_size = model_para["input_size"]
+        # self.output_size = model_para["output_size"]
+        self.output_size = model_para.get("output_size",None)
+        self.att_size = model_para["att_size"]
+
+    def forward(self, datax, attentionmat, schedule=1.0):
+
+        assert datax.shape[-1] == self.input_size
+        assert attentionmat.shape[-1] == self.att_size
+
+        if schedule < 1.0:  # Multi-scanning trial
+            schedule = schedule * self.temp_scan_num
+            schedule = schedule - np.floor(schedule)
+
+        if not self.freeze_mode:
+            temperature = np.exp(-schedule * 5)
+        else:
+            temperature = np.exp(-5)
+
+        context = self.i2h(datax, attentionmat)
+        context = context.view([*datax.shape[:-1], self.gs_head_num, self.gs_head_dim])
+        context = self.softmax(context)
+        self.context = context
+        self.contextl = context.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+        gssample = self.gsoftmax(context, temperature=temperature)
+
+        self.gssample = gssample
+        self.attentionmat = attentionmat
+
+        # self.loss_reg = self.cal_regloss(attentionmat)
+        self.loss_reg = self.cal_regloss()
+
+        if not hasattr(self, "output_size"):
+            self.output_size=None
+
+        if self.sample_mode:
+            if self.output_size is not None:
+                output = self.i2o(gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim]))
+                return output
+            else:
+                return gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim])
+        else:
+            if self.output_size is not None:
+                output = self.i2o(gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim]))
+                return output
+            else:
+                return gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+
+        # if self.sample_mode:
+        #     output = self.i2o(gssample.view([*datax.shape[:-1], self.sample_size,self.gs_head_num* self.gs_head_dim]))
+        #     return output
+        # else:
+        #     output = self.h2o(gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim]), attentionmat)
+        #     return output
+
+    # def cal_regloss(self, attentionmat):
+    #     # context,prior should be log probability
+    #     prior_sel = attentionmat.unsqueeze(-3).matmul(self.prior).transpose(-2,-3)
+    #     prior = self.softmax(prior_sel)
+    #     ent_prior = -torch.mean(torch.sum(torch.exp(prior) * prior, dim=-1))
+    #     flatkl = torch.mean(torch.sum(torch.exp(self.context) * (self.context - prior), dim=-1))
+    #     loss =  self.reg_lamda * (flatkl + self.scale_factor * ent_prior)
+    #     return loss
+
+    def cal_regloss(self):
+        # context,prior should be log probability
+        prior = self.softmax(self.prior)
+        ent_prior = -torch.mean(torch.sum(torch.exp(prior) * prior, dim=-1))
+        prior = prior.view(1, self.gs_head_num, self.gs_head_dim).expand_as(self.context)
+        flatkl = torch.mean(torch.sum(torch.exp(self.context) * (self.context - prior), dim=-1))
+        loss = self.reg_lamda * (flatkl + self.scale_factor * ent_prior)
         # print("Loss GSVIB", flatkl, ent_prior)
         return loss
 
@@ -1311,6 +1574,77 @@ class Gsoftmax_Sample(torch.nn.Module):
         self.gssample = gssample
 
         output = gssample.view([*datax.shape[:-1], self.gs_head_num * self.gs_head_dim])
+
+        return output
+
+class FF_MLP_Multihead(torch.nn.Module):
+    """
+    Feed forward multi-layer perceotron
+    """
+    def __init__(self, model_para ,para=None):
+        super(self.__class__, self).__init__()
+
+        # self.coop_mode=False
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
+
+        if len(self.mlp_layer_para)>0:
+            mlp_layer_para0 = [self.input_size] + self.mlp_layer_para
+            self.linear_layer_stack = torch.nn.ModuleList([
+                Linear_Multihead(mlp_layer_para0[iil], mlp_layer_para0[iil+1], self.head_num, bias = True)
+                for iil in range(len(mlp_layer_para0)-1)])
+            self.lnrelu_stack = torch.nn.ModuleList([
+                torch.nn.Sequential(torch.nn.LayerNorm(mlp_layer_para0[iil+1]),torch.nn.ReLU())
+                for iil in range(len(mlp_layer_para0)-1)])
+            self.h2o = Linear_Multihead(mlp_layer_para0[-1], self.output_size, self.head_num , bias = True)
+        else:
+            self.i2o = Linear_Multihead(self.input_size, self.output_size, self.head_num, bias = True)
+
+        self.dropout = torch.nn.Dropout(self.dropout_rate)
+
+        self.save_para = {
+            "model_para": model_para,
+            "type": str(self.__class__),
+            "misc_para": para,
+            "id": id(self)  # to get information about real module sharing
+        }
+
+    def para(self,para):
+        self.misc_para=para
+        self.dropout_rate = para.get("dropout_rate", 0.0)
+
+    def set_model_para(self,model_para):
+        # model_para_h={
+        #     "input_size": 64,
+        #     "output_size":1,
+        #     "mlp_layer_para": [32,16,8]
+        # }
+        self.model_para = model_para
+        self.input_size = model_para["input_size"]
+        self.output_size = model_para["output_size"]
+        self.head_num = model_para["head_num"]
+        self.mlp_layer_para = model_para["mlp_layer_para"] # [hidden0, hidden1, ...]
+
+    def forward(self, inputx, cluster, schedule=None):
+        """
+        Forward
+        :param input: [window batch l_size]
+        :param hidden:
+        :return:
+        """
+        self.cuda_device=inputx.device
+
+        hidden = inputx
+        if len(self.mlp_layer_para) > 0:
+            for ii, fmd in enumerate(self.linear_layer_stack):
+                hidden = fmd(hidden, cluster)
+                hidden = self.lnrelu_stack[ii](hidden)
+            output=self.h2o(hidden, cluster)
+        else:
+            output = self.i2o(inputx, cluster)
 
         return output
 

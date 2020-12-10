@@ -683,6 +683,51 @@ class PyTrain_Main(object):
             # trainer
             self.evalmem[4].append(torch.exp(model.model.trainer.seq2_train.context.detach().cpu()).numpy())
             self.evalmem[5].append(model.model.trainer.seq2_train.gssample.detach().cpu().numpy())
+
+        elif self.mem_eval_mode == "self_pred_with_mask":
+            # Output
+            mask = model.model.mask_bigru.input_mask
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output.detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            entm = torch.sum(ent * (1 - mask)) / torch.sum(1 - mask)
+            self.evalmem[0].append(entm.cpu().data.numpy())
+            self.evalmem[1].append(labels.detach().cpu().numpy())
+            # cooprer
+            self.evalmem[2].append(torch.exp(model.model.infobn.context.detach().cpu()).numpy())
+            self.evalmem[3].append(model.model.infobn.gssample.detach().cpu().numpy())
+            # mask
+            self.evalmem[4].append(mask.cpu().numpy())
+
+        elif self.mem_eval_mode == "auto_word_att":
+            # Output
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output.detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[0].append(ent.cpu().data.numpy())
+            self.evalmem[1].append(labels.detach().cpu().numpy())
+            # cooprer
+            self.evalmem[2].append(torch.exp(model.model.sfms.context.detach().cpu()).numpy())
+            self.evalmem[3].append(model.model.sfms.gssample.detach().cpu().numpy())
+            # trainer
+            self.evalmem[4].append(torch.exp(model.model.infobn_sem.context.detach().cpu()).numpy())
+            self.evalmem[5].append(model.model.infobn_sem.gssample.detach().cpu().numpy())
+            self.evalmem[6].append(model.model.infobn_sem.attentionmat.detach().cpu().numpy())
+
+        elif self.mem_eval_mode == "auto_word_multihead":
+            # Output
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output.detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[0].append(ent.cpu().data.numpy())
+            self.evalmem[1].append(labels.detach().cpu().numpy())
+            # cooprer
+            self.evalmem[2].append(torch.exp(model.model.sfms.context.detach().cpu()).numpy())
+            self.evalmem[3].append(model.model.sfms.gssample.detach().cpu().numpy())
+            # trainer
+            self.evalmem[4].append(torch.exp(model.model.infobn_sem.context.detach().cpu()).numpy())
+            self.evalmem[5].append(model.model.infobn_sem.gssample.detach().cpu().numpy())
+
         elif self.mem_eval_mode == "senti":
             # Output
             lsoftmax = torch.nn.LogSoftmax(dim=-1)
@@ -745,6 +790,23 @@ class PyTrain_Main(object):
             pt_Senti_trainer = self.find_evalmem_recursize(model.model, "Senti_trainer")
             self.evalmem[4].append(torch.exp(pt_Senti_trainer.context.detach()))
             self.evalmem[5].append(pt_Senti_trainer.gssample.detach())
+
+        elif self.mem_eval_mode == "senti2":
+            # Output
+            lsoftmax = torch.nn.LogSoftmax(dim=-1)
+            output = lsoftmax(model.model.output.detach())
+            ent = cal_entropy(output.data, log_flag=True, byte_flag=False, torch_flag=True)
+            self.evalmem[0].append(torch.mean(ent).cpu().numpy())
+            self.evalmem[1].append(labels.detach().cpu().numpy())
+            self.evalmem[2].append(torch.exp(model.model.mltitubeff.infobnl[0].context.detach()).cpu().numpy())
+            self.evalmem[3].append(model.model.mltitubeff.infobnl[0].gssample.detach().cpu().numpy())
+            # trainer Senti
+            self.evalmem[4].append(torch.exp(model.model.mltitubeff.infobnl[1].context.detach()).cpu().numpy())
+            self.evalmem[5].append(model.model.mltitubeff.infobnl[1].gssample.detach().cpu().numpy())
+            # POS_label
+            self.evalmem[6].append(model.model.sfms.gssample.detach().cpu().numpy())
+            # ELSE_label
+            self.evalmem[7].append(model.model.gssample.gssample.detach().cpu().numpy())
 
     def find_evalmem_recursize(self, model, label):
         # print(model.__class__)

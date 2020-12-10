@@ -300,23 +300,16 @@ class Gumbel_Sigmoid(torch.nn.Module):
     def __init__(self):
         super(self.__class__, self).__init__()
         self.sigmoid = torch.nn.Sigmoid()
-        self.annealing = True
 
-    def forward(self, input, temperature=1.0, cuda_device="cuda:0"):
+    def forward(self, inputx, temperature=1.0, cuda_device="cuda:0"):
         """
         Forward
         :param input:
         :param hidden:
         :return:
         """
-
-        U = torch.rand(input.shape)
-        U = U.to(cuda_device)
-        if not self.annealing:
-            G=self.sigmoid((input+torch.log(U)-torch.log(1-U))/temperature)
-        else:
-            G = self.sigmoid((input / temperature + torch.log(U) - torch.log(1 - U)) / temperature)
-
+        U = torch.cuda.FloatTensor(inputx.shape).uniform_()
+        G = self.sigmoid((inputx+torch.log(U)-torch.log(1-U))/temperature)
         return G
 
 class Gumbel_Tanh(torch.nn.Module):

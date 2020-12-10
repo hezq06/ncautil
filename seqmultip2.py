@@ -1572,14 +1572,18 @@ class Gumbel_Softmax(torch.nn.Module):
         """
         # input must be log probability
         device = inmat.device
+        # torch.cuda.set_device(device)
         if self.sample_mode:
             ishape=list(inmat.shape)
             vshape=list(inmat.shape)
             ishape.insert(2, self.sample) # dw, batch, sample, ...
             vshape.insert(2, self.sample)
             inmat=torch.unsqueeze(inmat, 2).expand(ishape)
-        ui = torch.rand(inmat.shape)
-        ui = ui.to(device)
+
+        # ui = torch.rand(inmat.shape)
+        # ui = ui.to(device)
+
+        ui = torch.cuda.FloatTensor(inmat.shape).uniform_()
         gi = -torch.log(-torch.log(ui))
         betax1 = (inmat + gi) / temperature
         self.betax1 = betax1
@@ -2260,21 +2264,19 @@ class Linear_Multihead(torch.nn.Module):
     def forward(self, input, cluster):
         """
 
-        :param input: shape [wd, batch, smp,  input_size]
-        :param cluster: shape [wd, batch] digit is head_id
+        :param input: shape [..., l_size]
+        :param cluster: shape [..., onehot att] head_id is 1
         :return:
         """
-        self.cuda_device=input.device
-        cluster_oh = one_hot(cluster, self.head_num, cuda_device=self.cuda_device) # [wd, batch, self.head_num]
-        weight_c = cluster_oh.unsqueeze(-3).matmul(self.weight) # [wd, output_size, batch, input_size]
+        # self.cuda_device=input.device
+        # cluster_oh = one_hot(cluster, self.head_num, cuda_device=self.cuda_device) # [wd, batch, self.head_num]
+        weight_c = cluster.unsqueeze(-3).matmul(self.weight) # [wd, output_size, batch, input_size]
         weight_c=weight_c.transpose(-2,-3).transpose(-1,-2) # [wd, batch, input_size, output_size]
-        res = input.matmul(weight_c)
-        bias = cluster_oh.matmul(self.bias).unsqueeze(-2)
+        res = input.unsqueeze(-2).matmul(weight_c).squeeze()
+        bias = cluster.matmul(self.bias)
         if self.bias is not None:
             res = res + bias
         return res
-        # output=torch.matmul(input.permute(1,0,2),weight_mask)+self.bias.view(1,-1)
-        # return output.permute(1,0,2)
 
 class BiGRU_NLP_GSVIB_HSOFTMAX2(torch.nn.Module):
     """

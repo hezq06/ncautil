@@ -88,7 +88,7 @@ def load_model(model,file,map_location=None,except_list=[]):
 def build_model_from_para(save_para, leaf_map_dict=None):
     print(save_para["type"])
     trial_list = ["ABS_CNN_COOP", "ABS_CNN_SEQ", "Gsoftmax_Sample", "Multitube_FF_MLP", "Softmax_Sample", "FF_MLP",
-                  "BiGRU_NLP"]
+                  "BiGRU_NLP","GSVIB_InfoBottleNeck"]
     if leaf_map_dict is None:
         leaf_map_dict={"leaf_cnt":0, "id_map":dict([])}
 
@@ -494,7 +494,7 @@ class MNIST_dataset(object):
         self.dataset_sup_test["label"] = data_test.test_labels
 
 class IMDbDataset(torch.utils.data.Dataset):
-    def __init__(self, data_path, data_files, window = 128, get_mode="POS", nVcab=30000, nlputil_ls=None):
+    def __init__(self, data_path, data_files, window = 128, get_mode="POS", nVcab=30000, nlputil_ls=None, max_data_len=None):
         """
         IMDbDataset util
         :param data_path: /storage/hezq17/IMDbDataset
@@ -547,6 +547,8 @@ class IMDbDataset(torch.utils.data.Dataset):
         self.id2w = id2w
         self.id2w_pos = id2w_pos
 
+        self.max_data_len = max_data_len
+
     def sanity_check(self,pos_corpus_tup,senti_corpus_tup):
         print("Doing sanity check...")
         assert len(pos_corpus_tup) == len(senti_corpus_tup)
@@ -596,7 +598,10 @@ class IMDbDataset(torch.utils.data.Dataset):
         number of text
         :return:
         """
-        numblocks = np.floor(len(self.dataset)/self.window)
+        if self.max_data_len is None:
+            numblocks = np.floor(len(self.dataset)/self.window)
+        else:
+            numblocks = self.max_data_len
         return int(numblocks)
 
 

@@ -22,7 +22,7 @@ from nltk.corpus import brown,treebank
 from nltk.parse import stanford
 import gensim
 from ncautil.w2vutil import W2vUtil
-# from ncautil.datautil import *
+from ncautil.datautil import *
 from nltk.tag import StanfordPOSTagger
 from nltk.tokenize import word_tokenize
 
@@ -40,6 +40,11 @@ from ncautil.ncamath import *
 from tqdm import tqdm,tqdm_notebook
 
 __author__ = "Harry He"
+
+def load_data(file):
+    data = pickle.load(open(file, "rb"))
+    print("Data load from ", file)
+    return data
 
 class NLPDataSet(torch.utils.data.Dataset):
 

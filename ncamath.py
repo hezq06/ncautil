@@ -19,6 +19,7 @@ from sklearn.manifold import TSNE
 from scipy.cluster.hierarchy import dendrogram
 from scipy.optimize import linear_sum_assignment
 from tqdm import tqdm
+import collections
 
 def cluster(data,n_clusters,mode="kmeans",sample_weight=None, ii_iter=1000):
     """
@@ -533,7 +534,7 @@ def cal_pdistance(data):
     dist=np.sum(np.abs(data-orin))*np.sum(np.abs(data-orin))/2
     return dist
 
-def cal_entropy(data,log_flag=False,byte_flag=False, torch_flag=False, cuda_device="cuda:2"):
+def cal_entropy(data,log_flag=False,byte_flag=False, torch_flag=False):
     """
     Cal entropy of a vector
     :param data:
@@ -549,16 +550,13 @@ def cal_entropy(data,log_flag=False,byte_flag=False, torch_flag=False, cuda_devi
             data=np.exp(data)
         # assert len(data.shape) == 1
         data_adj=np.zeros(data.shape)+data
-        data_adj[data_adj==0]=1e-9
         data_adj = data_adj / np.sum(data_adj, axis=-1,keepdims=True)
-        ent=-np.sum(data_adj*np.log(data_adj)/adj,axis=-1)
+        ent=-np.sum(data_adj*np.log(data_adj + 1e-9)/adj,axis=-1)
     else:
-        data=data.to(cuda_device)
         if log_flag:
             data=torch.exp(data)
-        data[data == 0] = 1e-9
         data = data / torch.sum(data, dim=-1, keepdim=True)
-        ent = -torch.sum(data * torch.log(data) / adj, dim=-1)
+        ent = -torch.sum(data * torch.log(data + 1e-9) / adj, dim=-1)
     return ent
 
 def cal_entropy_raw(data,data_discrete=True,data_bins=None):
@@ -605,20 +603,38 @@ def cal_entropy_raw_ND_discrete(data):
     projV=np.random.random(datanp.shape[1])
     datatup=datanp.dot(projV)
 
-    itemsets = list(set(datatup))
-    nsets = len(itemsets)
+    itemcnter = collections.Counter(datatup)
 
-    hashtab = dict([])
-    for ii in range(nsets):
-        hashtab[itemsets[ii]] = 0
-
-    for ii in range(len(datatup)):
-        hashtab[datatup[ii]] = hashtab[datatup[ii]] + 1
-
-    pvec = np.zeros(nsets)
-    for ii, val in enumerate(hashtab.values()):
+    pvec = np.zeros(len(itemcnter))
+    for ii, val in enumerate(itemcnter.values()):
         pvec[ii] = val
+    pvec = pvec / np.sum(pvec)
 
+    return cal_entropy(pvec)
+
+def cal_entropy_raw_ND_discrete_torch(datanp):
+    """
+    Calculate entropy of raw data
+    N dimensional discrete data
+    :param data: [Ndata of D-dim value]
+    :param data_discrete: if data is discrete
+    :return:
+    """
+    datanp=datanp.type(torch.FloatTensor)
+    device = datanp.device
+    if len(datanp.shape) == 1:
+        datanp=datanp.view(-1,1)
+    assert len(datanp.shape) == 2
+    assert datanp.shape[0]>datanp.shape[1]
+
+    projV=torch.rand(datanp.shape[1]).to(device)
+    datatup=datanp.matmul(projV)
+
+    itemcnter = collections.Counter(datatup.cpu().numpy())
+
+    pvec = np.zeros(len(itemcnter))
+    for ii, val in enumerate(itemcnter.values()):
+        pvec[ii] = val
     pvec = pvec / np.sum(pvec)
 
     return cal_entropy(pvec)
@@ -743,6 +759,34 @@ def cal_muinfo_raw_ND_discrete(X,Z):
     Hz = cal_entropy_raw_ND_discrete(Znp)
 
     Hxz = cal_entropy_raw_ND_discrete(XZnp)
+
+    return Hx+Hz-Hxz
+
+def cal_muinfo_raw_ND_discrete_torch(Xnp,Znp):
+    """
+    Calculate multual information of N dimensional discrete data X and Z
+    I(X;Z) = H(X) + H(Z) - H(X,Z)
+    :param X: [Ndata of D-dim value]
+    :param Z: [Ndata of D-dim value]
+    :return:
+    """
+    if len(Xnp.shape)==1:
+        Xnp=Xnp.view(-1,1)
+    assert len(Xnp.shape) == 2
+    assert Xnp.shape[0] > Xnp.shape[1]
+
+    if len(Znp.shape)==1:
+        Znp=Znp.view(-1,1)
+    assert len(Znp.shape) == 2
+    assert Znp.shape[0] > Znp.shape[1]
+
+    XZnp = torch.cat((Xnp,Znp),dim=1)
+
+    Hx= cal_entropy_raw_ND_discrete_torch(Xnp)
+
+    Hz = cal_entropy_raw_ND_discrete_torch(Znp)
+
+    Hxz = cal_entropy_raw_ND_discrete_torch(XZnp)
 
     return Hx+Hz-Hxz
 
@@ -1106,7 +1150,6 @@ class HCObject(object):
         self.data=data
         self.label=label
         self.accN=accN
-
 
 class HierachicalCluster(object):
     """
