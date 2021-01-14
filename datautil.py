@@ -27,9 +27,9 @@ from pycocotools import mask as coco_mask
 from ncautil.ncamath import check_shape
 from ncautil.nlputil import NLPutil
 
-from ncautil.seqmultip3 import BiGRU_NLP,GSVIB_InfoBottleNeck,ABS_CNN_SEQ,CAL_LOSS,Softmax_Sample,ABS_CNN_COOP,Multitube_FF_MLP,Gsoftmax_Sample
-from ncautil.seqmultip3 import Multitube_BiGRU_MLP
-from ncautil.seqmultip2 import FF_MLP
+# from ncautil.seqmultip3 import BiGRU_NLP,GSVIB_InfoBottleNeck,ABS_CNN_SEQ,CAL_LOSS,Softmax_Sample,ABS_CNN_COOP,Multitube_FF_MLP,Gsoftmax_Sample
+# from ncautil.seqmultip3 import Multitube_BiGRU_MLP
+# from ncautil.seqmultip2 import FF_MLP
 
 
 def save_data(data,file,large_data=False):
@@ -600,6 +600,86 @@ class IMDbDataset(torch.utils.data.Dataset):
         """
         if self.max_data_len is None:
             numblocks = np.floor(len(self.dataset)/self.window)
+        else:
+            numblocks = self.max_data_len
+        return int(numblocks)
+
+class WikiDataset(torch.utils.data.Dataset):
+    def __init__(self,partition=list(range(7)), window = 256, max_data_len=None, get_mode="Autoencode"):
+        """
+        WikiDataset util
+        """
+        self.data_path="/storage/hezq17/wikitext/wiki_text_pickle"
+        data_meta_file="/storage/hezq17/wikitext/wiki_text_pickle/metadata_wiki_0to9.pickle"
+        nlp_file="/storage/hezq17/wikitext/wiki_text_pickle/nlp_text_wiki_0_v30000.pickle"
+
+        self.window = window
+        self.get_mode = get_mode
+        self.partition = partition
+
+        self.nlp_text=load_data(nlp_file)
+
+        meta_data=load_data(data_meta_file)
+        blk_par = []
+        for ii in partition:
+            metaitem = meta_data["wiki_%s"%ii]
+            blknum = np.floor(metaitem["length"]/ self.window)
+            blk_par.append(blknum)
+
+        for ii in range(len(blk_par)):
+            if ii > 0:
+                blk_par[ii]=blk_par[ii]+blk_par[ii-1]
+        self.blk_par = blk_par
+
+        self.current_file_id=None
+        self.current_file_data=None
+
+        self.max_data_len = max_data_len
+
+    def __getitem__(self, idx):
+        """
+        Get block idx
+        :param idx:
+        :return: [window, l_size]
+        """
+
+        file_id, fileidx = self.locate_file_id(idx)
+        if file_id != self.current_file_id:
+            file_ii = self.partition[file_id]
+            print("Load text file %s"%file_ii)
+            dataset = load_data(os.path.join(self.data_path, "dataset_wiki_%s.pickle"%file_ii))
+            self.current_file_id = file_id
+            self.current_file_data = dataset
+
+        startp = self.window * fileidx
+        endp = self.window * (fileidx+1)
+
+        if self.get_mode=="Autoencode":
+            ptdata = self.current_file_data[int(startp):int(endp)]
+            textblock_vecs = self.nlp_text.pt_emb(torch.LongTensor(ptdata))
+            pt_word = torch.LongTensor(ptdata)
+            return textblock_vecs, pt_word
+
+    def locate_file_id(self, idx):
+
+        for ii in range(len(self.blk_par)):
+            if idx < self.blk_par[ii]:
+                if ii==0:
+                    fileidx = idx
+                else:
+                    fileidx = idx - self.blk_par[ii - 1]
+                return ii, fileidx
+
+        return False
+
+    def __len__(self):
+        """
+        number of text
+        :return:
+        """
+
+        if self.max_data_len is None:
+            numblocks = self.blk_par[-1]
         else:
             numblocks = self.max_data_len
         return int(numblocks)

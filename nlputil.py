@@ -22,7 +22,7 @@ from nltk.corpus import brown,treebank
 from nltk.parse import stanford
 import gensim
 from ncautil.w2vutil import W2vUtil
-from ncautil.datautil import *
+# from ncautil.datautil import *
 from nltk.tag import StanfordPOSTagger
 from nltk.tokenize import word_tokenize
 
@@ -125,7 +125,7 @@ class NLPutil(object):
             file = os.path.join(self.wiki_text_path, "wiki_"+str(file_idx))
             f = open(file)
             raw = f.read()
-            self.corpus = word_tokenize(raw)
+            self.corpus = word_tokenize(raw) # speed bottleneck
             self.corpus = [w.lower() for w in self.corpus]
             self.sub_corpus = self.corpus[:self.sub_size]
         elif corpus=="imdb":

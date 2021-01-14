@@ -548,6 +548,9 @@ class PyTrain_Main(object):
 
     def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200):
 
+        currentDT = datetime.datetime.now()
+        print("Time of training starting %s. "%str(currentDT))
+
         self.model.train()
 
         if optimizer_label == "adam":
