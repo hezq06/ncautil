@@ -631,10 +631,20 @@ class WikiDataset(torch.utils.data.Dataset):
                 blk_par[ii]=blk_par[ii]+blk_par[ii-1]
         self.blk_par = blk_par
 
-        self.current_file_id=None
-        self.current_file_data=None
+        # self.current_file_id=None
+        # self.current_file_data=None
 
         self.max_data_len = max_data_len
+
+        self.file_data=[]
+        for ii in partition:
+            file_dataii = load_data(os.path.join(self.data_path, "dataset_wiki_%s.pickle"%ii))
+            self.file_data.append(file_dataii)
+
+        # Generate idx map to cover large range of wikidata for small max_data_len
+        numblocks = self.blk_par[-1]
+        self.idmap = np.array(range(int(numblocks)))
+        np.random.shuffle(self.idmap)
 
     def __getitem__(self, idx):
         """
@@ -642,23 +652,31 @@ class WikiDataset(torch.utils.data.Dataset):
         :param idx:
         :return: [window, l_size]
         """
-
+        idx = self.idmap[idx]
         file_id, fileidx = self.locate_file_id(idx)
-        if file_id != self.current_file_id:
-            file_ii = self.partition[file_id]
-            print("Load text file %s"%file_ii)
-            dataset = load_data(os.path.join(self.data_path, "dataset_wiki_%s.pickle"%file_ii))
-            self.current_file_id = file_id
-            self.current_file_data = dataset
+        # if file_id != self.current_file_id:
+        #     file_ii = self.partition[file_id]
+        #     print("Load text file %s"%file_ii)
+        #     dataset = load_data(os.path.join(self.data_path, "dataset_wiki_%s.pickle"%file_ii))
+        #     self.current_file_id = file_id
+        #     self.current_file_data = dataset
 
         startp = self.window * fileidx
         endp = self.window * (fileidx+1)
 
         if self.get_mode=="Autoencode":
-            ptdata = self.current_file_data[int(startp):int(endp)]
+            ptdata = self.file_data[file_id][int(startp):int(endp)]
             textblock_vecs = self.nlp_text.pt_emb(torch.LongTensor(ptdata))
             pt_word = torch.LongTensor(ptdata)
             return textblock_vecs, pt_word
+        if self.get_mode=="Autoencode_noEmb":
+            ptdata = self.file_data[file_id][int(startp):int(endp)]
+            pt_word = torch.LongTensor(ptdata)
+            return pt_word, pt_word
+        if self.get_mode=="Centerof3":
+            ptdata = self.file_data[file_id][int(startp):int(endp)]
+            pt_word = torch.LongTensor(ptdata)
+            return pt_word, pt_word[1]
 
     def locate_file_id(self, idx):
 

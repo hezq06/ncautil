@@ -9,6 +9,10 @@ Author: Harry He
 # # matplotlib.use('gtk')
 # %matplotlib
 
+### Example of cuda debug
+# import os
+# os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+
 ### Import example
 import matplotlib
 import numpy as np
@@ -141,3 +145,32 @@ def Example_of_Python_Profiling(run_something):
 import os
 def Example_of_iPython_Notebook():
     os.environ["CUDA_LAUNCH_BLOCKING"]="1"
+
+### example of numba
+from numba import njit
+@ njit(parallel=True)
+def Example_of_numba(input_data):
+    for iia in range(1000):
+        for iib in range(1000):
+            pass
+
+### simple parallel example
+import multiprocessing
+
+def Example_of_Parallel(procnum, return_dict):
+    """worker function"""
+    print(str(procnum) + " represent!")
+    return_dict[procnum] = procnum
+
+if __name__ == "__main__":
+    manager = multiprocessing.Manager()
+    return_dict = manager.dict() # very slow if return_dict is big
+    jobs = []
+    for i in range(5):
+        p = multiprocessing.Process(target=Example_of_Parallel, args=(i, return_dict))
+        jobs.append(p)
+        p.start()
+
+    for proc in jobs:
+        proc.join()
+    print(return_dict.values())

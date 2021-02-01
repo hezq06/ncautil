@@ -30,7 +30,7 @@ from tqdm import tqdm
 import datetime
 
 from ncautil.ncamath import *
-from ncautil.datautil import save_model,save_data,load_data
+from ncautil.datautil import save_model, load_model,save_data,load_data
 
 def pltscatter(data,dim=(0,1),labels=None,title=None,xlabel=None,ylabel=None,color=None):
     assert data.shape[0]>data.shape[1]
@@ -95,7 +95,7 @@ def plot_mat(data,start=0,lim=1000,symmetric=False,title=None,tick_step=None,sho
     if show:
         plt.show()
 
-def plot_mat_sub(datal,start=0,lim=1000,symmetric=True):
+def plot_mat_sub(datal,start=0,lim=1000,symmetric=True, partition = (3,3), subtitles = None):
     """
     Subplot a list of mat
     :param data:
@@ -105,8 +105,13 @@ def plot_mat_sub(datal,start=0,lim=1000,symmetric=True):
     :return:
     """
     N=len(datal)
-    assert N<6
-    fig, axes = plt.subplots(nrows=N, ncols=1)
+    # assert N<6
+    nrows, ncols = partition
+    assert N == nrows * ncols
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols)
+    maxdata = np.amax(np.array(datal))
+    mindata = np.amin(np.array(datal))
+
     for ii in range(len(datal)):
         ax=axes.flat[ii]
         data=datal[ii]
@@ -114,9 +119,11 @@ def plot_mat_sub(datal,start=0,lim=1000,symmetric=True):
         assert len(data.shape) == 2
         img = data[:, start:start + lim]
         if symmetric:
-            im=ax.imshow(img, cmap='seismic', clim=(-np.amax(data), np.amax(data)))
+            im=ax.imshow(img, cmap='seismic', clim=(-maxdata, maxdata))
         else:
-            im=ax.imshow(img, cmap='seismic')
+            im=ax.imshow(img, cmap='seismic', clim=(mindata, maxdata))
+        if subtitles is not None:
+            ax.set_title(str(subtitles[ii]))
     fig.subplots_adjust(right=0.8)
     cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
     fig.colorbar(im, cax=cbar_ax)
@@ -528,7 +535,8 @@ class PyTrain_Main(object):
     A main class to run training
     """
     def __init__(self, model, data_dict, device="cuda:0", para=None):
-        self.model = model.to(device)
+        self.model = model
+        self.model.model = self.model.model.to(device)
         self.data_dict = data_dict
         self.device = device
 
@@ -539,6 +547,7 @@ class PyTrain_Main(object):
         currentDT = datetime.datetime.now()
         self.log = "Time of creation: " + str(currentDT) + "\n"
         self.train_hist = []
+        self.eval_hist = []
         self.evalmem = None
 
     def para(self, para):
@@ -546,16 +555,17 @@ class PyTrain_Main(object):
         self.figure_plot = para.get("figure_plot", True)
         self.loss_clip = para.get("loss_clip", 50.0)
 
-    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200):
+    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200, weight_decay=0.0, warm_up_steps=1000):
 
         currentDT = datetime.datetime.now()
         print("Time of training starting %s. "%str(currentDT))
+        self.log = self.log + "Start training with epoch: %s, lr: %s, optimizer: %s, weight_decay: %s"%(epoch, lr, optimizer_label, weight_decay)
 
         self.model.train()
 
         if optimizer_label == "adam":
             print("Using adam optimizer")
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=0.0)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         elif optimizer_label == "adamw":
             optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
         else:
@@ -571,6 +581,11 @@ class PyTrain_Main(object):
             self.model.train()
 
             for iis,(datax, labels) in enumerate(self.data_dict["train"]):
+
+                if ii_epoch==0 and warm_up_steps>0 and iis<warm_up_steps:
+                    optimizer.param_groups[0]["lr"]=(iis/warm_up_steps)*lr
+                else:
+                    optimizer.param_groups[0]["lr"] =  lr
 
                 step_per_epoch=len(self.data_dict["train"])
                 ii_tot = iis + ii_epoch * step_per_epoch
@@ -615,8 +630,10 @@ class PyTrain_Main(object):
                     self.eval_mem(datax, labels, self.model)
         if self.loss_exp_flag:
             print("Evaluation Perplexity: ", np.exp(np.mean(np.array(lossl))))
+            self.eval_hist.append(np.exp(np.mean(np.array(lossl))))
         else:
             print("Evaluation Perplexity: ", np.mean(np.array(lossl)))
+            self.eval_hist.append(np.mean(np.array(lossl)))
         endt = time.time()
         print("Time used in evaluation: ", endt - startt)
 
@@ -823,6 +840,24 @@ class PyTrain_Main(object):
                 if model_pt is not None:
                     return model_pt
         return None
+
+    def save_session(self,file_name):
+
+        os.mkdir(file_name)
+        save_model(self.model.model, os.path.join(file_name,file_name+".model"))
+        session_log=dict([])
+        session_log["log"]=self.log
+        session_log["train_hist"] = self.train_hist
+        session_log["eval_hist"] = self.eval_hist
+        save_data(session_log, os.path.join(file_name,file_name+".sessionlog"))
+
+    def load_session(self,file_name):
+
+        load_model(self.model.model, os.path.join(file_name,file_name+".model"))
+        session_log = load_data(os.path.join(file_name,file_name+".sessionlog"))
+        self.log = session_log["log"]
+        self.train_hist = session_log["train_hist"]
+        self.eval_hist = session_log["eval_hist"]
 
     def _profiler(self, iis, loss, print_step=200):
 

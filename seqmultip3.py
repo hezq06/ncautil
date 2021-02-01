@@ -53,6 +53,12 @@ class CAL_LOSS(torch.nn.Module):
             loss = self.posiShapeMaterialLoss(output, labels)
         elif self.loss_flag == "senti_auto_loss":
             loss = self.SentiAutoLoss(output, labels)
+        elif self.loss_flag == "cross_entropy_grad_cancel":
+            lossc = torch.nn.CrossEntropyLoss(reduce=False)
+            loss = lossc(output, labels.type(torch.LongTensor).squeeze())
+            if self.model.grad_cancel is not None:
+                loss = loss + self.model.grad_cancel
+            loss = torch.mean(loss)
         else:
             raise Exception("Not implemented")
 
@@ -67,7 +73,6 @@ class CAL_LOSS(torch.nn.Module):
             loss = loss + model.loss_reg
             # print("A", model.loss_reg)
         if hasattr(model, "submodels"):
-            # print("B")
             for submodel in model.submodels:
                 loss = self.cal_loss_reg_recursize(submodel, loss)
         return loss
@@ -135,7 +140,7 @@ class CAL_LOSS(torch.nn.Module):
         lossc = torch.nn.CrossEntropyLoss()
         if not self.sample_mode:
             if len(output.shape)==2:
-                loss = lossc(output, labels.type(torch.LongTensor).to(device))
+                loss = lossc(output, labels.type(torch.LongTensor).squeeze().to(device))
             elif len(output.shape)==3:
                 loss = lossc(output.permute(0,2,1), labels.type(torch.LongTensor).to(device))
         else:
@@ -1513,9 +1518,14 @@ class Softmax_Sample(torch.nn.Module):
     """
     def __init__(self,model_para={},para={}):
         super(self.__class__, self).__init__()
+        self.set_model_para(model_para)
+
+        if para is None:
+            para = dict([])
+        self.para(para)
 
         self.softmax = torch.nn.LogSoftmax(dim=-1)
-        self.gsoftmax = Gumbel_Softmax(sample=1, sample_mode=False)
+        self.gsoftmax = Gumbel_Softmax(sample=self.sample, sample_mode=self.sample_mode)
 
         self.save_para = {
             "model_para": model_para,
@@ -1526,15 +1536,20 @@ class Softmax_Sample(torch.nn.Module):
 
     def para(self,para):
         self.misc_para=para
+        self.reduce_to_id=para.get("reduce_to_id", False)
 
     def set_model_para(self,model_para):
         self.model_para = model_para
+        self.sample = model_para.get("sample", 1)
+        self.sample_mode = model_para.get("sample_mode", False)
 
     def forward(self, datax, schedule=1.0):
         datax = self.softmax(datax)
         output = self.gsoftmax(datax, temperature=np.exp(-5))
         self.context = datax
         self.gssample = output
+        if self.reduce_to_id:
+            output=torch.argmax(output,dim=-1)
         return output
 
 class Gsoftmax_Sample(torch.nn.Module):

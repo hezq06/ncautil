@@ -770,6 +770,7 @@ def cal_muinfo_raw_ND_discrete_torch(Xnp,Znp):
     :param Z: [Ndata of D-dim value]
     :return:
     """
+
     if len(Xnp.shape)==1:
         Xnp=Xnp.view(-1,1)
     assert len(Xnp.shape) == 2
@@ -940,6 +941,7 @@ def cal_kappa_stat(seq1,seq2):
 def sample_id(prob, shape):
     """
     Sample id according to 1-d probability vec
+    or use torch.multinomial
     :param prob: normal probability vec
     :return: a torch LongTensor with shape
     """
