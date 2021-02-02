@@ -115,22 +115,22 @@ class BiTRF_NLP(torch.nn.Module):
             posi_mat = posi_mat.to(self.cuda_device)
         return posi_mat,n_posiemb
 
-    def forward(self, input, schedule=None):
+    def forward(self, inputx, schedule=None):
         """
         Forward
         # Transformer, use [batch, seq_len, hd_size] convention
-        :param input:
+        :param inputx:
         :param hidden:
         :return:
         """
-        self.cuda_device = input.device
-        if self.posi_sinmat.device != input.device:
-            self.posi_sinmat = self.posi_sinmat.to(input.device)
+        self.cuda_device = inputx.device
+        if self.posi_sinmat.device != inputx.device:
+            self.posi_sinmat = self.posi_sinmat.to(inputx.device)
 
-        rnd=torch.rand((input.shape[0],input.shape[1]),device=self.cuda_device)
-        self.input_mask=torch.zeros((input.shape[0],input.shape[1]),device=self.cuda_device)
+        rnd=torch.rand((inputx.shape[0],inputx.shape[1]),device=self.cuda_device)
+        self.input_mask=torch.zeros((inputx.shape[0],inputx.shape[1]),device=self.cuda_device)
         self.input_mask[rnd>self.mask_rate]=1
-        mask_input=input*self.input_mask.view(input.shape[0],input.shape[1],1).expand_as(input)
+        mask_input=inputx*self.input_mask.view(inputx.shape[0],inputx.shape[1],1).expand_as(inputx)
         enc_output= self.layer_norm(mask_input) + self.posi_sinmat.view(1, -1, self.model_size)
         ### or
         # enc_output = torch.cat(
@@ -889,7 +889,7 @@ class BiTRF_NLP_Crystal(torch.nn.Module):
         self.cuda_device = inputx.device
 
         # (sz_b*n_head, len_k, len_k) self.posi_para [num_layers, n_head, 4]
-        test = torch.exp(self.posi_para[1].view(-1,1,1)*self.scale_attmat.unsqueeze(0))
+        # test = torch.exp(self.posi_para[1].view(-1,1,1)*self.scale_attmat.unsqueeze(0))
         posi_att = self.posi_para[0].view(-1,1,1)*(torch.exp(-self.softplus(self.posi_para[1]).view(-1,1,1)*self.scale_attmat.unsqueeze(0))
                                       +torch.exp(-self.softplus(self.posi_para[2]).view(-1,1,1)*self.scale_attmat.unsqueeze(0))
                                       + self.posi_para[3].view(-1,1,1)*self.asyn_attmat.unsqueeze(0))
@@ -967,6 +967,100 @@ class MultiHeadAttention_firstlayer(torch.nn.Module):
 
         output = self.dropout(self.fc(output))
         output = self.layer_norm(output)
+
+        return output, attn
+
+class MultiHeadAttention_dePosi(torch.nn.Module):
+    ''' Multi-Head Attention module with decoupled parameterized attentions'''
+
+    def __init__(self, n_head, d_model, d_k, d_v, window_size,dropout=0.1):
+        super(self.__class__, self).__init__()
+
+        self.n_head = n_head
+        self.d_k = d_k
+        self.d_v = d_v
+        self.window_size = window_size
+
+        self.w_qs = torch.nn.Linear(d_model, n_head * d_k)
+        self.w_ks = torch.nn.Linear(d_model, n_head * d_k)
+        self.w_vs = torch.nn.Linear(d_model, n_head * d_v)
+        torch.nn.init.normal_(self.w_qs.weight, mean=0, std=np.sqrt(2.0 / (d_model + d_k)))
+        torch.nn.init.normal_(self.w_ks.weight, mean=0, std=np.sqrt(2.0 / (d_model + d_k)))
+        torch.nn.init.normal_(self.w_vs.weight, mean=0, std=np.sqrt(2.0 / (d_model + d_v)))
+
+        ### Decouple position
+        # 2:scaling para & distance para *2 & asymmetry para
+        self.posi_para = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.ones(self.n_head), requires_grad=True),
+             torch.nn.Parameter(torch.ones(self.n_head), requires_grad=True),
+             torch.nn.Parameter(torch.ones(self.n_head)/2, requires_grad=True),
+             torch.nn.Parameter(torch.zeros(self.n_head), requires_grad=True)]
+        )
+        scale_attmat_np = np.zeros((self.window_size, self.window_size))
+        for ii in range(self.window_size):
+            for jj in range(self.window_size):
+                scale_attmat_np[ii, jj] = np.abs(ii - jj)
+        self.scale_attmat = torch.cuda.FloatTensor(scale_attmat_np)
+
+        asyn_attmat_np = np.zeros((self.window_size, self.window_size))
+        for ii in range(self.window_size):
+            for jj in range(self.window_size):
+                if ii < jj:
+                    asyn_attmat_np[ii, jj] = 1
+        self.asyn_attmat = torch.cuda.FloatTensor(asyn_attmat_np)
+
+        self.fc = torch.nn.Linear(n_head * d_v, d_model)
+        torch.nn.init.xavier_normal_(self.fc.weight)
+
+        self.layer_norm = torch.nn.LayerNorm(d_model)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.temperature = np.power(d_k, 0.5)
+        self.psoftmax = torch.nn.Softmax(dim=2)
+        self.softplus = torch.nn.Softplus()
+
+
+    def forward(self, q, k, v, mask=None):
+
+        cuda_device = q.device
+
+        d_k, d_v, n_head = self.d_k, self.d_v, self.n_head
+
+        sz_b, len_q, _ = q.size()
+        sz_b, len_k, _ = k.size()
+        sz_b, len_v, _ = v.size()
+
+        residual = q
+
+        q = self.w_qs(q).view(sz_b, len_q, n_head, d_k)
+        k = self.w_ks(k).view(sz_b, len_k, n_head, d_k)
+        v = self.w_vs(v).view(sz_b, len_v, n_head, d_v)
+
+        q = q.permute(2, 0, 1, 3).contiguous().view(-1, len_q, d_k) # (n*b) x lq x dk
+        k = k.permute(2, 0, 1, 3).contiguous().view(-1, len_k, d_k) # (n*b) x lk x dk
+        v = v.permute(2, 0, 1, 3).contiguous().view(-1, len_v, d_v) # (n*b) x lv x dv
+
+        attn = torch.bmm(q, k.transpose(1, 2))
+        attn = attn / self.temperature
+
+        if mask is not None:
+            mask = mask.repeat(n_head * sz_b, 1, 1)  # (n*b) x .. x ..
+            attn = attn.masked_fill(mask, -np.inf)
+
+        posi_att = self.posi_para[0].view(-1, 1, 1) * (
+                    torch.exp(-self.softplus(self.posi_para[1]).view(-1, 1, 1) * self.scale_attmat.unsqueeze(0))
+                    + torch.exp(-self.softplus(self.posi_para[2]).view(-1, 1, 1) * self.scale_attmat.unsqueeze(0))
+                    + self.posi_para[3].view(-1, 1, 1) * self.asyn_attmat.unsqueeze(0))
+        self.posi_att = posi_att
+
+        posi_att = posi_att.view(n_head, 1, len_k, len_k).expand(n_head, sz_b, len_k, len_k).contiguous().view(-1,len_k,len_k)
+        attn = self.psoftmax(attn+posi_att)
+        output = torch.bmm(attn, v)
+
+        output = output.view(n_head, sz_b, len_q, d_v)
+        output = output.permute(1, 2, 0, 3).contiguous().view(sz_b, len_q, -1) # b x lq x (n*dv)
+
+        output = self.dropout(self.fc(output))
+        output = self.layer_norm(output+residual)
 
         return output, attn
 
