@@ -18,12 +18,13 @@ import copy
 import torch
 from torch.autograd import Variable
 import pickle
+import json
 
 from tqdm import tqdm,tqdm_notebook
 
 from torchvision import datasets
 from PIL import Image
-from pycocotools import mask as coco_mask
+# from pycocotools import mask as coco_mask
 from ncautil.ncamath import check_shape
 from ncautil.nlputil import NLPutil
 
@@ -32,18 +33,31 @@ from ncautil.nlputil import NLPutil
 # from ncautil.seqmultip2 import FF_MLP
 
 
-def save_data(data,file,large_data=False):
-    if not large_data:
-        pickle.dump(data, open(file, "wb"))
+def save_data(data,file,large_data=False, engine="pickle"):
+    if engine=="pickle":
+        if not large_data:
+            pickle.dump(data, open(file, "wb"))
+            print("Data saved to ", file)
+        else:
+            pickle.dump(data, open(file, "wb"), protocol=4)
+            print("Large Protocal 4 Data saved to ", file)
+    elif engine=="json":
+        json.dump(data, open(file, "w"))
         print("Data saved to ", file)
     else:
-        pickle.dump(data, open(file, "wb"), protocol=4)
-        print("Large Protocal 4 Data saved to ", file)
+        raise Exception("Unknown Engine.")
 
-def load_data(file):
-    data = pickle.load(open(file, "rb"))
-    print("Data load from ", file)
-    return data
+def load_data(file, engine="pickle"):
+    if engine == "pickle":
+        data = pickle.load(open(file, "rb"))
+        print("Data load from ", file)
+        return data
+    elif engine=="json":
+        data = json.load(open(file, "r"))
+        print("Data load from ", file)
+        return data
+    else:
+        raise Exception("Unknown Engine.")
 
 def save_model(model,file):
     torch.save(model.state_dict(), file)

@@ -20,7 +20,7 @@ nltk.internals.config_java(options='-Xmx2048m')
 import pickle
 from nltk.corpus import brown,treebank
 from nltk.parse import stanford
-import gensim
+# import gensim
 from ncautil.w2vutil import W2vUtil
 # from ncautil.datautil import *
 from nltk.tag import StanfordPOSTagger
@@ -46,10 +46,130 @@ def load_data(file):
     print("Data load from ", file)
     return data
 
-class NLPDataSet(torch.utils.data.Dataset):
-
+class NLPutil_BPE(object):
     def __init__(self):
-        print("Initializing NLPDataSet")
+        print("Initializing NLPutil_BPE")
+        self.bpe_file="/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln/tokens_bpe_wiki_0.pickle"
+        self.BPEvocab = load_data("/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln/BPEvocab.vocab")
+
+        self.bpe_dict = None
+        self.pt_emb = None
+
+    def build_vocab(self,nVcab=None,verbose_print=False):
+        print("Building vocabulary...")
+        corpus = load_data(self.bpe_file)
+        counter = collections.Counter(corpus)
+        count_pairs = sorted(counter.items(), key=lambda x: (-x[1], x[0]))
+        words, counts = list(zip(*count_pairs))
+        if nVcab is not None and len(words) > nVcab:
+            words = list(words)
+            counts = list(counts)
+            print(len(words), len(counts))
+            unkc = 0
+            clenw = len(words)
+            for iiex in range(clenw - nVcab):
+                del words[clenw - iiex - 1]
+                unkc = unkc + counts[clenw - iiex - 1]
+                del counts[clenw - iiex - 1]
+            words.append("<unk>")
+            counts.append(unkc)
+        self.bpe_to_id = dict(zip(words, range(len(words))))
+        self.bpe_to_cnt = dict(zip(words, counts))
+        bv = self.bpe_to_cnt[words[0]]
+        for k, v in self.bpe_to_cnt.items():
+            self.bpe_to_cnt[k] = 1 / (self.bpe_to_cnt[k] / bv)
+        ## Adjust bpe_to_id
+        self.adjust_bpe_to_id()
+        self.id_to_bpe = {v: k for k, v in self.bpe_to_id.items()}
+        self.prior = np.zeros(len(self.id_to_bpe))
+        for id in range(len(self.id_to_bpe)):
+            self.prior[id] = 1 / self.bpe_to_cnt[self.id_to_bpe[id]]
+        self.prior = self.prior / np.sum(self.prior)
+        if verbose_print:
+            print(self.id_to_bpe)
+        self.nVcab = len(self.bpe_to_id.items())
+        print("Collected vocabulary size:", self.nVcab)
+        return self.bpe_to_id, self.id_to_bpe
+
+    def build_bpe2v(self,mode="torchnlp"):
+
+        if mode == "torchnlp":
+            cache_path = "/storage/hezq17/IMDbDataset/word_vector_cache"
+            model = GloVe(cache=cache_path)
+
+        self.bpe2v_dict = dict([])
+        skip = []
+        for ii in range(self.nVcab):
+            try:
+                bpe = self.id_to_bpe[ii]
+                bpestr="bpe_%s"%bpe
+                word = self.BPEvocab.get(bpestr,"<unk>").strip()
+                if mode == "torchnlp":
+                    vec = model[word].data.numpy()
+                else:
+                    vec = model[word]
+                self.bpe2v_dict[bpe] = vec
+                if np.std(vec) == 0:
+                    skip.append(word)
+            except:
+                vec = np.zeros(len(model["the"]))
+                self.bpe2v_dict[bpe] = vec
+                skip.append(word)
+        print("Except list: length " + str(len(skip)))
+        print(skip)
+        self.skip = skip
+        self.bpe2v_dict["<unk>"] = np.zeros(len(self.bpe2v_dict[self.id_to_bpe[0]]))
+
+    def build_pt_emb(self,Ndim):
+        Ndim_v=len(self.bpe2v_dict[0])
+        projM=np.zeros((Ndim,Ndim_v))
+        for ii in range(np.min([Ndim,Ndim_v])):
+            projM[ii,ii]=1
+        weight=torch.zeros((self.nVcab+2,Ndim)) ## ..., <unk>, <pad>, <mask>
+        for ii in range(self.nVcab):
+            orgv = self.bpe2v_dict[self.id_to_bpe[ii]]
+            weight[ii,:]=torch.FloatTensor(projM.dot(orgv))
+        # self.pt_emb=torch.nn.Embedding.from_pretrained(weight, freeze=True)
+        return weight
+
+    def adjust_bpe_to_id(self):
+        ## Adjust 0 to be <s>, 1 to be <pad>, 2 to be </s>,
+        self.bpe_to_id[0] = 0
+        self.bpe_to_id[2] = 2
+        self.bpe_to_id[5] = 3
+
+    def bpe_vocab_gen(self):
+        ## Generate bpe vocab from scratch
+        self.roberta = torch.hub.load('pytorch/fairseq', 'roberta.base')
+        self.roberta.eval()
+
+        BPEvocabraw = dict([])
+        for ii in range(50265):
+            if ii == 0:
+                BPEvocabraw[ii] = "<s>"
+            elif ii == 1:
+                BPEvocabraw[ii] = "<pad>"
+            elif ii == 2:
+                BPEvocabraw[ii] = "</s>"
+            elif ii == 50264:
+                BPEvocabraw[ii] = "<mask>"
+            elif ii == 50261:
+                BPEvocabraw[ii] = "madeupword0000"
+            elif ii == 50262:
+                BPEvocabraw[ii] = "madeupword0001"
+            elif ii == 50263:
+                BPEvocabraw[ii] = "madeupword0002"
+            else:
+                try:
+                    BPEvocabraw[ii] = self.roberta.decode(torch.tensor([ii]))
+                except:
+                    BPEvocabraw[ii] = "<N/A>"
+
+        ### disabiguous
+        BPEvocab = dict([])
+        for k,v in BPEvocabraw.items():
+            BPEvocab["bpe_%s"%k]=v
+        self.BPEvocab = BPEvocab
 
 class NLPutil(object):
     def __init__(self):
@@ -1083,6 +1203,8 @@ class WikiTextProcess(object):
             line=self.remove_url(line)
             line = self.addspace(line)
             line = self.remove_empty_line(line)
+            line = self.remove_case(line)
+            line = self.sentence_pre_line(line)
             file_w.write(line)
 
     def remove_url(self,line):
@@ -1101,21 +1223,73 @@ class WikiTextProcess(object):
         line=line.replace("-"," - ")
         line=line.replace(", ", " , ")
         line=line.replace(". ", " . ")
+        line = line.replace(".. . ", "... ")
         line = line.replace(".\n", " .\n")
         line = line.replace("–", " - ")
         line = line.replace("—", " - ")
         line = line.replace(" (", " ( ")
         line = line.replace(") ", " ) ")
-        line = line.replace("\" ", " \" ")
-        line = line.replace(" \"", " \" ")
         line = line.replace(": ", " : ")
         line = line.replace(":\n", " :\n")
         line = line.replace("! ", " ! ")
         line = line.replace("? ", " ? ")
         line = line.replace("; ", " ; ")
         line = line.replace("\'s ", " \'s ")
-        line = line.replace('``', " \" ")
-        line = line.replace('\'\'', " \" ")
+        line = line.replace(' ``', " \"")
+        line = line.replace(' “', " \"")
+        line = line.replace('” ', "\" ")
+        line = line.replace('\'\'', "\"")
+        line = line.replace("\" ", " \" ")
+        line = line.replace(" \"", " \" ")
+        line = line.replace("  ", " ")
+        ## for book corpus
+        line = line.replace('i\'m ', " i \'m ")
+        line = line.replace('n\'t ', " n\'t ")
+        line = line.replace('\'re ', " \'re ")
+        line = line.replace('\'d ', " \'d ")
+        line = line.replace('\'ll ', " \'ll ")
+        line = line.replace('\'ve ', " \'ve ")
+        return line
+
+    def remove_case(self,line):
+        line = line.lower()
+        return line
+
+    def sentence_pre_line(self,line):
+        line = line.replace(" . ", " .\n")
+        line = line.replace(" ! ", " !\n")
+        line = line.replace(" ? ", " ?\n")
+        return line
+
+class BookCorpusProcess(object):
+    """
+    Advanced NLP data processing object
+    """
+    def __init__(self,path_to_raw_data,path_to_workspace):
+        """
+        A wikitext processor
+        """
+        self.path_to_raw_data=path_to_raw_data
+        self.path_to_workspace=path_to_workspace
+
+    def main_file_iterator(self,nfile=47):
+        for ii in range(nfile):
+            print("File book_"+str(ii))
+            file_r=open(os.path.join(self.path_to_raw_data,"book_"+str(ii)),"r")
+            file_w=open(os.path.join(self.path_to_workspace,"book_"+str(ii)),"w+")
+            self.line_iterator(file_r,file_w)
+            file_r.close()
+            file_w.close()
+
+    def line_iterator(self,file_r,file_w):
+        lines=file_r.readlines()
+        for line in lines:
+            line = self.edit_quote(line)
+            file_w.write(line)
+
+    def edit_quote(self,line):
+        line=line.replace("``","\"")
+        line = line.replace("\'\'", "\"")
         return line
 
 class StanfordSentimentUtil(object):

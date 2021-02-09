@@ -11,6 +11,7 @@ from __future__ import print_function
 import subprocess
 import os
 import threading
+import multiprocessing
 
 class ScanUtil(object):
 
@@ -95,3 +96,35 @@ if __name__ == "__main__":
     f.close()
 
 """
+
+### simple parallel example
+
+# def Example_of_Parallel(procnum, return_dict):
+#     """worker function"""
+#     print(str(procnum) + " represent!")
+#     return_dict[procnum] = procnum
+
+def parallel_run(fun, pnum, return_flag=False):
+
+    if return_flag:
+        manager = multiprocessing.Manager()
+        return_dict = manager.dict()  # very slow if return_dict is big
+        jobs = []
+        for ii in range(pnum):
+            p = multiprocessing.Process(target=fun, args=(ii, return_dict))
+            jobs.append(p)
+            p.start()
+
+        for proc in jobs:
+            proc.join()
+        print(return_dict.values())
+
+    else:
+        jobs = []
+        for ii in range(pnum):
+            p = multiprocessing.Process(target=fun, args=(ii,))
+            jobs.append(p)
+            p.start()
+
+        for proc in jobs:
+            proc.join()
