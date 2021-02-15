@@ -157,20 +157,38 @@ def Example_of_numba(input_data):
 ### simple parallel example
 import multiprocessing
 
-def Example_of_Parallel(procnum, return_dict):
-    """worker function"""
-    print(str(procnum) + " represent!")
-    return_dict[procnum] = procnum
+def Example_of_Parallel():
 
-if __name__ == "__main__":
+    def worker(procnum, return_dict):
+        """worker function"""
+        print(str(procnum) + " represent!")
+        return_dict[procnum] = procnum
+
     manager = multiprocessing.Manager()
     return_dict = manager.dict() # very slow if return_dict is big
     jobs = []
     for i in range(5):
-        p = multiprocessing.Process(target=Example_of_Parallel, args=(i, return_dict))
+        p = multiprocessing.Process(target=worker, args=(i, return_dict))
         jobs.append(p)
         p.start()
 
     for proc in jobs:
         proc.join()
     print(return_dict.values())
+
+### Pytorch profiler example
+
+def Pytorch_Profiler_Example():
+    startt = time.time()
+    import torch.autograd.profiler as profiler
+    with profiler.profile(profile_memory=True, record_shapes=True, use_cuda=True) as prof:
+        with profiler.record_function("model_inference"):
+            for iis, (datax, labels) in enumerate(data_loader):
+                res = loss(datax.to(DEVICE), labels.to(DEVICE))
+                res.backward()
+                if iis > 5:
+                    break
+    print(type(res))
+    endt = time.time()
+    print("DeltaT,", endt - startt)
+    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))

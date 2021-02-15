@@ -121,11 +121,13 @@ class NLPutil_BPE(object):
         self.bpe2v_dict["<unk>"] = np.zeros(len(self.bpe2v_dict[self.id_to_bpe[0]]))
 
     def build_pt_emb(self,Ndim):
+        ## pt_emb: <s>, </s> ..., <unk>, <pad>, <mask>
+        # self.nVcab = nVcab+1, totnVac = nVcab+3
         Ndim_v=len(self.bpe2v_dict[0])
         projM=np.zeros((Ndim,Ndim_v))
         for ii in range(np.min([Ndim,Ndim_v])):
             projM[ii,ii]=1
-        weight=torch.zeros((self.nVcab+2,Ndim)) ## ..., <unk>, <pad>, <mask>
+        weight=torch.zeros((self.nVcab+2,Ndim))
         for ii in range(self.nVcab):
             orgv = self.bpe2v_dict[self.id_to_bpe[ii]]
             weight[ii,:]=torch.FloatTensor(projM.dot(orgv))
@@ -133,10 +135,11 @@ class NLPutil_BPE(object):
         return weight
 
     def adjust_bpe_to_id(self):
-        ## Adjust 0 to be <s>, 1 to be <pad>, 2 to be </s>,
+        ## Adjust 0 to be <s>, 2 to be </s>,
         self.bpe_to_id[0] = 0
-        self.bpe_to_id[2] = 2
-        self.bpe_to_id[5] = 3
+        self.bpe_to_id[2] = 1
+        self.bpe_to_id[5] = 2
+        self.bpe_to_id[2156] = 3
 
     def bpe_vocab_gen(self):
         ## Generate bpe vocab from scratch

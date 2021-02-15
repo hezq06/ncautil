@@ -17,8 +17,7 @@ import copy
 
 import torch
 from torch.autograd import Variable
-import pickle
-import json
+import pickle, json, csv
 
 from tqdm import tqdm,tqdm_notebook
 
@@ -712,9 +711,151 @@ class WikiDataset(torch.utils.data.Dataset):
 
         if self.max_data_len is None:
             numblocks = self.blk_par[-1]
-        else:
+        elif self.max_data_len < self.numblocks:
             numblocks = self.max_data_len
+        else:
+            numblocks = self.blk_par[-1]
         return int(numblocks)
+
+class WikiBookDataset(torch.utils.data.Dataset):
+    def __init__(self, window = 512, max_data_len=None, mode="train", partition=[131,46], validsize=[2,1]):
+        """
+        WikiBookDataset util, partition for train mode
+        validsize is partition size for valid
+        """
+        self.wiki_data_path = "/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln"
+        self.book_data_path = "/storage/hezq17/bookcorpus/bookcorpus_bpe_nocase_stperln"
+        self.bpeutil_path="/home/hezq17/MyWorkSpace/pineBert/NLPutil_BPE_768.pickle"
+
+        self.bpeutil = load_data(self.bpeutil_path)
+        self.unk_id = self.bpeutil.bpe_to_id["<unk>"]
+
+        self.window = window
+
+        self.max_data_len = max_data_len
+
+        self.dataset = []
+        print("Loading dataset ...")
+        if mode=="train":
+            for ii in range(partition[0]):
+                data = load_data(os.path.join(self.wiki_data_path, "tokens_bpe_wiki_%s.pickle"%ii))
+                self.dataset.append(data)
+            for ii in range(partition[1]):
+                data = load_data(os.path.join(self.book_data_path, "tokens_bpe_book_%s.pickle" % ii))
+                self.dataset.append(data)
+        elif mode=="valid":
+            for ii in range(validsize[0]):
+                data = load_data(os.path.join(self.wiki_data_path, "tokens_bpe_wiki_%s.pickle"%(ii+partition[0])))
+                self.dataset.append(data)
+            for ii in range(validsize[1]):
+                data = load_data(os.path.join(self.book_data_path, "tokens_bpe_book_%s.pickle" % (ii+partition[1])))
+                self.dataset.append(data)
+        else:
+            raise Exception("Unknown mode")
+
+        self.dataset = np.concatenate(self.dataset, axis=-1)
+        print("Length of dataset, ", len(self.dataset))
+
+        self.numblocks = int(len(self.dataset)/window)
+        self.idmap = np.array(range(self.numblocks))
+        np.random.shuffle(self.idmap)
+
+    def __getitem__(self, idx):
+        """
+        Get block idx
+        :param idx:
+        :return: [window, l_size]
+        """
+        idx = self.idmap[idx]
+        startp = self.window * idx
+        endp = self.window * (idx+1)
+        ptdata = self.dataset[int(startp):int(endp)]
+        ptdata = [self.bpeutil.bpe_to_id.get(bpe,self.unk_id) for bpe in ptdata]
+        pt_word = torch.LongTensor(ptdata)
+        return pt_word, pt_word
+
+    def __len__(self):
+        """
+        number of text
+        :return:
+        """
+
+        if self.max_data_len is None:
+            numblocks = self.numblocks
+        elif self.max_data_len<self.numblocks:
+            numblocks = self.max_data_len
+        else:
+            numblocks = self.numblocks
+        return int(numblocks)
+
+class GlueDataset(torch.utils.data.Dataset):
+    def __init__(self, mode="train",task="QQP"):
+        """
+        Glue dataset util
+        https://gluebenchmark.com/
+        """
+        self.glue_data_path = "/storage/hezq17/GLUE"
+
+        self.bpeutil_path="/home/hezq17/MyWorkSpace/pineBert/NLPutil_BPE_768.pickle"
+        self.bpeutil = load_data(self.bpeutil_path)
+        self.unk_id = self.bpeutil.bpe_to_id["<unk>"]
+
+        self.file_path_dict_train = {
+            "CoLA":"/storage/hezq17/GLUE/CoLA/processed/CoLA_train_bpe_pad.pickle",
+            "MNLI-m":"/storage/hezq17/GLUE/MNLI/processed/MNLI_train_bpe_pad.pickle",
+            "MNLI-mm": "/storage/hezq17/GLUE/MNLI/processed/MNLI_train_bpe_pad.pickle",
+            "QNLI": "/storage/hezq17/GLUE/QNLI/processed/QNLI_train_bpe_pad.pickle",
+            "QQP": "/storage/hezq17/GLUE/QQP/processed/QQP_train_bpe_pad.pickle",
+            "RTE": "/storage/hezq17/GLUE/RTE/processed/RTE_train_bpe_pad.pickle",
+            "SST-2": "/storage/hezq17/GLUE/SST-2/processed/SST-2_train_bpe_pad.pickle",
+            "STS-B": "/storage/hezq17/GLUE/STS-B/processed/STS-B_train_bpe_pad.pickle",
+        }
+
+        self.file_path_dict_dev = {
+            "CoLA": "/storage/hezq17/GLUE/CoLA/processed/CoLA_dev_bpe_pad.pickle",
+            "MNLI-m": "/storage/hezq17/GLUE/MNLI/processed/MNLI_dev_matched_bpe_pad.pickle",
+            "MNLI-mm": "/storage/hezq17/GLUE/MNLI/processed/MNLI_dev_mismatched_bpe_pad.pickle",
+            "QNLI": "/storage/hezq17/GLUE/QNLI/processed/QNLI_dev_bpe_pad.pickle",
+            "QQP": "/storage/hezq17/GLUE/QQP/processed/QQP_dev_bpe_pad.pickle",
+            "RTE": "/storage/hezq17/GLUE/RTE/processed/RTE_dev_bpe_pad.pickle",
+            "SST-2": "/storage/hezq17/GLUE/SST-2/processed/SST-2_dev_bpe_pad.pickle",
+            "STS-B": "/storage/hezq17/GLUE/STS-B/processed/STS-B_dev_bpe_pad.pickle",
+        }
+
+        self.class_head_dict = {
+            "CoLA":2,
+        }
+
+        self.dataset = []
+        print("Loading dataset ...")
+        if mode=="train":
+            filepath =self.file_path_dict_train[task]
+            self.dataset = load_data(filepath)
+        elif mode=="valid":
+            filepath = self.file_path_dict_dev[task]
+            self.dataset = load_data(filepath)
+        else:
+            raise Exception("Unknown mode")
+
+    def __getitem__(self, idx):
+        """
+        Get block idx
+        :param idx:
+        :return: [window, l_size]
+        """
+        ptdata = self.dataset["textin"][idx]
+        ptdata = [self.bpeutil.bpe_to_id.get(bpe,self.unk_id) for bpe in ptdata]
+        pt_word = torch.LongTensor(ptdata)
+        labels = self.dataset["labels"][idx]
+        labels = torch.LongTensor(labels)
+        return pt_word, labels
+
+    def __len__(self):
+        """
+        number of text
+        :return:
+        """
+        return len(self.dataset)
 
 
 class ClevrDataset(torch.utils.data.Dataset):

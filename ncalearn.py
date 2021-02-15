@@ -21,7 +21,7 @@ import torch.multiprocessing as mp
 import matplotlib.ticker as ticker
 from mpl_toolkits.mplot3d import Axes3D
 
-from wordcloud import WordCloud
+# from wordcloud import WordCloud
 import operator
 from PIL import Image
 from PIL import ImageDraw,ImageFont
@@ -555,7 +555,7 @@ class PyTrain_Main(object):
         self.figure_plot = para.get("figure_plot", True)
         self.loss_clip = para.get("loss_clip", 50.0)
 
-    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200, weight_decay=0.0, warm_up_steps=1000):
+    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200, weight_decay=0.0, warm_up_steps=1000, mix_precision=False):
 
         currentDT = datetime.datetime.now()
         print("Time of training starting %s. "%str(currentDT))
@@ -565,15 +565,20 @@ class PyTrain_Main(object):
 
         if optimizer_label == "adam":
             print("Using adam optimizer")
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
         elif optimizer_label == "adamw":
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, weight_decay=0.01)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=0.01)
         else:
             print("Using SGD optimizer")
             optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
 
         startt = time.time()
         pt_model = self.model
+
+        if mix_precision:
+            assert "cuda" in self.device
+            scaler = torch.cuda.amp.GradScaler()
+            print("Check @autocast() decorator of model for mix_precision.")
 
         for ii_epoch in range(epoch):
             print("Starting epoch %s." % str(ii_epoch))
@@ -597,9 +602,15 @@ class PyTrain_Main(object):
                 loss = pt_model(datax, labels.to(self.device), schedule=cstep)
                 self._profiler(ii_tot, loss, print_step=print_step)
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                if mix_precision:
+                    optimizer.zero_grad()
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
 
             midt = time.time()
             print("Time used till now:", midt - startt)
