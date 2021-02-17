@@ -534,15 +534,22 @@ class PyTrain_Main(object):
     """
     A main class to run training
     """
-    def __init__(self, model, data_dict, device="cuda:0", para=None):
-        self.model = model
-        self.model.model = self.model.model.to(device)
+    def __init__(self, loss_model, data_dict, device="cuda:0", para=None):
+
         self.data_dict = data_dict
         self.device = device
 
         if para is None:
             para = dict([])
         self.para(para)
+
+        if self.dist_data_parallel:
+            loss_model = loss_model.to(device)
+            self.model = torch.nn.parallel.DistributedDataParallel( loss_model, device_ids=[device], output_device=device, dim=self.dist_data_parallel_dim,
+                                                                 find_unused_parameters=False)
+        else:
+            self.model = loss_model
+            self.model.model = self.model.model.to(device)
 
         currentDT = datetime.datetime.now()
         self.log = "Time of creation: " + str(currentDT) + "\n"
@@ -554,26 +561,34 @@ class PyTrain_Main(object):
         self.loss_exp_flag = para.get("loss_exp_flag", False)
         self.figure_plot = para.get("figure_plot", True)
         self.loss_clip = para.get("loss_clip", 50.0)
+        self.print_step = para.get("print_step", 200)
+        self.dist_data_parallel = para.get("dist_data_parallel", False)
+        self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)
 
-    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", print_step=200, weight_decay=0.0, warm_up_steps=1000, mix_precision=False):
+
+    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", weight_decay=0.0, warm_up_steps=10000, mix_precision=False):
 
         currentDT = datetime.datetime.now()
         print("Time of training starting %s. "%str(currentDT))
         self.log = self.log + "Start training with epoch: %s, lr: %s, optimizer: %s, weight_decay: %s"%(epoch, lr, optimizer_label, weight_decay)
 
-        self.model.train()
+        if self.dist_data_parallel:
+            pt_model = self.model.module
+        else:
+            pt_model = self.model
+
+        pt_model.train()
 
         if optimizer_label == "adam":
             print("Using adam optimizer")
-            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
+            optimizer = torch.optim.Adam(pt_model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
         elif optimizer_label == "adamw":
-            optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=0.01)
+            optimizer = torch.optim.AdamW(pt_model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
         else:
             print("Using SGD optimizer")
-            optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
+            optimizer = torch.optim.SGD(pt_model.parameters(), lr=lr)
 
         startt = time.time()
-        pt_model = self.model
 
         if mix_precision:
             assert "cuda" in self.device
@@ -582,8 +597,8 @@ class PyTrain_Main(object):
 
         for ii_epoch in range(epoch):
             print("Starting epoch %s." % str(ii_epoch))
-            self.model.loss_mode = "train"
-            self.model.train()
+            pt_model.loss_mode = "train"
+            pt_model.train()
 
             for iis,(datax, labels) in enumerate(self.data_dict["train"]):
 
@@ -600,7 +615,7 @@ class PyTrain_Main(object):
                 except:
                     datax = [item.to(self.device) for item in datax]
                 loss = pt_model(datax, labels.to(self.device), schedule=cstep)
-                self._profiler(ii_tot, loss, print_step=print_step)
+                self._profiler(ii_tot, loss, print_step=self.print_step)
 
                 if mix_precision:
                     optimizer.zero_grad()
@@ -668,6 +683,7 @@ class PyTrain_Main(object):
                 output = self.model.output
                 _, predicted = torch.max(output, -1)
                 predicted = predicted.cpu()
+                labels = labels.squeeze()
                 if len(predicted.shape)==len(labels.shape):
                     total += np.prod(labels.shape)
                     correct += (predicted == labels).sum().item()

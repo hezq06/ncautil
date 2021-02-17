@@ -723,8 +723,8 @@ class WikiBookDataset(torch.utils.data.Dataset):
         WikiBookDataset util, partition for train mode
         validsize is partition size for valid
         """
-        self.wiki_data_path = "/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln"
-        self.book_data_path = "/storage/hezq17/bookcorpus/bookcorpus_bpe_nocase_stperln"
+        self.wiki_data_path = "/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln_inispace"
+        self.book_data_path = "/storage/hezq17/bookcorpus/bookcorpus_bpe_nocase_stperln_inispace"
         self.bpeutil_path="/home/hezq17/MyWorkSpace/pineBert/NLPutil_BPE_768.pickle"
 
         self.bpeutil = load_data(self.bpeutil_path)
@@ -799,6 +799,7 @@ class GlueDataset(torch.utils.data.Dataset):
         self.bpeutil_path="/home/hezq17/MyWorkSpace/pineBert/NLPutil_BPE_768.pickle"
         self.bpeutil = load_data(self.bpeutil_path)
         self.unk_id = self.bpeutil.bpe_to_id["<unk>"]
+        self.task = task
 
         self.file_path_dict_train = {
             "CoLA":"/storage/hezq17/GLUE/CoLA/processed/CoLA_train_bpe_pad.pickle",
@@ -809,6 +810,7 @@ class GlueDataset(torch.utils.data.Dataset):
             "RTE": "/storage/hezq17/GLUE/RTE/processed/RTE_train_bpe_pad.pickle",
             "SST-2": "/storage/hezq17/GLUE/SST-2/processed/SST-2_train_bpe_pad.pickle",
             "STS-B": "/storage/hezq17/GLUE/STS-B/processed/STS-B_train_bpe_pad.pickle",
+            "MRPC": "/storage/hezq17/GLUE/MRPC/processed/MRPC_train_bpe_pad.pickle"
         }
 
         self.file_path_dict_dev = {
@@ -820,10 +822,12 @@ class GlueDataset(torch.utils.data.Dataset):
             "RTE": "/storage/hezq17/GLUE/RTE/processed/RTE_dev_bpe_pad.pickle",
             "SST-2": "/storage/hezq17/GLUE/SST-2/processed/SST-2_dev_bpe_pad.pickle",
             "STS-B": "/storage/hezq17/GLUE/STS-B/processed/STS-B_dev_bpe_pad.pickle",
+            "MRPC": "/storage/hezq17/GLUE/MRPC/processed/MRPC_dev_bpe_pad.pickle"
         }
 
         self.class_head_dict = {
             "CoLA":2,
+            "QQP": 2,
         }
 
         self.dataset = []
@@ -844,10 +848,12 @@ class GlueDataset(torch.utils.data.Dataset):
         :return: [window, l_size]
         """
         ptdata = self.dataset["textin"][idx]
-        ptdata = [self.bpeutil.bpe_to_id.get(bpe,self.unk_id) for bpe in ptdata]
         pt_word = torch.LongTensor(ptdata)
         labels = self.dataset["labels"][idx]
-        labels = torch.LongTensor(labels)
+        if self.task in ["STS-B"]:
+            labels = torch.FloatTensor([labels])
+        else:
+            labels = torch.LongTensor([labels])
         return pt_word, labels
 
     def __len__(self):
@@ -855,7 +861,7 @@ class GlueDataset(torch.utils.data.Dataset):
         number of text
         :return:
         """
-        return len(self.dataset)
+        return len(self.dataset["textin"])
 
 
 class ClevrDataset(torch.utils.data.Dataset):

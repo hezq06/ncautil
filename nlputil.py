@@ -49,8 +49,8 @@ def load_data(file):
 class NLPutil_BPE(object):
     def __init__(self):
         print("Initializing NLPutil_BPE")
-        self.bpe_file="/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln/tokens_bpe_wiki_0.pickle"
-        self.BPEvocab = load_data("/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln/BPEvocab.vocab")
+        self.bpe_file="/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln_inispace/tokens_bpe_wiki_0.pickle"
+        self.BPEvocab = load_data("/storage/hezq17/wikitext/wiki_text_bpe_nocase_stperln_inispace/BPEvocab.vocab")
 
         self.bpe_dict = None
         self.pt_emb = None
@@ -1207,7 +1207,7 @@ class WikiTextProcess(object):
             line = self.addspace(line)
             line = self.remove_empty_line(line)
             line = self.remove_case(line)
-            line = self.sentence_pre_line(line)
+            line = self.sentence_per_line(line)
             file_w.write(line)
 
     def remove_url(self,line):
@@ -1223,6 +1223,7 @@ class WikiTextProcess(object):
             return line
 
     def addspace(self,line):
+        line = " " + line  # Add space at begining
         line=line.replace("-"," - ")
         line=line.replace(", ", " , ")
         line=line.replace(". ", " . ")
@@ -1258,10 +1259,10 @@ class WikiTextProcess(object):
         line = line.lower()
         return line
 
-    def sentence_pre_line(self,line):
-        line = line.replace(" . ", " .\n")
-        line = line.replace(" ! ", " !\n")
-        line = line.replace(" ? ", " ?\n")
+    def sentence_per_line(self,line):
+        line = line.replace(" . ", " .\n ") # Add space at begining
+        line = line.replace(" ! ", " !\n ")
+        line = line.replace(" ? ", " ?\n ")
         return line
 
 class BookCorpusProcess(object):
@@ -1287,8 +1288,13 @@ class BookCorpusProcess(object):
     def line_iterator(self,file_r,file_w):
         lines=file_r.readlines()
         for line in lines:
+            line = self.addspace(line)
             line = self.edit_quote(line)
             file_w.write(line)
+
+    def addspace(self,line):
+        line = " " + line  # Add space at begining
+        return line
 
     def edit_quote(self,line):
         line=line.replace("``","\"")

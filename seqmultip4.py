@@ -1140,6 +1140,16 @@ class RoBerta(torch.nn.Module):
         self.mask_id = para.get("mask_id", self.output_size-1) # 30002
         self.finetune = para.get("finetune", False)
 
+    def layer_stack(self, bert_shallow):
+        print("Stacking from shallow layers ...")
+        old_nl = bert_shallow.num_layers
+        assert old_nl*2 == self.num_layers
+
+        for ii in range(old_nl):
+            self.trf_layers[ii].load_state_dict(bert_shallow.trf_layers[ii].state_dict())
+            self.trf_layers[ii + old_nl].load_state_dict(bert_shallow.trf_layers[ii].state_dict())
+
+
     def get_sinusoid_encoding_table(self, n_position, model_size):
         ''' Sinusoid position encoding table '''
 
