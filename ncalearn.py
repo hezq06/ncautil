@@ -10,6 +10,7 @@ from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import time, os, pickle
+import shutil
 import subprocess
 
 import torch
@@ -564,29 +565,29 @@ class PyTrain_Main(object):
         self.print_step = para.get("print_step", 200)
         self.dist_data_parallel = para.get("dist_data_parallel", False)
         self.dist_data_parallel_dim = para.get("dist_data_parallel_dim", 1)
+        self.check_point_path = para.get("check_point_path", None)
 
 
-    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", weight_decay=0.0, warm_up_steps=10000, mix_precision=False):
+    def run_training(self, epoch=2, lr=1e-3, optimizer_label="adam", weight_decay=0.0, warm_up_steps=10000, mix_precision=False, lr_linear_decay=False):
 
         currentDT = datetime.datetime.now()
         print("Time of training starting %s. "%str(currentDT))
         self.log = self.log + "Start training with epoch: %s, lr: %s, optimizer: %s, weight_decay: %s"%(epoch, lr, optimizer_label, weight_decay)
 
+        # Only for self defined model utility
         if self.dist_data_parallel:
             pt_model = self.model.module
         else:
             pt_model = self.model
 
-        pt_model.train()
-
         if optimizer_label == "adam":
             print("Using adam optimizer")
-            optimizer = torch.optim.Adam(pt_model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
+            optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
         elif optimizer_label == "adamw":
-            optimizer = torch.optim.AdamW(pt_model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
+            optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-06, weight_decay=weight_decay)
         else:
             print("Using SGD optimizer")
-            optimizer = torch.optim.SGD(pt_model.parameters(), lr=lr)
+            optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
 
         startt = time.time()
 
@@ -595,27 +596,38 @@ class PyTrain_Main(object):
             scaler = torch.cuda.amp.GradScaler()
             print("Check @autocast() decorator of model for mix_precision.")
 
+        self.model.train()
+
+        checkpoint_pathname = None
+        best_evalres = None
+
+        step_per_epoch = len(self.data_dict["train"])
+        if step_per_epoch < warm_up_steps:
+            print("Warning, step_per_epoch<warm_up_steps.")
+
         for ii_epoch in range(epoch):
             print("Starting epoch %s." % str(ii_epoch))
             pt_model.loss_mode = "train"
-            pt_model.train()
 
             for iis,(datax, labels) in enumerate(self.data_dict["train"]):
 
-                if ii_epoch==0 and warm_up_steps>0 and iis<warm_up_steps:
-                    optimizer.param_groups[0]["lr"]=(iis/warm_up_steps)*lr
-                else:
-                    optimizer.param_groups[0]["lr"] =  lr
-
-                step_per_epoch=len(self.data_dict["train"])
                 ii_tot = iis + ii_epoch * step_per_epoch
                 cstep = ii_tot / (epoch * step_per_epoch)
+
+                if ii_epoch==0 and warm_up_steps>0 and iis<warm_up_steps: # Warm up for first epoch
+                    optimizer.param_groups[0]["lr"]=(iis/warm_up_steps)*lr
+                elif lr_linear_decay:
+                    lr_cstep = (ii_tot-warm_up_steps) / (epoch * step_per_epoch-warm_up_steps)
+                    optimizer.param_groups[0]["lr"] = (1-lr_cstep)*lr
+                else:
+                    optimizer.param_groups[0]["lr"] = lr
+
                 try:
                     datax = datax.to(self.device)
                 except:
                     datax = [item.to(self.device) for item in datax]
-                loss = pt_model(datax, labels.to(self.device), schedule=cstep)
-                self._profiler(ii_tot, loss, print_step=self.print_step)
+                loss = self.model(datax, labels.to(self.device), schedule=cstep)
+                self._profiler(ii_tot, loss, optimizer.param_groups[0]["lr"],print_step=self.print_step)
 
                 if mix_precision:
                     optimizer.zero_grad()
@@ -630,7 +642,23 @@ class PyTrain_Main(object):
             midt = time.time()
             print("Time used till now:", midt - startt)
             print("Validation of epoch ", ii_epoch, ":")
-            self.do_eval()
+            evalres = self.do_eval()
+            ## Eval profile
+            if self.check_point_path is not None:
+                if checkpoint_pathname is None:
+                    best_evalres = evalres
+                    checkpoint_pathname = self.check_point_path+"epoch%s"%ii_epoch+"perp%.5s"%evalres
+                    self.save_session(checkpoint_pathname)
+                elif evalres<best_evalres: # We get a better
+                    try:
+                        shutil.rmtree(checkpoint_pathname)
+                    except:
+                        pass
+                    best_evalres = evalres
+                    checkpoint_pathname = self.check_point_path + "epoch%s" % ii_epoch + "perp%.5s" % evalres
+                    self.save_session(checkpoint_pathname)
+                else:
+                    pass
 
         endt = time.time()
         print("Time used in training:", endt - startt)
@@ -655,13 +683,16 @@ class PyTrain_Main(object):
                 if eval_mem_flag:
                     self.eval_mem(datax, labels, self.model)
         if self.loss_exp_flag:
-            print("Evaluation Perplexity: ", np.exp(np.mean(np.array(lossl))))
+            evalres = np.exp(np.mean(np.array(lossl)))
+            print("Evaluation Perplexity: ", evalres)
             self.eval_hist.append(np.exp(np.mean(np.array(lossl))))
         else:
-            print("Evaluation Perplexity: ", np.mean(np.array(lossl)))
+            evalres = np.mean(np.array(lossl))
+            print("Evaluation Perplexity: ", evalres)
             self.eval_hist.append(np.mean(np.array(lossl)))
         endt = time.time()
         print("Time used in evaluation: ", endt - startt)
+        return evalres
 
     def do_test(self, data_pt = "val"):
         """
@@ -870,13 +901,19 @@ class PyTrain_Main(object):
 
     def save_session(self,file_name):
 
-        os.mkdir(file_name)
-        save_model(self.model.model, os.path.join(file_name,file_name+".model"))
-        session_log=dict([])
-        session_log["log"]=self.log
-        session_log["train_hist"] = self.train_hist
-        session_log["eval_hist"] = self.eval_hist
-        save_data(session_log, os.path.join(file_name,file_name+".sessionlog"))
+        def _save_session(model, file_name):
+            os.mkdir(file_name)
+            save_model(model, os.path.join(file_name, file_name + ".model"))
+            session_log = dict([])
+            session_log["log"] = self.log
+            session_log["train_hist"] = self.train_hist
+            session_log["eval_hist"] = self.eval_hist
+            save_data(session_log, os.path.join(file_name, file_name + ".sessionlog"))
+
+        if self.dist_data_parallel:
+                _save_session(self.model.module.model, file_name)
+        else:
+            _save_session(self.model.model, file_name)
 
     def load_session(self,file_name):
 
@@ -886,7 +923,7 @@ class PyTrain_Main(object):
         self.train_hist = session_log["train_hist"]
         self.eval_hist = session_log["eval_hist"]
 
-    def _profiler(self, iis, loss, print_step=200):
+    def _profiler(self, iis, loss, lr_current,print_step=200):
 
         if iis % print_step == 0:
             if self.loss_exp_flag:
@@ -895,11 +932,13 @@ class PyTrain_Main(object):
             else:
                 print("Loss: ", iis, loss.item())
                 self.log = self.log + "Loss: " + str(iis) + " " + str(loss.item()) + "\n"
+            print("Current learning rate:", lr_current)
 
         if self.loss_exp_flag:
             self.train_hist.append(np.exp(loss.item()))
         else:
             self.train_hist.append(loss.item())
+
 
     def _postscript(self):
         x = []
