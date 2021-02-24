@@ -718,7 +718,7 @@ class WikiDataset(torch.utils.data.Dataset):
         return int(numblocks)
 
 class WikiBookDataset(torch.utils.data.Dataset):
-    def __init__(self, window = 512, max_data_len=None, mode="train", partition=[131,46], validsize=[2,1], partition_shift=[0,0]):
+    def __init__(self, window = 512, max_data_len=None, partition_wiki=[0,1], partition_book=[0], mode="train"):
         """
         WikiBookDataset util, partition for train mode
         validsize is partition size for valid
@@ -738,22 +738,18 @@ class WikiBookDataset(torch.utils.data.Dataset):
         self.dataset = []
         print("Loading dataset ...")
         if mode=="train":
-            for ii in range(partition[0]):
-                dataid = ii + partition_shift[0]
+            for dataid in partition_wiki:
                 data = load_data(os.path.join(self.wiki_data_path, "tokens_bpe_wiki_%s.pickle"% dataid))
                 self.dataset.append(data)
-            for ii in range(partition[1]):
-                dataid = ii + partition_shift[1]
+            for dataid in partition_book:
                 data = load_data(os.path.join(self.book_data_path, "tokens_bpe_book_%s.pickle" % dataid))
                 self.dataset.append(data)
         elif mode=="valid":
-            for ii in range(validsize[0]):
-                dataid = ii + partition_shift[0]
-                data = load_data(os.path.join(self.wiki_data_path, "tokens_bpe_wiki_%s.pickle"%dataid))
+            for dataid in partition_wiki:
+                data = load_data(os.path.join(self.wiki_data_path, "valid/tokens_bpe_wiki_%s.pickle"%dataid))
                 self.dataset.append(data)
-            for ii in range(validsize[1]):
-                dataid = ii + partition_shift[1]
-                data = load_data(os.path.join(self.book_data_path, "tokens_bpe_book_%s.pickle" % dataid))
+            for dataid in partition_book:
+                data = load_data(os.path.join(self.book_data_path, "valid/tokens_bpe_book_%s.pickle" % dataid))
                 self.dataset.append(data)
         else:
             raise Exception("Unknown mode")

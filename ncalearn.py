@@ -61,7 +61,8 @@ def pltscatter3D(data,labels=None,title=None,xlabel=None,ylabel=None):
 
     for ii in range(len(data)):  # plot each point + it's index as text above
         ax.scatter(data[ii, 0], data[ii, 1], data[ii, 2], color='b')
-        ax.text(data[ii, 0], data[ii, 1], data[ii, 2], str(labels[ii]),color='k')
+        if labels is not None:
+            ax.text(data[ii, 0], data[ii, 1], data[ii, 2], str(labels[ii]),color='k')
 
     if title is not None:
         plt.title(title)
@@ -544,13 +545,16 @@ class PyTrain_Main(object):
             para = dict([])
         self.para(para)
 
+        # Only for self defined model utility
         if self.dist_data_parallel:
             loss_model = loss_model.to(device)
             self.model = torch.nn.parallel.DistributedDataParallel( loss_model, device_ids=[device], output_device=device, dim=self.dist_data_parallel_dim,
                                                                  find_unused_parameters=False)
+            self.pt_model = self.model.module
         else:
             self.model = loss_model
             self.model.model = self.model.model.to(device)
+            self.pt_model = self.model
 
         currentDT = datetime.datetime.now()
         self.log = "Time of creation: " + str(currentDT) + "\n"
@@ -573,12 +577,6 @@ class PyTrain_Main(object):
         currentDT = datetime.datetime.now()
         print("Time of training starting %s. "%str(currentDT))
         self.log = self.log + "Start training with epoch: %s, lr: %s, optimizer: %s, weight_decay: %s"%(epoch, lr, optimizer_label, weight_decay)
-
-        # Only for self defined model utility
-        if self.dist_data_parallel:
-            pt_model = self.model.module
-        else:
-            pt_model = self.model
 
         if optimizer_label == "adam":
             print("Using adam optimizer")
@@ -607,7 +605,7 @@ class PyTrain_Main(object):
 
         for ii_epoch in range(epoch):
             print("Starting epoch %s." % str(ii_epoch))
-            pt_model.loss_mode = "train"
+            self.pt_model.loss_mode = "train"
 
             for iis,(datax, labels) in enumerate(self.data_dict["train"]):
 
@@ -648,6 +646,9 @@ class PyTrain_Main(object):
                 if checkpoint_pathname is None:
                     best_evalres = evalres
                     checkpoint_pathname = self.check_point_path+"epoch%s"%ii_epoch+"perp%.5s"%evalres
+                    endt = time.time()
+                    print("Time used util now:", endt - startt)
+                    self.log = self.log + "Time used util now: " + str(endt - startt) + "\n"
                     self.save_session(checkpoint_pathname)
                 elif evalres<best_evalres: # We get a better
                     try:
@@ -656,10 +657,12 @@ class PyTrain_Main(object):
                         pass
                     best_evalres = evalres
                     checkpoint_pathname = self.check_point_path + "epoch%s" % ii_epoch + "perp%.5s" % evalres
+                    endt = time.time()
+                    print("Time used util now:", endt - startt)
+                    self.log = self.log + "Time used util now: " + str(endt - startt) + "\n"
                     self.save_session(checkpoint_pathname)
                 else:
                     pass
-
         endt = time.time()
         print("Time used in training:", endt - startt)
         self.log = self.log + "Time used in training: " + str(endt - startt) + "\n"
@@ -910,14 +913,11 @@ class PyTrain_Main(object):
             session_log["eval_hist"] = self.eval_hist
             save_data(session_log, os.path.join(file_name, file_name + ".sessionlog"))
 
-        if self.dist_data_parallel:
-                _save_session(self.model.module.model, file_name)
-        else:
-            _save_session(self.model.model, file_name)
+        _save_session(self.pt_model.model, file_name)
 
     def load_session(self,file_name):
 
-        load_model(self.model.model, os.path.join(file_name,file_name+".model"))
+        load_model(self.pt_model.model, os.path.join(file_name,file_name+".model"),map_location="cpu")
         session_log = load_data(os.path.join(file_name,file_name+".sessionlog"))
         self.log = session_log["log"]
         self.train_hist = session_log["train_hist"]
